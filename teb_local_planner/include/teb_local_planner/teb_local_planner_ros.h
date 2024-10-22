@@ -381,7 +381,7 @@ private:
   std::shared_ptr<dwb_critics::ObstacleFootprintCritic> costmap_model_;
   FailureDetector failure_detector_; //!< Detect if the robot got stucked
   
-  std::vector<geometry_msgs::msg::PoseStamped> global_plan_; //!< Store the current global plan
+  std::vector<geometry_msgs::msg::PoseStamped> global_plan_, origin_plan_; //!< Store the current global plan
   
   pluginlib::ClassLoader<costmap_converter::BaseCostmapToPolygons> costmap_converter_loader_; //!< Load costmap converter plugins at runtime
   std::shared_ptr<costmap_converter::BaseCostmapToPolygons> costmap_converter_; //!< Store the current costmap_converter  
@@ -411,7 +411,7 @@ private:
   // flags
   bool initialized_; //!< Keeps track about the correct initialization of this class
   std::string name_; //!< Name of plugin ID
-
+  double launch_max_vel_x_, launch_max_global_plan_lookahead_dist_;
 protected:
   // Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler;

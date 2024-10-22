@@ -73,6 +73,7 @@ public:
   double front_offset, front_radius, rear_offset, rear_radius;
   std::string footprint_string;
 
+
   //! Trajectory related parameters
   struct Trajectory
   {
@@ -95,6 +96,8 @@ public:
     bool publish_feedback; //!< Publish planner feedback containing the full trajectory and a list of active obstacles (should be enabled only for evaluation or debugging purposes)
     double min_resolution_collision_check_angular; //! Min angular resolution used during the costmap collision check. If not respected, intermediate samples are added. [rad]
     int control_look_ahead_poses; //! Index of the pose used to extract the velocity command
+    double min_global_plan_lookahead_dist_threshold, min_vel_x_threshold;
+    int theta_threshold, pose_num_threshold;
   } trajectory; //!< Trajectory related parameters
 
   //! Robot related parameters
@@ -250,9 +253,13 @@ public:
 
     odom_topic = "odom";
     map_frame = "odom";
+    
 
     // Trajectory
-
+    trajectory.theta_threshold = 135;
+    trajectory.min_global_plan_lookahead_dist_threshold = 0.3;
+    trajectory.min_vel_x_threshold = 0.3;
+    trajectory.pose_num_threshold = 30;
     trajectory.teb_autosize = true;
     trajectory.dt_ref = 0.3;
     trajectory.dt_hysteresis = 0.1;

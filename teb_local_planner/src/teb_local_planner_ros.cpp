@@ -71,7 +71,8 @@ TebLocalPlannerROS::TebLocalPlannerROS()
     : costmap_ros_(nullptr), tf_(nullptr), cfg_(new TebConfig()), costmap_model_(nullptr), intra_proc_node_(nullptr),
                                            costmap_converter_loader_("costmap_converter", "costmap_converter::BaseCostmapToPolygons"),
                                            custom_via_points_active_(false), no_infeasible_plans_(0),
-                                           last_preferred_rotdir_(RotType::none), initialized_(false)
+                                           last_preferred_rotdir_(RotType::none), initialized_(false),
+                                           launch_max_vel_x_(0), launch_max_global_plan_lookahead_dist_(0)                                           
 {
 }
 
@@ -93,7 +94,11 @@ void TebLocalPlannerROS::initialize(nav2_util::LifecycleNode::SharedPtr node)
 
     // get parameters of TebConfig via the nodehandle and override the default config
     cfg_->loadRosParamFromNodeHandle(node, name_);
-    
+    // 获取默认值
+    launch_max_vel_x_ = cfg_->robot.max_vel_x;
+    launch_max_global_plan_lookahead_dist_ = cfg_->trajectory.max_global_plan_lookahead_dist;
+    RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! In initialize!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
+
     // reserve some memory for obstacles
     obstacles_.reserve(500);
         
@@ -226,12 +231,16 @@ void TebLocalPlannerROS::setPlan(const nav_msgs::msg::Path & orig_global_plan)
   // store the global plan
   global_plan_.clear();
   global_plan_.reserve(orig_global_plan.poses.size());
+  origin_plan_.clear();
+  origin_plan_.reserve(orig_global_plan.poses.size());
   for(const auto &in_pose :orig_global_plan.poses) {
     geometry_msgs::msg::PoseStamped out_pose;
     out_pose.pose = in_pose.pose;
     out_pose.header = orig_global_plan.header;
     global_plan_.push_back(out_pose);
+    origin_plan_.push_back(out_pose);
   }
+
 
   // we do not clear the local planner here, since setPlan is called frequently whenever the global planner updates the plan.
   // the local planner checks whether it is required to reinitialize the trajectory or not within each velocity computation step.  
@@ -250,6 +259,7 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
       std::string("teb_local_planner has not been initialized, please call initialize() before using this planner")
     );
   }
+
   geometry_msgs::msg::TwistStamped cmd_vel;
   
   cmd_vel.header.stamp = clock_->now();
@@ -278,6 +288,54 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
   
   // prune global plan to cut off parts of the past (spatially before the robot)
   pruneGlobalPlan(robot_pose, global_plan_, cfg_->trajectory.global_plan_prune_distance);
+  pruneGlobalPlan(robot_pose, origin_plan_, 3);
+  //动态调整 max_global_plan_lookahead_dist、max_vel_x 参数
+  // RCLCPP_INFO(logger_, "origin_plan_.size(): %d !", origin_plan_.size());
+
+  if (origin_plan_.size() < 30)
+  {
+    cfg_->trajectory.max_global_plan_lookahead_dist = cfg_->trajectory.min_global_plan_lookahead_dist_threshold;
+    cfg_->robot.max_vel_x = cfg_->trajectory.min_vel_x_threshold;
+    // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! Set succed !", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
+  }
+  else
+  {
+    double theta = 180;
+    for (size_t i = 4; i < origin_plan_.size() - 4 && i < cfg_->trajectory.pose_num_threshold; ++i)
+    {
+      double x0 = origin_plan_.at(i).pose.position.x;
+      double y0 = origin_plan_.at(i).pose.position.y;
+      double x1 = origin_plan_.at(i - 4).pose.position.x;
+      double y1 = origin_plan_.at(i - 4).pose.position.y;
+      double x2 = origin_plan_.at(i + 4).pose.position.x;
+      double y2 = origin_plan_.at(i + 4).pose.position.y;
+
+      double dot = (x1 - x0) * (x2 - x0) + (y1 - y0) * (y2 - y0);
+      double lenth_1 = std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+      double lenth_2 = std::sqrt((x2 - x0) * (x2 - x0) + (y2 - y0) * (y2 - y0));
+      double temp_theta = std::acos(dot / (lenth_1 * lenth_2)) * 180 / M_PI;
+      theta = temp_theta < theta ? temp_theta : theta; 
+    }
+    
+
+    if (theta < cfg_->trajectory.theta_threshold)
+    {
+      cfg_->trajectory.max_global_plan_lookahead_dist = cfg_->trajectory.min_global_plan_lookahead_dist_threshold;
+      cfg_->robot.max_vel_x = cfg_->trajectory.min_vel_x_threshold;
+      // RCLCPP_INFO(logger_, "Theta: %f! Set theta succed !", theta);
+      // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! In small theta!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
+      //设置 max_global_plan_lookahead_dist、max_vel_x 为较小值
+    }
+    else
+    {
+      cfg_->trajectory.max_global_plan_lookahead_dist = launch_max_global_plan_lookahead_dist_;
+      cfg_->robot.max_vel_x = launch_max_vel_x_;
+      // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! In big theta!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
+    }
+  }
+  // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
+  
+
 
   // Transform global plan to the frame of interest (w.r.t. the local costmap)
   std::vector<geometry_msgs::msg::PoseStamped> transformed_plan;
