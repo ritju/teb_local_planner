@@ -294,8 +294,8 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
 
   if (origin_plan_.size() < 30)
   {
-    cfg_->trajectory.max_global_plan_lookahead_dist = cfg_->trajectory.min_global_plan_lookahead_dist_threshold;
-    cfg_->robot.max_vel_x = cfg_->trajectory.min_vel_x_threshold;
+    cfg_->trajectory.max_global_plan_lookahead_dist = launch_max_global_plan_lookahead_dist_;
+    cfg_->robot.max_vel_x = launch_max_vel_x_;
     // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! Set succed !", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
   }
   else
