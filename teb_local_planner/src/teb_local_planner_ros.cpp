@@ -72,7 +72,7 @@ TebLocalPlannerROS::TebLocalPlannerROS()
                                            costmap_converter_loader_("costmap_converter", "costmap_converter::BaseCostmapToPolygons"),
                                            custom_via_points_active_(false), no_infeasible_plans_(0),
                                            last_preferred_rotdir_(RotType::none), initialized_(false),
-                                           launch_max_vel_x_(0), launch_max_global_plan_lookahead_dist_(0)                                           
+                                           launch_max_vel_x_(0), launch_max_global_plan_lookahead_dist_(0)                                          
 {
 }
 
@@ -97,6 +97,7 @@ void TebLocalPlannerROS::initialize(nav2_util::LifecycleNode::SharedPtr node)
     // 获取默认值
     launch_max_vel_x_ = cfg_->robot.max_vel_x;
     launch_max_global_plan_lookahead_dist_ = cfg_->trajectory.max_global_plan_lookahead_dist;
+    // via_sep_ = cfg_->trajectory.global_plan_viapoint_sep;
     RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! In initialize!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
 
     // reserve some memory for obstacles
@@ -175,6 +176,10 @@ void TebLocalPlannerROS::initialize(nav2_util::LifecycleNode::SharedPtr node)
                 "via_points", 
                 rclcpp::SystemDefaultsQoS(),
                 std::bind(&TebLocalPlannerROS::customViaPointsCB, this, std::placeholders::_1));
+    // rotation_sigh_sub_ = node->create_subscription<std_msgs::msg::Bool>(
+    //             "rotation_sigh",
+    //             rclcpp::SystemDefaultsQoS(),
+    //             std::bind(&TebLocalPlannerROS::rotation_sigh_callback, this, std::placeholders::_1));
     
     // initialize failure detector
     //rclcpp::Node::SharedPtr nh_move_base("~");
@@ -288,11 +293,11 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
   
   // prune global plan to cut off parts of the past (spatially before the robot)
   pruneGlobalPlan(robot_pose, global_plan_, cfg_->trajectory.global_plan_prune_distance);
-  pruneGlobalPlan(robot_pose, origin_plan_, 3);
+  // pruneGlobalPlan(robot_pose, origin_plan_, 3);
   //动态调整 max_global_plan_lookahead_dist、max_vel_x 参数
   // RCLCPP_INFO(logger_, "origin_plan_.size(): %d !", origin_plan_.size());
 
-  if (origin_plan_.size() < 30)
+  if (global_plan_.size() < 30)
   {
     cfg_->trajectory.max_global_plan_lookahead_dist = launch_max_global_plan_lookahead_dist_;
     cfg_->robot.max_vel_x = launch_max_vel_x_;
@@ -301,14 +306,14 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
   else
   {
     double theta = 180;
-    for (size_t i = 4; i < origin_plan_.size() - 4 && i < cfg_->trajectory.pose_num_threshold; ++i)
+    for (size_t i = 4; i < global_plan_.size() - 4 && i < cfg_->trajectory.pose_num_threshold; ++i)
     {
-      double x0 = origin_plan_.at(i).pose.position.x;
-      double y0 = origin_plan_.at(i).pose.position.y;
-      double x1 = origin_plan_.at(i - 4).pose.position.x;
-      double y1 = origin_plan_.at(i - 4).pose.position.y;
-      double x2 = origin_plan_.at(i + 4).pose.position.x;
-      double y2 = origin_plan_.at(i + 4).pose.position.y;
+      double x0 = global_plan_.at(i).pose.position.x;
+      double y0 = global_plan_.at(i).pose.position.y;
+      double x1 = global_plan_.at(i - 4).pose.position.x;
+      double y1 = global_plan_.at(i - 4).pose.position.y;
+      double x2 = global_plan_.at(i + 4).pose.position.x;
+      double y2 = global_plan_.at(i + 4).pose.position.y;
 
       double dot = (x1 - x0) * (x2 - x0) + (y1 - y0) * (y2 - y0);
       double lenth_1 = std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
@@ -679,15 +684,21 @@ void TebLocalPlannerROS::updateViaPointsContainer(const std::vector<geometry_msg
   
   if (min_separation<=0)
     return;
-  
+  ViaPointContainer occupied_points;
   std::size_t prev_idx = 0;
   for (std::size_t i=1; i < transformed_plan.size(); ++i) // skip first one, since we do not need any point before the first min_separation [m]
   {
     // check separation to the previous via-point inserted
     if (distance_points2d( transformed_plan[prev_idx].pose.position, transformed_plan[i].pose.position ) < min_separation)
       continue;
-        
-    // add via-point
+    unsigned int mx = 0;
+    unsigned int my = 0;
+    if (costmap_->worldToMap(transformed_plan[i].pose.position.x, transformed_plan[i].pose.position.y, mx, my) && costmap_->getCost(mx, my) >= nav2_costmap_2d::MAX_NON_OBSTACLE)
+    {
+      // add via-point
+      via_points_.clear();
+      break;
+    }
     via_points_.push_back( Eigen::Vector2d( transformed_plan[i].pose.position.x, transformed_plan[i].pose.position.y ) );
     prev_idx = i;
   }
@@ -1156,6 +1167,20 @@ void TebLocalPlannerROS::customViaPointsCB(const nav_msgs::msg::Path::ConstShare
   }
   custom_via_points_active_ = !via_points_.empty();
 }
+
+// void TebLocalPlannerROS::rotation_sigh_callback(const std_msgs::msg::Bool &msg)
+// {
+//   std::lock_guard<std::mutex> cfg_via_sep_lock(cfg_->configMutex());
+//   if (msg.data)
+//   {
+//     cfg_->trajectory.global_plan_viapoint_sep = via_sep_;
+//   }
+//   else
+//   {
+//     cfg_->trajectory.global_plan_viapoint_sep = -0.1;
+//   }
+  
+// }
 
 void TebLocalPlannerROS::activate() {
   visualization_->on_activate();

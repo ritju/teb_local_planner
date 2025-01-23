@@ -137,6 +137,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "enable_multithreading", rclcpp::ParameterValue(hcp.enable_multithreading));
   declare_parameter_if_not_declared(nh, name + "." + "simple_exploration", rclcpp::ParameterValue(hcp.simple_exploration));
   declare_parameter_if_not_declared(nh, name + "." + "max_number_classes", rclcpp::ParameterValue(hcp.max_number_classes));
+  declare_parameter_if_not_declared(nh, name + "." + "max_number_plans_in_current_class", rclcpp::ParameterValue(hcp.max_number_plans_in_current_class));
   declare_parameter_if_not_declared(nh, name + "." + "selection_obst_cost_scale", rclcpp::ParameterValue(hcp.selection_obst_cost_scale));
   declare_parameter_if_not_declared(nh, name + "." + "selection_prefer_initial_plan", rclcpp::ParameterValue(hcp.selection_prefer_initial_plan));
   declare_parameter_if_not_declared(nh, name + "." + "selection_viapoint_cost_scale", rclcpp::ParameterValue(hcp.selection_viapoint_cost_scale));
@@ -267,6 +268,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "enable_multithreading", hcp.enable_multithreading, hcp.enable_multithreading);
   nh->get_parameter_or(name + "." + "simple_exploration", hcp.simple_exploration, hcp.simple_exploration);
   nh->get_parameter_or(name + "." + "max_number_classes", hcp.max_number_classes, hcp.max_number_classes);
+  nh->get_parameter_or(name + "." + "max_number_plans_in_current_class", hcp.max_number_plans_in_current_class, hcp.max_number_plans_in_current_class);
   nh->get_parameter_or(name + "." + "selection_obst_cost_scale", hcp.selection_obst_cost_scale, hcp.selection_obst_cost_scale);
   nh->get_parameter_or(name + "." + "selection_prefer_initial_plan", hcp.selection_prefer_initial_plan, hcp.selection_prefer_initial_plan);
   nh->get_parameter_or(name + "." + "selection_viapoint_cost_scale", hcp.selection_viapoint_cost_scale, hcp.selection_viapoint_cost_scale);
@@ -673,7 +675,9 @@ rcl_interfaces::msg::SetParametersResult
       // Homotopy Class Planner
       else if (name == node_name + ".max_number_classes") {
         hcp.max_number_classes = parameter.as_int();
-      } else if (name == node_name + ".roadmap_graph_no_samples") {
+      } else if (name == node_name + ".max_number_plans_in_current_class") {
+        hcp.max_number_plans_in_current_class = parameter.as_int();
+      }else if (name == node_name + ".roadmap_graph_no_samples") {
         hcp.roadmap_graph_no_samples = parameter.as_int();
       }
       // Recovery

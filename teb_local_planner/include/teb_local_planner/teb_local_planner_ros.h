@@ -75,7 +75,7 @@
 // dynamic reconfigure
 //#include "teb_local_planner/TebLocalPlannerReconfigureConfig.h>
 //#include <dynamic_reconfigure/server.h>
-
+#include "std_msgs/msg/bool.hpp"
 
 namespace teb_local_planner
 {
@@ -388,6 +388,8 @@ private:
 
   //std::shared_ptr< dynamic_reconfigure::Server<TebLocalPlannerReconfigureConfig> > dynamic_recfg_; //!< Dynamic reconfigure server to allow config modifications at runtime
   rclcpp::Subscription<costmap_converter_msgs::msg::ObstacleArrayMsg>::SharedPtr custom_obst_sub_; //!< Subscriber for custom obstacles received via a ObstacleMsg.
+  // rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr rotation_sigh_sub_;
+  // void rotation_sigh_callback(const std_msgs::msg::Bool &msg);
   std::mutex custom_obst_mutex_; //!< Mutex that locks the obstacle array (multi-threaded)
   costmap_converter_msgs::msg::ObstacleArrayMsg custom_obstacle_msg_; //!< Copy of the most recent obstacle message
 
@@ -412,6 +414,7 @@ private:
   bool initialized_; //!< Keeps track about the correct initialization of this class
   std::string name_; //!< Name of plugin ID
   double launch_max_vel_x_, launch_max_global_plan_lookahead_dist_;
+  // double via_sep_;
 protected:
   // Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler;
