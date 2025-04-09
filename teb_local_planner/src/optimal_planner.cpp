@@ -56,6 +56,7 @@
 
 #include <memory>
 #include <limits>
+#include "dwb_core/exceptions.hpp"
 
 namespace teb_local_planner
 {
@@ -1317,8 +1318,14 @@ bool TebOptimalPlanner::isPoseValid(geometry_msgs::msg::Pose2D pose2d, dwb_criti
     if ( costmap_model->scorePose(pose2d, dwb_critics::getOrientedFootprint(pose2d, footprint_spec)) < 0 ) {
       return false;
     }
-  } catch (...) {
-    return false;
+  } catch(const dwb_core::IllegalTrajectoryException& e){
+    if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
+    {
+      return false;
+    }
+  }
+  catch (...) {
+    return true;
   }
   return true;
 }

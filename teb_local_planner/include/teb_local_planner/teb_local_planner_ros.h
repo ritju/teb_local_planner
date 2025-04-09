@@ -414,6 +414,8 @@ private:
   bool initialized_; //!< Keeps track about the correct initialization of this class
   std::string name_; //!< Name of plugin ID
   double launch_max_vel_x_, launch_max_global_plan_lookahead_dist_;
+  double weight_via_point_;
+  geometry_msgs::msg::PoseStamped last_corner_pose_;
   // double via_sep_;
 protected:
   // Dynamic parameters handler
