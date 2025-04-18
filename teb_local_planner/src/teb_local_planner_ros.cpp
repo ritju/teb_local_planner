@@ -310,7 +310,7 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
   {
     double theta = 120;
     geometry_msgs::msg::PoseStamped corner_pose_global, corner_pose_robot;
-    for (size_t i = 4; i < global_plan_.size() - 4 && i < cfg_->trajectory.pose_num_threshold; ++i)
+    for (size_t i = 2; i < global_plan_.size() - 2 && i < cfg_->trajectory.pose_num_threshold; ++i)
     {
       double x0 = global_plan_.at(i).pose.position.x;
       double y0 = global_plan_.at(i).pose.position.y;
@@ -323,7 +323,7 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
       double lenth_1 = std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
       double lenth_2 = std::sqrt((x2 - x0) * (x2 - x0) + (y2 - y0) * (y2 - y0));
       double temp_theta = std::acos(dot / (lenth_1 * lenth_2)) * 180 / M_PI;
-      if (temp_theta < theta)
+      if (temp_theta < theta  && corner_pose_global != last_corner_pose_)
       {
         theta = temp_theta; 
         corner_pose_global = global_plan_.at(i);
@@ -331,8 +331,17 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
       }
     }
     corner_pose_global.header.stamp = clock_->now();
-    corner_pose_global.header.frame_id = "map";
-    nav2_util::transformPoseInTargetFrame(corner_pose_global, corner_pose_robot, *tf_, "base_link");
+    corner_pose_global.header.frame_id = cfg_->map_frame;
+    try 
+    {
+      geometry_msgs::msg::TransformStamped transform = tf_->lookupTransform(cfg_->map_frame, pose.header.frame_id, tf2::TimePointZero);
+      corner_pose_global.header.stamp = transform.header.stamp;
+    } 
+    catch (tf2::TransformException &ex) 
+    {
+        RCLCPP_ERROR(logger_, "TF 查询失败: %s", ex.what());
+    }
+    nav2_util::transformPoseInTargetFrame(corner_pose_global, corner_pose_robot, *tf_, pose.header.frame_id);
     // RCLCPP_INFO(logger_, "Corner_pose_global.pose.position.x: %f, position.y: %f", corner_pose_global.pose.position.x, corner_pose_global.pose.position.y);
     // RCLCPP_INFO(logger_, "Corner_pose_robot.pose.position.x: %f, position.y: %f", corner_pose_robot.pose.position.x, corner_pose_robot.pose.position.y);
 
@@ -402,7 +411,7 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
         }
     }
     
-    for (auto check_it = transformed_plan.begin(); check_it != transformed_plan.end(); ++check_it)
+    for (auto check_it = transformed_plan.begin(); check_it != transformed_plan.end() && check_it != transformed_plan.begin() + 80; ++check_it)
     {
       if (check_it->pose.position == corner_pose_global.pose.position)
       {
