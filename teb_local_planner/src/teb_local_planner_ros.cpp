@@ -331,6 +331,7 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
       }
     }
     corner_pose_global.header.stamp = clock_->now();
+    corner_pose_global.header.frame_id = "map";
     nav2_util::transformPoseInTargetFrame(corner_pose_global, corner_pose_robot, *tf_, "base_link");
     // RCLCPP_INFO(logger_, "Corner_pose_global.pose.position.x: %f, position.y: %f", corner_pose_global.pose.position.x, corner_pose_global.pose.position.y);
     // RCLCPP_INFO(logger_, "Corner_pose_robot.pose.position.x: %f, position.y: %f", corner_pose_robot.pose.position.x, corner_pose_robot.pose.position.y);
