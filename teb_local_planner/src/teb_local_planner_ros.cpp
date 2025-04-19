@@ -309,21 +309,20 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
   else
   {
     double theta = 120;
-    geometry_msgs::msg::PoseStamped corner_pose_global, corner_pose_robot;
     for (size_t i = 2; i < global_plan_.size() - 2 && i < cfg_->trajectory.pose_num_threshold; ++i)
     {
       double x0 = global_plan_.at(i).pose.position.x;
       double y0 = global_plan_.at(i).pose.position.y;
-      double x1 = global_plan_.at(i - 4).pose.position.x;
-      double y1 = global_plan_.at(i - 4).pose.position.y;
-      double x2 = global_plan_.at(i + 4).pose.position.x;
-      double y2 = global_plan_.at(i + 4).pose.position.y;
+      double x1 = global_plan_.at(i - 2).pose.position.x;
+      double y1 = global_plan_.at(i - 2).pose.position.y;
+      double x2 = global_plan_.at(i + 2).pose.position.x;
+      double y2 = global_plan_.at(i + 2).pose.position.y;
 
       double dot = (x1 - x0) * (x2 - x0) + (y1 - y0) * (y2 - y0);
       double lenth_1 = std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
       double lenth_2 = std::sqrt((x2 - x0) * (x2 - x0) + (y2 - y0) * (y2 - y0));
       double temp_theta = std::acos(dot / (lenth_1 * lenth_2)) * 180 / M_PI;
-      if (temp_theta < theta  && global_plan_.at(i).pose != last_corner_pose_.pose)
+      if (temp_theta < theta && global_plan_.at(i).pose != last_corner_pose_.pose)
       {
         theta = temp_theta; 
         corner_pose_global = global_plan_.at(i);
@@ -368,7 +367,7 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
     last_corner_pose_ = corner_pose_global;
   }
 
-  for (auto prune_before_last_corner = global_plan_.begin(); prune_before_last_corner != global_plan_.begin() + 30; ++prune_before_last_corner)
+  for (auto prune_before_last_corner = global_plan_.begin(); prune_before_last_corner != global_plan_.end() && prune_before_last_corner != global_plan_.begin() + 30; ++prune_before_last_corner)
   {
     if (prune_before_last_corner->pose.position == last_corner_pose_.pose.position)
     {
