@@ -323,7 +323,7 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
       double lenth_1 = std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
       double lenth_2 = std::sqrt((x2 - x0) * (x2 - x0) + (y2 - y0) * (y2 - y0));
       double temp_theta = std::acos(dot / (lenth_1 * lenth_2)) * 180 / M_PI;
-      if (temp_theta < theta  && corner_pose_global != last_corner_pose_)
+      if (temp_theta < theta  && global_plan_.at(i).pose != last_corner_pose_.pose)
       {
         theta = temp_theta; 
         corner_pose_global = global_plan_.at(i);
@@ -331,17 +331,17 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
       }
     }
     corner_pose_global.header.stamp = clock_->now();
-    corner_pose_global.header.frame_id = cfg_->map_frame;
+    corner_pose_global.header.frame_id = "map";
     try 
     {
-      geometry_msgs::msg::TransformStamped transform = tf_->lookupTransform(cfg_->map_frame, pose.header.frame_id, tf2::TimePointZero);
+      geometry_msgs::msg::TransformStamped transform = tf_->lookupTransform("map", "base_link", tf2::TimePointZero);
       corner_pose_global.header.stamp = transform.header.stamp;
     } 
     catch (tf2::TransformException &ex) 
     {
         RCLCPP_ERROR(logger_, "TF 查询失败: %s", ex.what());
     }
-    nav2_util::transformPoseInTargetFrame(corner_pose_global, corner_pose_robot, *tf_, pose.header.frame_id);
+    nav2_util::transformPoseInTargetFrame(corner_pose_global, corner_pose_robot, *tf_, "base_link");
     // RCLCPP_INFO(logger_, "Corner_pose_global.pose.position.x: %f, position.y: %f", corner_pose_global.pose.position.x, corner_pose_global.pose.position.y);
     // RCLCPP_INFO(logger_, "Corner_pose_robot.pose.position.x: %f, position.y: %f", corner_pose_robot.pose.position.x, corner_pose_robot.pose.position.y);
 
