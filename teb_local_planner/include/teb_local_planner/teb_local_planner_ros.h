@@ -76,7 +76,7 @@
 //#include "teb_local_planner/TebLocalPlannerReconfigureConfig.h>
 //#include <dynamic_reconfigure/server.h>
 #include "std_msgs/msg/bool.hpp"
-
+#include "laserline/line_path_compare.hpp"
 namespace teb_local_planner
 {
 using TFBufferPtr = std::shared_ptr<tf2_ros::Buffer>;
@@ -222,6 +222,17 @@ protected:
    * @param min_separation minimum separation between two consecutive via-points
    */
   void updateViaPointsContainer(const std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan, double min_separation);
+
+   /**
+   * @brief Update internal wall_line_points container based on the current reference plan
+   * @remarks All previous wall_line_points will be cleared.
+   * @param wall_line contains direction of wall line
+   */
+  void updateWallLineVec(
+    const std::vector<nav_msgs::msg::Path>& wall_line, 
+    nav_msgs::msg::Path& input_path,
+    const double parallel_tolerance,
+    const double distance_tolerance);
   
   
   /**
@@ -361,6 +372,8 @@ protected:
    */
   void setSpeedLimit(const double & speed_limit,  const bool & percentage);
 
+  std::vector<Eigen::Vector2d> get_line_vec();
+
 private:
   // Definition of member variables
   rclcpp_lifecycle::LifecycleNode::WeakPtr nh_;
@@ -377,6 +390,7 @@ private:
   PlannerInterfacePtr planner_; //!< Instance of the underlying optimal planner class
   ObstContainer obstacles_; //!< Obstacle vector that should be considered during local trajectory optimization
   ViaPointContainer via_points_; //!< Container of via-points that should be considered during local trajectory optimization
+  std::vector<Eigen::Vector2d> wall_line_points_; //!< Container of wall_line_points_ that should be considered during local trajectory optimization
   TebVisualizationPtr visualization_; //!< Instance of the visualization class (local/global plan, obstacles, ...)
   std::shared_ptr<dwb_critics::ObstacleFootprintCritic> costmap_model_;
   FailureDetector failure_detector_; //!< Detect if the robot got stucked
@@ -414,7 +428,16 @@ private:
   bool initialized_; //!< Keeps track about the correct initialization of this class
   std::string name_; //!< Name of plugin ID
   double launch_max_vel_x_, launch_max_global_plan_lookahead_dist_;
+  double weight_wall_line_direction_, weight_wall_line_dist_;
+  double weight_via_point_;
+  geometry_msgs::msg::PoseStamped last_corner_pose_;
   // double via_sep_;
+  // std::shared_ptr<DynamicGoalPub> dynamic_goal_pub_;
+  std::shared_ptr<line_path_compare::LinePathCompare> wall_line_ptr_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr wall_line_marker_publisher_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr transformed_path;
+  double cfg_max_angular_vel_, cfg_max_angular_acc_;
+  rclcpp::Time wall_line_update_time_;
 protected:
   // Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler;

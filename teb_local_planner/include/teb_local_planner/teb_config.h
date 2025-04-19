@@ -149,6 +149,14 @@ public:
     double obstacle_proximity_lower_bound; //!< Distance to a static obstacle for which the velocity should be lower
     double obstacle_proximity_upper_bound; //!< Distance to a static obstacle for which the velocity should be higher
   } obstacles; //!< Obstacle related parameters
+  //! WallLine related parameters
+  struct WallLine
+  {
+    double min_wall_dist; //!< Minimum desired separation from obstacles
+    double min_wall_direction; //!< buffer zone around obstacles with non-zero penalty costs (should be larger than min_obstacle_dist in order to take effect)
+    double parallel_tolerance;
+    double distance_tolerance;
+  } wall_line; //!< Obstacle related parameters
 
 
   //! Optimization related parameters
@@ -180,9 +188,10 @@ public:
     double weight_velocity_obstacle_ratio; //!< Optimization weight for satisfying a maximum allowed velocity with respect to the distance to a static obstacle
     double weight_viapoint; //!< Optimization weight for minimizing the distance to via-points
     double weight_prefer_rotdir; //!< Optimization weight for preferring a specific turning direction (-> currently only activated if an oscillation is detected, see 'oscillation_recovery'
-
     double weight_adapt_factor; //!< Some special weights (currently 'weight_obstacle') are repeatedly scaled by this factor in each outer TEB iteration (weight_new = weight_old*factor); Increasing weights iteratively instead of setting a huge value a-priori leads to better numerical conditions of the underlying optimization problem.
     double obstacle_cost_exponent; //!< Exponent for nonlinear obstacle cost (cost = linear_cost * obstacle_cost_exponent). Set to 1 to disable nonlinear cost (default)
+    double weight_wall_line_dist;
+    double weight_wall_line_direction;
   } optim; //!< Optimization related parameters
 
 
@@ -323,6 +332,11 @@ public:
     obstacles.obstacle_proximity_lower_bound = 0;
     obstacles.obstacle_proximity_upper_bound = 0.5;
 
+    wall_line.min_wall_dist = 0.4;
+    wall_line.min_wall_direction = 0.0;
+    wall_line.parallel_tolerance = 0.98;
+    wall_line.distance_tolerance = 0.8;
+
     // Optimization
 
     optim.no_inner_iterations = 5;
@@ -351,6 +365,8 @@ public:
 
     optim.weight_adapt_factor = 2.0;
     optim.obstacle_cost_exponent = 1.0;
+    optim.weight_wall_line_dist = 1.0;
+    optim.weight_wall_line_direction = 1.0;
 
     // Homotopy Class Planner
 

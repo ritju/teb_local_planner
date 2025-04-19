@@ -126,7 +126,8 @@ public:
    * @param via_points Container storing via-points (optional)
    */
   HomotopyClassPlanner(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles = NULL,
-                       TebVisualizationPtr visualization = TebVisualizationPtr(), const ViaPointContainer* via_points = NULL);
+                       TebVisualizationPtr visualization = TebVisualizationPtr(), const ViaPointContainer* via_points = NULL,
+                       const std::vector<Eigen::Vector2d>* wall_line = NULL);
 
   /**
    * @brief Destruct the HomotopyClassPlanner.
@@ -142,7 +143,8 @@ public:
    * @param via_points Container storing via-points (optional)
    */
   void initialize(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles = NULL,
-                  TebVisualizationPtr visualization = TebVisualizationPtr(), const ViaPointContainer* via_points = NULL);
+                  TebVisualizationPtr visualization = TebVisualizationPtr(), const ViaPointContainer* via_points = NULL,
+                  const std::vector<Eigen::Vector2d>* wall_line = NULL);
 
   /** @name Plan a trajectory */
   //@{
@@ -540,6 +542,7 @@ protected:
    */
   void updateReferenceTrajectoryViaPoints(bool all_trajectories);
 
+  void updateReferenceTrajectoryWallLinePoints(bool all_trajectories);
   //@}
 
   // external objects (store weak pointers)
@@ -570,6 +573,7 @@ protected:
   bool initialized_; //!< Keeps track about the correct initialization of this class
 
   TebOptimalPlannerPtr last_best_teb_;  //!< Points to the plan used in the previous control cycle
+  const std::vector<Eigen::Vector2d>* wall_line_;
 
 
 

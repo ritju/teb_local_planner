@@ -56,6 +56,7 @@
 
 #include <memory>
 #include <limits>
+#include "dwb_core/exceptions.hpp"
 
 namespace teb_local_planner
 {
@@ -67,9 +68,9 @@ TebOptimalPlanner::TebOptimalPlanner() : cfg_(nullptr), obstacles_(NULL), via_po
 {    
 }
   
-TebOptimalPlanner::TebOptimalPlanner(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles, TebVisualizationPtr visual, const ViaPointContainer* via_points)
+TebOptimalPlanner::TebOptimalPlanner(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles, TebVisualizationPtr visual, const ViaPointContainer* via_points, const std::vector<Eigen::Vector2d>* wall_line)
 {    
-  initialize(node, cfg, obstacles, visual, via_points);
+  initialize(node, cfg, obstacles, visual, via_points, wall_line);
 }
 
 TebOptimalPlanner::~TebOptimalPlanner()
@@ -82,7 +83,7 @@ TebOptimalPlanner::~TebOptimalPlanner()
   //g2o::HyperGraphActionLibrary::destroy();
 }
 
-void TebOptimalPlanner::initialize(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles, TebVisualizationPtr visual, const ViaPointContainer* via_points)
+void TebOptimalPlanner::initialize(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles, TebVisualizationPtr visual, const ViaPointContainer* via_points, const std::vector<Eigen::Vector2d>* wall_line)
 {    
   node_ = node;
   // init optimizer (set solver and block ordering settings)
@@ -91,6 +92,7 @@ void TebOptimalPlanner::initialize(nav2_util::LifecycleNode::SharedPtr node, con
   cfg_ = &cfg;
   obstacles_ = obstacles;
   via_points_ = via_points;
+  wall_line_ = wall_line;
   cost_ = HUGE_VAL;
   prefer_rotdir_ = RotType::none;
 
@@ -152,6 +154,8 @@ void TebOptimalPlanner::registerG2OTypes()
   factory->registerType("EDGE_INFLATED_OBSTACLE", std::make_shared<g2o::HyperGraphElementCreator<EdgeInflatedObstacle>>());
   factory->registerType("EDGE_DYNAMIC_OBSTACLE", std::make_shared<g2o::HyperGraphElementCreator<EdgeDynamicObstacle>>());
   factory->registerType("EDGE_VIA_POINT", std::make_shared<g2o::HyperGraphElementCreator<EdgeViaPoint>>());
+  factory->registerType("EDGE_WALL_LINE_DIST", std::make_shared<g2o::HyperGraphElementCreator<EdgeDistanceToWall>>());
+  factory->registerType("EDGE_WALL_LINE_DIRECTION", std::make_shared<g2o::HyperGraphElementCreator<EdgeParallelToWall>>());
   factory->registerType("EDGE_PREFER_ROTDIR", std::make_shared<g2o::HyperGraphElementCreator<EdgePreferRotDir>>());
   return;
 }
@@ -345,6 +349,10 @@ bool TebOptimalPlanner::buildGraph(double weight_multiplier)
     AddEdgesDynamicObstacles();
   
   AddEdgesViaPoints();
+  
+  AddEdgesDistanceToWall();
+
+  AddEdgesParallelToWall();
   
   AddEdgesVelocity();
   
@@ -913,6 +921,38 @@ void TebOptimalPlanner::AddEdgesShortestPath()
   }
 }
 
+void TebOptimalPlanner::AddEdgesDistanceToWall()
+{
+  if (cfg_->optim.weight_wall_line_dist==0)
+    return; // if weight equals zero skip adding edges!
+  Eigen::Matrix<double,1,1> information;
+  information.fill(cfg_->optim.weight_wall_line_dist);
+  for (int i=0; i < teb_.sizePoses()-1; ++i)
+  {
+    EdgeDistanceToWall* wall_line_dist_edge = new EdgeDistanceToWall;
+    wall_line_dist_edge->setVertex(0,teb_.PoseVertex(i));
+    wall_line_dist_edge->setInformation(information);
+    wall_line_dist_edge->setParameters(*cfg_, wall_line_);
+    optimizer_->addEdge(wall_line_dist_edge);
+  }
+}
+
+void TebOptimalPlanner::AddEdgesParallelToWall()
+{
+  if (cfg_->optim.weight_wall_line_direction==0)
+    return; // if weight equals zero skip adding edges!
+  Eigen::Matrix<double,1,1> information;
+  information.fill(cfg_->optim.weight_wall_line_dist);
+  for (int i=0; i < teb_.sizePoses()-1; ++i)
+  {
+    EdgeParallelToWall* wall_line_direction_edge = new EdgeParallelToWall;
+    wall_line_direction_edge->setVertex(0,teb_.PoseVertex(i));
+    wall_line_direction_edge->setInformation(information);
+    wall_line_direction_edge->setParameters(*cfg_, wall_line_);
+    optimizer_->addEdge(wall_line_direction_edge);
+  }
+}
+
 
 
 void TebOptimalPlanner::AddEdgesKinematicsDiffDrive()
@@ -1317,8 +1357,14 @@ bool TebOptimalPlanner::isPoseValid(geometry_msgs::msg::Pose2D pose2d, dwb_criti
     if ( costmap_model->scorePose(pose2d, dwb_critics::getOrientedFootprint(pose2d, footprint_spec)) < 0 ) {
       return false;
     }
-  } catch (...) {
-    return false;
+  } catch(const dwb_core::IllegalTrajectoryException& e){
+    if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
+    {
+      return false;
+    }
+  }
+  catch (...) {
+    return true;
   }
   return true;
 }

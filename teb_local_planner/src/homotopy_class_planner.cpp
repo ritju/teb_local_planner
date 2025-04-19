@@ -48,9 +48,9 @@ HomotopyClassPlanner::HomotopyClassPlanner() : cfg_(NULL), obstacles_(NULL), via
 }
 
 HomotopyClassPlanner::HomotopyClassPlanner(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles,
-                                           TebVisualizationPtr visual, const ViaPointContainer* via_points) : initial_plan_(NULL)
+                                           TebVisualizationPtr visual, const ViaPointContainer* via_points, const std::vector<Eigen::Vector2d>* wall_line) : initial_plan_(NULL)
 {
-  initialize(node, cfg, obstacles, visual, via_points);
+  initialize(node, cfg, obstacles, visual, via_points, wall_line);
 }
 
 HomotopyClassPlanner::~HomotopyClassPlanner()
@@ -58,12 +58,13 @@ HomotopyClassPlanner::~HomotopyClassPlanner()
 }
 
 void HomotopyClassPlanner::initialize(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles,
-                                      TebVisualizationPtr visual, const ViaPointContainer* via_points)
+                                      TebVisualizationPtr visual, const ViaPointContainer* via_points, const std::vector<Eigen::Vector2d>* wall_line)
 {
   node_ = node;
   cfg_ = &cfg;
   obstacles_ = obstacles;
   via_points_ = via_points;
+  wall_line_ = wall_line;
 
   if (cfg_->hcp.simple_exploration)
     graph_search_ = std::shared_ptr<GraphSearchInterface>(new lrKeyPointGraph(*cfg_, this));
@@ -121,6 +122,7 @@ bool HomotopyClassPlanner::plan(const PoseSE2& start, const PoseSE2& goal, const
   exploreEquivalenceClassesAndInitTebs(start, goal, cfg_->obstacles.min_obstacle_dist, start_vel, free_goal_vel);
   // update via-points if activated
   updateReferenceTrajectoryViaPoints(cfg_->hcp.viapoints_all_candidates);
+  updateReferenceTrajectoryWallLinePoints(cfg_->hcp.viapoints_all_candidates);
   // Optimize all trajectories in alternative homotopy classes
   optimizeAllTEBs(cfg_->optim.no_inner_iterations, cfg_->optim.no_outer_iterations);
   // Select which candidate (based on alternative homotopy classes) should be used
@@ -339,6 +341,40 @@ void HomotopyClassPlanner::updateReferenceTrajectoryViaPoints(bool all_trajector
   }
 }
 
+void HomotopyClassPlanner::updateReferenceTrajectoryWallLinePoints(bool all_trajectories)
+{
+  if (!wall_line_ || (cfg_->optim.weight_wall_line_direction <= 0 && cfg_->optim.weight_wall_line_dist <= 0))
+    return;
+  if(equivalence_classes_.size() < tebs_.size())
+  {
+    RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"), "HomotopyClassPlanner::updateReferenceTrajectoryWithViaPoints(): Number of h-signatures does not match number of trajectories.");
+    return;
+  }
+
+  if (all_trajectories)
+  {
+    // enable wall-line-points for all tebs
+    for (std::size_t i=0; i < equivalence_classes_.size(); ++i)
+    {
+        tebs_[i]->setWallLine(wall_line_);
+    }
+  }
+  else
+  {
+    // enable wall-line-points for teb in the same hommotopy class as the initial_plan and deactivate it for all other ones
+    for (std::size_t i=0; i < equivalence_classes_.size(); ++i)
+    {
+      if(initial_plan_eq_class_->isEqual(*equivalence_classes_[i].first))
+      {
+        tebs_[i]->setWallLine(wall_line_);
+      }
+      else
+      {
+        tebs_[i]->setWallLine(NULL);
+      }
+    }
+  }
+}
 
 void HomotopyClassPlanner::exploreEquivalenceClassesAndInitTebs(const PoseSE2& start, const PoseSE2& goal, double dist_to_obst, const geometry_msgs::msg::Twist* start_vel, bool free_goal_vel)
 {

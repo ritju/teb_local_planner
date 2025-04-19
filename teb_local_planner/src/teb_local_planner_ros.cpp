@@ -60,6 +60,8 @@
 
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_eigen/tf2_eigen.hpp>
+#include "dwb_core/exceptions.hpp"
+#include "nav2_util/robot_utils.hpp"
 
 using nav2_util::declare_parameter_if_not_declared;
 
@@ -72,7 +74,8 @@ TebLocalPlannerROS::TebLocalPlannerROS()
                                            costmap_converter_loader_("costmap_converter", "costmap_converter::BaseCostmapToPolygons"),
                                            custom_via_points_active_(false), no_infeasible_plans_(0),
                                            last_preferred_rotdir_(RotType::none), initialized_(false),
-                                           launch_max_vel_x_(0), launch_max_global_plan_lookahead_dist_(0)                                          
+                                           launch_max_vel_x_(0), launch_max_global_plan_lookahead_dist_(0),weight_via_point_(1.0),
+                                           cfg_max_angular_vel_(0.6), cfg_max_angular_acc_(0.6), wall_line_update_time_(0)
 {
 }
 
@@ -97,6 +100,13 @@ void TebLocalPlannerROS::initialize(nav2_util::LifecycleNode::SharedPtr node)
     // 获取默认值
     launch_max_vel_x_ = cfg_->robot.max_vel_x;
     launch_max_global_plan_lookahead_dist_ = cfg_->trajectory.max_global_plan_lookahead_dist;
+    weight_wall_line_direction_ = cfg_->optim.weight_wall_line_direction;
+    weight_wall_line_dist_ = cfg_->optim.weight_wall_line_dist;
+    weight_via_point_ = cfg_->optim.weight_viapoint;
+    cfg_max_angular_vel_ = cfg_->robot.max_vel_theta;
+    cfg_max_angular_acc_= cfg_->robot.acc_lim_theta;
+
+    last_corner_pose_.pose.position.z = 1.0;
     // via_sep_ = cfg_->trajectory.global_plan_viapoint_sep;
     RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! In initialize!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
 
@@ -106,12 +116,12 @@ void TebLocalPlannerROS::initialize(nav2_util::LifecycleNode::SharedPtr node)
     // create the planner instance
     if (cfg_->hcp.enable_homotopy_class_planning)
     {
-      planner_ = PlannerInterfacePtr(new HomotopyClassPlanner(node, *cfg_.get(), &obstacles_, visualization_, &via_points_));
+      planner_ = PlannerInterfacePtr(new HomotopyClassPlanner(node, *cfg_.get(), &obstacles_, visualization_, &via_points_, &wall_line_points_));
       RCLCPP_INFO(logger_, "Parallel planning in distinctive topologies enabled.");
     }
     else
     {
-      planner_ = PlannerInterfacePtr(new TebOptimalPlanner(node, *cfg_.get(), &obstacles_, visualization_, &via_points_));
+      planner_ = PlannerInterfacePtr(new TebOptimalPlanner(node, *cfg_.get(), &obstacles_, visualization_, &via_points_, &wall_line_points_));
       RCLCPP_INFO(logger_, "Parallel planning in distinctive topologies disabled.");
     }
     
@@ -194,6 +204,12 @@ void TebLocalPlannerROS::initialize(nav2_util::LifecycleNode::SharedPtr node)
     time_last_infeasible_plan_ = clock_->now();
     time_last_oscillation_ = clock_->now();
     RCLCPP_DEBUG(logger_, "teb_local_planner plugin initialized.");
+    // dynamic_goal_pub_ = std::make_shared<DynamicGoalPub>(node);
+    // RCLCPP_INFO(node->get_logger(), "this is TebTest");
+    // dynamic_goal_pub_->test();
+    wall_line_ptr_ = std::make_shared<line_path_compare::LinePathCompare>(node);
+    wall_line_marker_publisher_ = node->create_publisher<visualization_msgs::msg::Marker>("teb_selected_wall_line", 1);
+    transformed_path = node->create_publisher<nav_msgs::msg::Path>("teb_transformed_path", 1);
   }
   else
   {
@@ -295,8 +311,9 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
   pruneGlobalPlan(robot_pose, global_plan_, cfg_->trajectory.global_plan_prune_distance);
   // pruneGlobalPlan(robot_pose, origin_plan_, 3);
   //动态调整 max_global_plan_lookahead_dist、max_vel_x 参数
-  // RCLCPP_INFO(logger_, "origin_plan_.size(): %d !", origin_plan_.size());
+  // RCLCPP_INFO(logger_, "global_plan_.size(): %d !", global_plan_.size());
 
+  geometry_msgs::msg::PoseStamped corner_pose_global, corner_pose_robot;
   if (global_plan_.size() < 30)
   {
     cfg_->trajectory.max_global_plan_lookahead_dist = launch_max_global_plan_lookahead_dist_;
@@ -305,25 +322,44 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
   }
   else
   {
-    double theta = 180;
-    for (size_t i = 4; i < global_plan_.size() - 4 && i < cfg_->trajectory.pose_num_threshold; ++i)
+    double theta = 120;
+    // RCLCPP_INFO(logger_, "Temp_theta ！");
+    for (size_t i = 2; i < global_plan_.size() - 2 && i < cfg_->trajectory.pose_num_threshold; ++i)
     {
       double x0 = global_plan_.at(i).pose.position.x;
       double y0 = global_plan_.at(i).pose.position.y;
-      double x1 = global_plan_.at(i - 4).pose.position.x;
-      double y1 = global_plan_.at(i - 4).pose.position.y;
-      double x2 = global_plan_.at(i + 4).pose.position.x;
-      double y2 = global_plan_.at(i + 4).pose.position.y;
+      double x1 = global_plan_.at(i - 2).pose.position.x;
+      double y1 = global_plan_.at(i - 2).pose.position.y;
+      double x2 = global_plan_.at(i + 2).pose.position.x;
+      double y2 = global_plan_.at(i + 2).pose.position.y;
 
       double dot = (x1 - x0) * (x2 - x0) + (y1 - y0) * (y2 - y0);
       double lenth_1 = std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
       double lenth_2 = std::sqrt((x2 - x0) * (x2 - x0) + (y2 - y0) * (y2 - y0));
       double temp_theta = std::acos(dot / (lenth_1 * lenth_2)) * 180 / M_PI;
-      theta = temp_theta < theta ? temp_theta : theta; 
+      if (temp_theta < theta && global_plan_.at(i).pose != last_corner_pose_.pose)
+      {
+        theta = temp_theta;
+        corner_pose_global = global_plan_.at(i);
+        break;
+      }
     }
-    
+    corner_pose_global.header.stamp = clock_->now();
+    corner_pose_global.header.frame_id = "map";
+    try 
+    {
+      geometry_msgs::msg::TransformStamped transform = tf_->lookupTransform("map", "base_link", tf2::TimePointZero);
+      corner_pose_global.header.stamp = transform.header.stamp;
+    } 
+    catch (tf2::TransformException &ex) 
+    {
+        RCLCPP_ERROR(logger_, "TF 查询失败: %s", ex.what());
+    }
+    nav2_util::transformPoseInTargetFrame(corner_pose_global, corner_pose_robot, *tf_,"base_link");
+    // RCLCPP_INFO(logger_, "Corner_pose_global.pose.position.x: %f, position.y: %f", corner_pose_global.pose.position.x, corner_pose_global.pose.position.y);
+    // RCLCPP_INFO(logger_, "Corner_pose_robot.pose.position.x: %f, position.y: %f", corner_pose_robot.pose.position.x, corner_pose_robot.pose.position.y);
 
-    if (theta < cfg_->trajectory.theta_threshold)
+    if (theta < cfg_->trajectory.theta_threshold && corner_pose_robot.pose.position.x > 0)
     {
       cfg_->trajectory.max_global_plan_lookahead_dist = cfg_->trajectory.min_global_plan_lookahead_dist_threshold;
       cfg_->robot.max_vel_x = cfg_->trajectory.min_vel_x_threshold;
@@ -341,10 +377,30 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
   // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
   
 
+  double corner_pose_dist = corner_pose_robot.pose.position.x * corner_pose_robot.pose.position.x + 
+         corner_pose_robot.pose.position.y * corner_pose_robot.pose.position.y;
+  if (corner_pose_robot.pose.position.x > 0 && corner_pose_robot.pose.position.x < 0.3 && corner_pose_dist < 0.25)
+  {
+    last_corner_pose_ = corner_pose_global;
+  }
+  // RCLCPP_INFO(logger_, "prune_before_last_corner ！");
+  for (auto prune_before_last_corner = global_plan_.begin(); prune_before_last_corner != global_plan_.begin() + 30; ++prune_before_last_corner)
+  {
+    if (prune_before_last_corner->pose.position == last_corner_pose_.pose.position)
+    {
+      if (global_plan_.end() - prune_before_last_corner > 10)
+      {
+        // RCLCPP_INFO(logger_, "global_plan_.end() - prune_before_last_corner: %d", global_plan_.end() - prune_before_last_corner);
+        global_plan_.erase(global_plan_.begin(), prune_before_last_corner);
+      }
+      break;
+    }
+  }
 
   // Transform global plan to the frame of interest (w.r.t. the local costmap)
   std::vector<geometry_msgs::msg::PoseStamped> transformed_plan;
   int goal_idx;
+  
   geometry_msgs::msg::TransformStamped tf_plan_to_global;
   if (!transformGlobalPlan(global_plan_, robot_pose, *costmap_, cfg_->map_frame, cfg_->trajectory.max_global_plan_lookahead_dist,
                            transformed_plan, &goal_idx, &tf_plan_to_global))
@@ -354,9 +410,76 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
     );
   }
 
+  // RCLCPP_INFO(logger_, "corner_pose_robot.pose.position.x < 1.5 ！");
+  if (corner_pose_robot.pose.position.x < 1.5 && corner_pose_robot.pose.position.x > 0.3)
+  {
+    geometry_msgs::msg::Pose2D corner_check_pose2d;
+    corner_check_pose2d.x = corner_pose_global.pose.position.x;
+    corner_check_pose2d.y = corner_pose_global.pose.position.y;
+    corner_check_pose2d.theta = tf2::getYaw(corner_pose_global.pose.orientation);
+    try
+    {
+      double corner_check_cost =  costmap_model_->scorePose(corner_check_pose2d, dwb_critics::getOrientedFootprint(corner_check_pose2d, footprint_spec_));
+      // RCLCPP_WARN(logger_, "Check cost : %f, max_plan_length: %f !", cost, max_plan_length);
+    }
+    catch(const dwb_core::IllegalTrajectoryException& e)
+    {
+        if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
+        {
+          goto jump_prune_transformed_plan;
+        }
+    }
+    // RCLCPP_INFO(logger_, "check_it ！");
+    for (auto check_it = transformed_plan.begin(); check_it != transformed_plan.end() && check_it != transformed_plan.begin() + 80; ++check_it)
+    {
+      if (check_it->pose.position == corner_pose_global.pose.position)
+      {
+        auto differance = check_it - transformed_plan.begin();
+        if (differance > 5)
+        {
+          // RCLCPP_INFO(logger_, "Transformed_plan.size(): %d", differance);
+          transformed_plan.erase(check_it, transformed_plan.end());
+        }
+        break;
+      }
+    }
+  }
+
+  jump_prune_transformed_plan:
+
+
+  nav_msgs::msg::Path input_path;
+  input_path.poses = (transformed_plan.size() > 40 ? std::vector<geometry_msgs::msg::PoseStamped>(transformed_plan.begin(), transformed_plan.begin() + 40) : transformed_plan);
+  
+  if (transformed_plan.size() > 0)
+  {
+    input_path.header = transformed_plan.at(0).header;
+  }
+  transformed_path->publish(input_path);
+  // RCLCPP_INFO(logger_, "input_path.header: %s", input_path.header.frame_id.c_str());
+  std::vector<nav_msgs::msg::Path> path_from_wall_line;
+  path_from_wall_line = wall_line_ptr_->get_compare_result(input_path);
+
+  for (auto path : path_from_wall_line)
+  {
+    RCLCPP_INFO(logger_, "Path front wall_line_point_.x: %f, wall_line_point_.y: %f !", path.poses.front().pose.position.x, path.poses.front().pose.position.y);
+    RCLCPP_INFO(logger_, "Path end wall_line_point_.x: %f, wall_line_point_.y: %f !", path.poses.back().pose.position.x, path.poses.back().pose.position.y);
+  }
+
+  updateWallLineVec(path_from_wall_line, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance);
+  if (wall_line_points_.size() == 2)
+  {
+    RCLCPP_INFO(logger_, "First updateWallLineVec wall_line_point_.x: %f, wall_line_point_.y: %f !", wall_line_points_.front().x(), wall_line_points_.front().y());
+    RCLCPP_INFO(logger_, "Second updateWallLineVec wall_line_point_.x: %f, wall_line_point_.y: %f !", wall_line_points_.back().x(), wall_line_points_.back().y());
+  }
+
   // update via-points container
   if (!custom_via_points_active_)
     updateViaPointsContainer(transformed_plan, cfg_->trajectory.global_plan_viapoint_sep);
+
+  
+  
+  
 
   // check if we should enter any backup mode and apply settings
   configureBackupModes(transformed_plan, goal_idx);
@@ -413,6 +536,7 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
     
   // Now perform the actual planning
 //   bool success = planner_->plan(robot_pose_, robot_goal_, robot_vel_, cfg_->goal_tolerance.free_goal_vel); // straight line init
+  // RCLCPP_INFO(logger_, "Weight_via_point: %f !", cfg_->optim.weight_viapoint);
   bool success = planner_->plan(transformed_plan, &robot_vel_, cfg_->goal_tolerance.free_goal_vel);
   if (!success)
   {
@@ -701,8 +825,127 @@ void TebLocalPlannerROS::updateViaPointsContainer(const std::vector<geometry_msg
     }
     via_points_.push_back( Eigen::Vector2d( transformed_plan[i].pose.position.x, transformed_plan[i].pose.position.y ) );
     prev_idx = i;
-  }
+  } 
+}
+
+void TebLocalPlannerROS::updateWallLineVec(
+  const std::vector<nav_msgs::msg::Path>& wall_line, 
+  nav_msgs::msg::Path& input_path,
+  const double parallel_tolerance,
+  const double distance_tolerance)
+{
+  // RCLCPP_INFO(logger_, "wall_line.size(): %ld,  input_path.poses.size(): %ld, wall_line_points_.size(): %ld!", wall_line.size(), input_path.poses.size(), wall_line_points_.size());
+  if (wall_line.size() == 0 || input_path.poses.size() < 2)
+  {
+
+    cfg_->optim.weight_wall_line_direction = 0;
+    cfg_->optim.weight_wall_line_dist = 0;
+    if(wall_line_points_.size() > 0) wall_line_points_.clear();
+    return;
+  }  
+  // 1. 提取输入路径的首尾点
+  const auto& start_pose = input_path.poses.front().pose.position;
+  const auto& end_pose = input_path.poses.back().pose.position;
   
+  // 2. 计算输入路径方向向量
+  const double dx_input = end_pose.x - start_pose.x;
+  const double dy_input = end_pose.y - start_pose.y;
+  const double input_length = std::hypot(dx_input, dy_input);
+  if (input_length < 1e-6)
+  {
+    if(wall_line_points_.size() > 0)
+    {
+      auto time_diff  = clock_->now() - wall_line_update_time_;
+      if (time_diff.seconds() > 1.0)
+      {
+        cfg_->optim.weight_wall_line_direction = 0;
+        cfg_->optim.weight_wall_line_dist = 0;
+        wall_line_points_.clear();
+      }
+    }
+    return;
+  }  
+  
+  const double dir_input_x = dx_input / input_length;
+  const double dir_input_y = dy_input / input_length;
+  
+  // 3. 遍历所有墙线
+  for(const auto& wall_path : wall_line) 
+  {
+    if(wall_path.poses.size() < 2) continue; // 无效墙线
+    
+    // 4. 提取墙线端点
+    const auto& wall_start = wall_path.poses.front().pose.position;
+    const auto& wall_end = wall_path.poses.back().pose.position;
+    
+    // 5. 计算墙线方向向量
+    const double dx_wall = wall_end.x - wall_start.x;
+    const double dy_wall = wall_end.y - wall_start.y;
+    const double wall_length = std::hypot(dx_wall, dy_wall);
+    if(wall_length < 1e-6) continue; // 无效墙线
+    
+    const double dir_wall_x = dx_wall / wall_length;
+    const double dir_wall_y = dy_wall / wall_length;
+    
+    // 6. 计算平行度（余弦值）
+    const double dot_product = dir_input_x * dir_wall_x + dir_input_y * dir_wall_y;
+    const double cos_theta = std::fabs(dot_product); // 取绝对值允许反向平行
+    
+    if(cos_theta < std::cos(parallel_tolerance)) continue; // [2](@ref)
+    
+    // 7. 计算垂直距离
+    // 使用直线方程：A*x + B*y + C = 0
+    const double A = dy_wall;
+    const double B = -dx_wall;
+    const double C = wall_end.x * wall_start.y - wall_start.x * wall_end.y;
+    
+    // 计算起点到墙线的距离
+    const double numerator = std::fabs(A * start_pose.x + B * start_pose.y + C);
+    const double denominator = std::hypot(A, B);
+    const double avg_distance = numerator / denominator; // [3](@ref)
+    
+    if(avg_distance <= distance_tolerance) {
+      if(wall_line_points_.size() > 0) wall_line_points_.clear();
+        wall_line_points_.emplace_back(Eigen::Vector2d(wall_start.x, wall_start.y));
+        wall_line_points_.emplace_back(Eigen::Vector2d(wall_end.x, wall_end.y));
+        cfg_->optim.weight_wall_line_direction = weight_wall_line_direction_;
+        cfg_->optim.weight_wall_line_dist = weight_wall_line_dist_;
+        cfg_->robot.acc_lim_theta = 0.15;
+        cfg_->robot.max_vel_theta = 0.15;
+        wall_line_update_time_ = clock_->now();
+        RCLCPP_INFO(logger_, "Avg_distance: %f !", avg_distance);
+
+        
+
+        visualization_msgs::msg::Marker marker_msg;
+        marker_msg.ns = "teb_local_planner";
+        marker_msg.id = 0;
+        marker_msg.type = visualization_msgs::msg::Marker::LINE_LIST;
+        marker_msg.scale.x = 0.1;
+        marker_msg.color.r = 1.0;
+        marker_msg.color.g = 1.0;
+        marker_msg.color.b = 0.0;
+        marker_msg.color.a = 1.0;
+        marker_msg.points.push_back(wall_start);
+        marker_msg.points.push_back(wall_end);
+        wall_line_marker_publisher_->publish(marker_msg);
+        return;
+    }
+  }
+
+  if(wall_line_points_.size() > 0)
+  {
+    auto time_diff  = clock_->now() - wall_line_update_time_;
+    if (time_diff.seconds() > 1.0)
+    {
+      cfg_->optim.weight_wall_line_direction = 0;
+      cfg_->optim.weight_wall_line_dist = 0;
+      cfg_->robot.acc_lim_theta = cfg_max_angular_acc_;
+      cfg_->robot.max_vel_theta = cfg_max_angular_vel_;
+      wall_line_points_.clear();
+    }
+  }
+  return;
 }
       
 //Eigen::Vector2d TebLocalPlannerROS::tfPoseToEigenVector2dTransRot(const tf::Pose& tf_vel)
@@ -734,6 +977,7 @@ bool TebLocalPlannerROS::pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& 
     // iterate plan until a pose close the robot is found
     std::vector<geometry_msgs::msg::PoseStamped>::iterator it = global_plan.begin();
     std::vector<geometry_msgs::msg::PoseStamped>::iterator erase_end = it;
+    // int count_it = 0, count_high_precision = 0;
     while (it != global_plan.end())
     {
       double dx = robot.pose.position.x - it->pose.position.x;
@@ -745,18 +989,53 @@ bool TebLocalPlannerROS::pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& 
          break;
       }
       ++it;
+      // ++count_it;
     }
+
+    // std::vector<geometry_msgs::msg::PoseStamped>::iterator high_precision_it = global_plan.begin();
+    // std::vector<geometry_msgs::msg::PoseStamped>::iterator high_precision_erase_end = high_precision_it;
+    // double closest_distance = dist_thresh_sq;
+    // while (high_precision_it != global_plan.end() && high_precision_it != (global_plan.begin() + 20))
+    // {
+    //   double dx = robot.pose.position.x - it->pose.position.x;
+    //   double dy = robot.pose.position.y - it->pose.position.y;
+    //   double dist_sq = dx * dx + dy * dy;
+    //   if (dist_sq < 0.15)
+    //   {
+    //     high_precision_erase_end = high_precision_it;
+    //     closest_distance = dist_sq;
+    //     break;
+    //   }
+    //   ++high_precision_it;
+    //   // ++count_high_precision;
+    // }
+    // if (closest_distance > 0.15)
+    // {
+    //   high_precision_it = global_plan.end();
+    // }
+    // else
+    // {
+    //   erase_end = high_precision_erase_end;
+    // }
+
     if (erase_end == global_plan.end())
       return false;
     
     if (erase_end != global_plan.begin())
       global_plan.erase(global_plan.begin(), erase_end);
+    // else if (closest_distance < 0.15 && high_precision_it == global_plan.begin())
+    //   global_plan.erase(global_plan.begin());
+    // else if (high_precision_it == global_plan.begin())
+    // {
+    //   global_plan.erase(global_plan.begin());
+    // }
   }
   catch (const tf2::TransformException& ex)
   {
     RCLCPP_DEBUG(logger_, "Cannot prune path since no transform is available: %s\n", ex.what());
     return false;
   }
+  // RCLCPP_INFO(logger_, "Global_plan size: %d", global_plan.size());
   return true;
 }
       
@@ -809,7 +1088,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
     
     //we need to loop to a point on the plan that is within a certain distance of the robot
     bool robot_reached = false;
-    for(int j=0; j < (int)global_plan.size(); ++j)
+    for(int j=0; j < (int)global_plan.size() && j < 40; ++j)
     {
       double x_diff = robot_pose.pose.position.x - global_plan[j].pose.position.x;
       double y_diff = robot_pose.pose.position.y - global_plan[j].pose.position.y;
@@ -824,7 +1103,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
       {
         sq_dist = new_sq_dist;
         i = j;
-        if (sq_dist < 0.05)      // 2.5 cm to the robot; take the immediate local minima; if it's not the global
+        if (sq_dist < 0.25)      // 2.5 cm to the robot; take the immediate local minima; if it's not the global
           robot_reached = true;  // minima, probably means that there's a loop in the path, and so we prefer this
       }
     }
@@ -832,7 +1111,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
     geometry_msgs::msg::PoseStamped newer_pose;
     
     double plan_length = 0; // check cumulative Euclidean distance along the plan
-    
+    cfg_->optim.weight_viapoint = weight_via_point_;
     //now we'll transform until points are outside of our distance threshold
     while(i < (int)global_plan.size() && sq_dist <= sq_dist_threshold && (max_plan_length<=0 || plan_length <= max_plan_length))
     {
@@ -840,12 +1119,32 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
       //tf::poseStampedMsgToTF(pose, tf_pose);
       //tf_pose.setData(plan_to_global_transform * tf_pose);
       tf2::doTransform(global_plan[i], newer_pose, plan_to_global_transform);
-
 //      tf_pose.stamp_ = plan_to_global_transform.stamp_;
 //      tf_pose.frame_id_ = global_frame;
 //      tf::poseStampedTFToMsg(tf_pose, newer_pose);
 
       transformed_plan.push_back(newer_pose);
+      
+      geometry_msgs::msg::Pose2D check_pose2d;
+      check_pose2d.x = global_plan[i].pose.position.x;
+      check_pose2d.y = global_plan[i].pose.position.y;
+      check_pose2d.theta = tf2::getYaw(global_plan[i].pose.orientation);
+      double check_cost = 0;
+      try
+      {
+        check_cost =  costmap_model_->scorePose(check_pose2d, dwb_critics::getOrientedFootprint(check_pose2d, footprint_spec_));
+        // RCLCPP_WARN(logger_, "Check cost : %f, max_plan_length: %f !", cost, max_plan_length);
+      }
+      catch(const dwb_core::IllegalTrajectoryException& e)
+      {
+        if ((int)global_plan.size() > 0)
+        {
+          if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
+          {
+            cfg_->optim.weight_viapoint = 1.0;
+          }
+        }
+      }
 
       double x_diff = robot_pose.pose.position.x - global_plan[i].pose.position.x;
       double y_diff = robot_pose.pose.position.y - global_plan[i].pose.position.y;
@@ -853,7 +1152,43 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
       
       // caclulate distance to previous pose
       if (i>0 && max_plan_length>0)
+      {
         plan_length += distance_points2d(global_plan[i-1].pose.position, global_plan[i].pose.position);
+        // RCLCPP_WARN(logger_, "Plan_length: %f !", plan_length);
+      }
+  
+      if (plan_length >= max_plan_length || ((int)global_plan.size() > 0 && i == ((int)global_plan.size() - 1)))
+      {
+        geometry_msgs::msg::Pose2D pose2d;
+        pose2d.x = global_plan[i].pose.position.x;
+        pose2d.y = global_plan[i].pose.position.y;
+        pose2d.theta = tf2::getYaw(global_plan[i].pose.orientation);
+        double cost = 0;
+
+        try
+        {
+          cost =  costmap_model_->scorePose(pose2d, dwb_critics::getOrientedFootprint(pose2d, footprint_spec_));
+          // RCLCPP_WARN(logger_, "Check cost : %f, max_plan_length: %f !", cost, max_plan_length);
+
+        }
+        catch(const dwb_core::IllegalTrajectoryException& e)
+        {
+          if ((int)global_plan.size() > 0 && i == ((int)global_plan.size() - 1))
+          {
+            if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
+            {
+              throw nav2_core::PlannerException(
+                std::string("Teb cannot find a free goal, goals are occupied ! ") + e.what()
+              );
+            }
+          }
+          else
+          {
+            max_plan_length += 0.5;
+            // RCLCPP_WARN(logger_, "Max_plan_length : %f !", max_plan_length);
+          }
+        }
+      }
 
       ++i;
     }
@@ -867,8 +1202,29 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
 //      tf_pose.stamp_ = plan_to_global_transform.stamp_;
 //      tf_pose.frame_id_ = global_frame;
 //      tf::poseStampedTFToMsg(tf_pose, newer_pose);
-      tf2::doTransform(global_plan.back(), newer_pose, plan_to_global_transform);
 
+      geometry_msgs::msg::Pose2D pose2d;
+      pose2d.x = global_plan.back().pose.position.x;
+      pose2d.y = global_plan.back().pose.position.y;
+      pose2d.theta = tf2::getYaw(global_plan.back().pose.orientation);
+      double cost = 0;
+      
+      try
+      {
+        cost =  costmap_model_->scorePose(pose2d, dwb_critics::getOrientedFootprint(pose2d, footprint_spec_));
+        RCLCPP_WARN(logger_, "Check cost : %f !", cost);
+      }
+      catch(const dwb_core::IllegalTrajectoryException& e)
+      {
+        if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
+        {
+          throw nav2_core::PlannerException(
+            std::string("Teb cannot find a free goal, goals are occupied ! ") + e.what()
+          );
+        }
+      }
+
+      tf2::doTransform(global_plan.back(), newer_pose, plan_to_global_transform);
       transformed_plan.push_back(newer_pose);
       
       // Return the index of the current goal point (inside the distance threshold)

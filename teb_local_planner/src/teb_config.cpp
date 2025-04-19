@@ -131,6 +131,14 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "weight_adapt_factor", rclcpp::ParameterValue(optim.weight_adapt_factor));
   declare_parameter_if_not_declared(nh, name + "." + "obstacle_cost_exponent", rclcpp::ParameterValue(optim.obstacle_cost_exponent));
   declare_parameter_if_not_declared(nh, name + "." + "weight_velocity_obstacle_ratio", rclcpp::ParameterValue(optim.weight_velocity_obstacle_ratio));
+  declare_parameter_if_not_declared(nh, name + "." + "weight_wall_line_dist", rclcpp::ParameterValue(optim.weight_wall_line_dist));
+  declare_parameter_if_not_declared(nh, name + "." + "weight_wall_line_direction", rclcpp::ParameterValue(optim.weight_wall_line_direction));
+
+  
+  declare_parameter_if_not_declared(nh, name + "." + "min_wall_dist", rclcpp::ParameterValue(wall_line.min_wall_dist));
+  declare_parameter_if_not_declared(nh, name + "." + "min_wall_direction", rclcpp::ParameterValue(wall_line.min_wall_direction));
+  declare_parameter_if_not_declared(nh, name + "." + "parallel_tolerance", rclcpp::ParameterValue(wall_line.parallel_tolerance));
+  declare_parameter_if_not_declared(nh, name + "." + "distance_tolerance", rclcpp::ParameterValue(wall_line.distance_tolerance));
 
   // Homotopy Class Planner
   declare_parameter_if_not_declared(nh, name + "." + "enable_homotopy_class_planning", rclcpp::ParameterValue(hcp.enable_homotopy_class_planning));
@@ -262,7 +270,15 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "weight_adapt_factor", optim.weight_adapt_factor, optim.weight_adapt_factor);
   nh->get_parameter_or(name + "." + "obstacle_cost_exponent", optim.obstacle_cost_exponent, optim.obstacle_cost_exponent);
   nh->get_parameter_or(name + "." + "weight_velocity_obstacle_ratio", optim.weight_velocity_obstacle_ratio, optim.weight_velocity_obstacle_ratio);
-  
+  nh->get_parameter_or(name + "." + "weight_wall_line_dist", optim.weight_wall_line_dist, optim.weight_wall_line_dist);
+  nh->get_parameter_or(name + "." + "weight_wall_line_direction", optim.weight_wall_line_direction, optim.weight_wall_line_direction);
+
+
+  nh->get_parameter_or(name + "." + "min_wall_dist", wall_line.min_wall_dist, wall_line.min_wall_dist);
+  nh->get_parameter_or(name + "." + "min_wall_direction", wall_line.min_wall_direction, wall_line.min_wall_direction);
+  nh->get_parameter_or(name + "." + "parallel_tolerance", wall_line.parallel_tolerance, wall_line.parallel_tolerance);
+  nh->get_parameter_or(name + "." + "distance_tolerance", wall_line.distance_tolerance, wall_line.distance_tolerance);
+
   // Homotopy Class Planner
   nh->get_parameter_or(name + "." + "enable_homotopy_class_planning", hcp.enable_homotopy_class_planning, hcp.enable_homotopy_class_planning);
   nh->get_parameter_or(name + "." + "enable_multithreading", hcp.enable_multithreading, hcp.enable_multithreading);
@@ -569,6 +585,18 @@ rcl_interfaces::msg::SetParametersResult
         optim.weight_adapt_factor = parameter.as_double();
       } else if (name == node_name + ".obstacle_cost_exponent") {
         optim.obstacle_cost_exponent = parameter.as_double();
+      } else if (name == node_name + ".weight_wall_line_dist") {
+        optim.weight_wall_line_dist = parameter.as_double();
+      } else if (name == node_name + ".weight_wall_line_direction") {
+        optim.weight_wall_line_direction = parameter.as_double();
+      } else if (name == node_name + ".min_wall_dist") {
+        wall_line.min_wall_dist = parameter.as_double();
+      } else if (name == node_name + ".min_wall_direction") {
+        wall_line.min_wall_direction = parameter.as_double();
+      } else if (name == node_name + ".parallel_tolerance") {
+        wall_line.parallel_tolerance = parameter.as_double();
+      } else if (name == node_name + ".distance_tolerance") {
+        wall_line.distance_tolerance = parameter.as_double();
       }
       // Homotopy Class Planner
       else if (name == node_name + ".selection_cost_hysteresis") {

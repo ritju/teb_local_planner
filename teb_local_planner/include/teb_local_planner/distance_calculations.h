@@ -457,8 +457,13 @@ double calc_distance_point_to_segment( const VectorType& point, const VectorType
   return (point-Pb).norm();
 }
 
-  
-  
+inline double calc_segment_angle(const Eigen::Ref<const Eigen::Vector2d>& line_start, const Eigen::Ref<const Eigen::Vector2d>& line_end)
+{
+  Eigen::Vector2d orientation_vec = line_end - line_start;
+  double orientation_yaw = atan2(orientation_vec.y(), orientation_vec.x());
+  return orientation_yaw;
+}
+
 } // namespace teb_local_planner
 
 #endif /* DISTANCE_CALCULATIONS_H */

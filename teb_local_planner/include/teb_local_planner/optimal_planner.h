@@ -69,6 +69,8 @@
 #include "teb_local_planner/g2o_types/edge_dynamic_obstacle.h"
 #include "teb_local_planner/g2o_types/edge_via_point.h"
 #include "teb_local_planner/g2o_types/edge_prefer_rotdir.h"
+#include "teb_local_planner/g2o_types/edge_parallel_to_wall.h"
+#include "teb_local_planner/g2o_types/edge_distance_to_wall.h"
 
 // messages
 #include <nav_msgs/msg/path.hpp>
@@ -129,7 +131,8 @@ public:
    * @param via_points Container storing via-points (optional)
    */
   TebOptimalPlanner(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles = NULL,
-                    TebVisualizationPtr visual = TebVisualizationPtr(), const ViaPointContainer* via_points = NULL);
+                    TebVisualizationPtr visual = TebVisualizationPtr(), const ViaPointContainer* via_points = NULL,
+                    const std::vector<Eigen::Vector2d>* wall_line = NULL);
   
   /**
    * @brief Destruct the optimal planner.
@@ -146,7 +149,8 @@ public:
     * @param via_points Container storing via-points (optional)
     */
   void initialize(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles = NULL,
-                  TebVisualizationPtr visual = TebVisualizationPtr(), const ViaPointContainer* via_points = NULL);
+                  TebVisualizationPtr visual = TebVisualizationPtr(), const ViaPointContainer* via_points = NULL,
+                  const std::vector<Eigen::Vector2d>* wall_line = NULL);
   
   /** @name Plan a trajectory  */
   //@{
@@ -315,6 +319,23 @@ public:
    * @return Const reference to the via-point container
    */
   const ViaPointContainer& getViaPoints() const {return *via_points_;}
+
+  /**
+   * @brief Assign a new set of wall_line points
+   * @param via_points pointer to a wall_line container (can also be a nullptr)
+   * @details Any previously set container will be overwritten.
+   */
+  void setWallLine(const std::vector<Eigen::Vector2d>* wall_line) 
+  {
+    wall_line_ = wall_line;
+    RCLCPP_INFO(rclcpp::get_logger("teb_local_planner"), "After setWallLine wall_line_points_.size(): %ld !", wall_line_->size());
+  }
+  
+  /**
+   * @brief Access the internal wall_line container.
+   * @return Const reference to the wall_line container
+   */
+  const std::vector<Eigen::Vector2d> getWallLine() const {return *wall_line_;}
 
   //@}
 	  
@@ -645,6 +666,22 @@ protected:
    * @see optimizeGraph
    */
   void AddEdgesViaPoints();
+
+    /**
+   * @brief Add all edges (local cost functions) related to minimizing the direction to wall
+   * @see EdgeViaPoint
+   * @see buildGraph
+   * @see optimizeGraph
+   */
+  void AddEdgesParallelToWall();
+
+    /**
+   * @brief Add all edges (local cost functions) related to minimizing the distance to wall
+   * @see EdgeViaPoint
+   * @see buildGraph
+   * @see optimizeGraph
+   */
+  void AddEdgesDistanceToWall();
   
   /**
    * @brief Add all edges (local cost functions) related to keeping a distance from dynamic (moving) obstacles.
@@ -704,6 +741,7 @@ protected:
   const TebConfig* cfg_; //!< Config class that stores and manages all related parameters
   ObstContainer* obstacles_; //!< Store obstacles that are relevant for planning
   const ViaPointContainer* via_points_; //!< Store via points for planning
+  const std::vector<Eigen::Vector2d>* wall_line_;
   std::vector<ObstContainer> obstacles_per_vertex_; //!< Store the obstacles associated with the n-1 initial vertices
   
   double cost_; //!< Store cost value of the current hyper-graph

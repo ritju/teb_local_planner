@@ -36,6 +36,12 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
+find_package(laserline REQUIRED)
+find_package(wall_line_detection_msgs REQUIRED)
+find_package(Boost REQUIRED)
+find_package(rclcpp_components REQUIRED)
+find_package(dwb_core REQUIRED)
+
 
 message(STATUS "System: ${CMAKE_SYSTEM}")
 ## System dependencies are found with CMake's conventions
@@ -43,7 +49,7 @@ SET(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${PROJECT_SOURCE_DIR}/cmake_modules)
 message(STATUS "${CMAKE_MODULE_PATH}")
 find_package(SUITESPARSE REQUIRED)
 find_package(G2O REQUIRED)
-find_package(Boost REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system thread)
 
 # Eigen3 FindScript Backward compatibility (ubuntu saucy)
 # Since FindEigen.cmake is deprecated starting from jade.
@@ -105,6 +111,10 @@ set(ament_dependencies
     tf2_ros
     visualization_msgs
     builtin_interfaces
+    laserline
+    wall_line_detection_msgs
+    rclcpp_components
+    dwb_core
 )
 ament_target_dependencies(teb_local_planner
    ${ament_dependencies}
