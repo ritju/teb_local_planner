@@ -88,7 +88,7 @@ public:
     const VertexPose* bandpt = static_cast<const VertexPose*>(_vertices[0]);
     if (_measurement && _measurement->size())
     {
-      _error[0] = fabs(perpendicularDistance(bandpt->position(), *_measurement) - cfg_->obstacles.min_obstacle_dist);
+      _error[0] = fabs(perpendicularDistance(bandpt->position(), *_measurement) - cfg_->wall_line.min_wall_dist);
     }
     else
     {
