@@ -414,8 +414,9 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
     {
       if (check_it->pose.position == corner_pose_global.pose.position)
       {
-        auto differance = check_it - transformed_plan.begin();
-        if (differance > 5)
+        auto front_differance = check_it - transformed_plan.begin();
+        auto end_differance = transformed_plan.end() - check_it;
+        if (front_differance > 5 && end_differance > 5)
         {
           transformed_plan.erase(check_it, transformed_plan.end());
         }
