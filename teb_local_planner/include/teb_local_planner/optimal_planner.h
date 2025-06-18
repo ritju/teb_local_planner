@@ -328,7 +328,7 @@ public:
   void setWallLine(const std::vector<Eigen::Vector2d>* wall_line) 
   {
     wall_line_ = wall_line;
-    RCLCPP_INFO(rclcpp::get_logger("teb_local_planner"), "After setWallLine wall_line_points_.size(): %ld !", wall_line_->size());
+    // RCLCPP_INFO(rclcpp::get_logger("teb_local_planner"), "After setWallLine wall_line_points_.size(): %ld !", wall_line_->size());
   }
   
   /**

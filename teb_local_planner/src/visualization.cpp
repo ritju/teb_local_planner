@@ -201,7 +201,7 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
     marker.color.g = 0.0;
     marker.color.b = 0.0;
 
-    // teb_marker_pub_->publish( marker );
+    teb_marker_pub_->publish( marker );
   }
   
   // Visualize circular obstacles
@@ -234,7 +234,7 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       marker.color.g = 1.0;
       marker.color.b = 0.0;
 
-      // teb_marker_pub_->publish( marker );
+      teb_marker_pub_->publish( marker );
     }
   }
 
@@ -275,7 +275,7 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       marker.color.g = 1.0;
       marker.color.b = 0.0;
       
-      // teb_marker_pub_->publish( marker );
+      teb_marker_pub_->publish( marker );
     }
   }
   
@@ -325,7 +325,7 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       marker.color.g = 0.0;
       marker.color.b = 0.0;
       
-      // teb_marker_pub_->publish( marker );
+      teb_marker_pub_->publish( marker );
     }
   }
 }
@@ -362,7 +362,7 @@ void TebVisualization::publishViaPoints(const std::vector< Eigen::Vector2d, Eige
   marker.color.g = 0.0;
   marker.color.b = 1.0;
 
-  // teb_marker_pub_->publish( marker );
+  teb_marker_pub_->publish( marker );
 }
 
 void TebVisualization::publishTebContainer(const TebOptPlannerContainer& teb_planner, const std::string& ns)

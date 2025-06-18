@@ -420,8 +420,9 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
     {
       if (check_it->pose.position == corner_pose_global.pose.position)
       {
-        auto differance = check_it - transformed_plan.begin();
-        if (differance > 5)
+        auto front_differance = check_it - transformed_plan.begin();
+        auto end_differance = transformed_plan.end() - check_it;
+        if (front_differance > 5 && end_differance > 5)
         {
           transformed_plan.erase(check_it, transformed_plan.end());
         }
@@ -446,15 +447,15 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
 
   for (auto path : path_from_wall_line)
   {
-    RCLCPP_INFO(logger_, "Path front wall_line_point_.x: %f, wall_line_point_.y: %f !", path.poses.front().pose.position.x, path.poses.front().pose.position.y);
-    RCLCPP_INFO(logger_, "Path end wall_line_point_.x: %f, wall_line_point_.y: %f !", path.poses.back().pose.position.x, path.poses.back().pose.position.y);
+    RCLCPP_DEBUG(logger_, "Path front wall_line_point_.x: %f, wall_line_point_.y: %f !", path.poses.front().pose.position.x, path.poses.front().pose.position.y);
+    RCLCPP_DEBUG(logger_, "Path end wall_line_point_.x: %f, wall_line_point_.y: %f !", path.poses.back().pose.position.x, path.poses.back().pose.position.y);
   }
 
   updateWallLineVec(path_from_wall_line, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance);
   if (wall_line_points_.size() == 2)
   {
-    RCLCPP_INFO(logger_, "First updateWallLineVec wall_line_point_.x: %f, wall_line_point_.y: %f !", wall_line_points_.front().x(), wall_line_points_.front().y());
-    RCLCPP_INFO(logger_, "Second updateWallLineVec wall_line_point_.x: %f, wall_line_point_.y: %f !", wall_line_points_.back().x(), wall_line_points_.back().y());
+    RCLCPP_DEBUG(logger_, "First updateWallLineVec wall_line_point_.x: %f, wall_line_point_.y: %f !", wall_line_points_.front().x(), wall_line_points_.front().y());
+    RCLCPP_DEBUG(logger_, "Second updateWallLineVec wall_line_point_.x: %f, wall_line_point_.y: %f !", wall_line_points_.back().x(), wall_line_points_.back().y());
   }
 
   // update via-points container
@@ -902,9 +903,9 @@ void TebLocalPlannerROS::updateWallLineVec(
         cfg_->robot.acc_lim_theta = 0.15;
         cfg_->robot.max_vel_theta = 0.15;
         cfg_->optim.weight_viapoint = 1.0;
-        cfg_->obstacles.min_obstacle_dist = cfg_->wall_line.min_wall_dist;
+        cfg_->obstacles.min_obstacle_dist = cfg_->obstacles.min_obstacle_dist;
         wall_line_update_time_ = clock_->now();
-        RCLCPP_INFO(logger_, "Avg_distance: %f !", avg_distance);
+        RCLCPP_DEBUG(logger_, "Avg_distance: %f !", avg_distance);
 
         
 
@@ -936,7 +937,7 @@ void TebLocalPlannerROS::updateWallLineVec(
       cfg_->optim.weight_viapoint = weight_via_point_;
       cfg_->obstacles.min_obstacle_dist = min_obstacle_dist_;
       wall_line_points_.clear();
-      RCLCPP_INFO(logger_, "cfg_->robot.acc_lim_theta: %f , cfg_->robot.max_vel_theta: %f!", cfg_->robot.acc_lim_theta, cfg_->robot.max_vel_theta);
+      RCLCPP_DEBUG(logger_, "cfg_->robot.acc_lim_theta: %f , cfg_->robot.max_vel_theta: %f!", cfg_->robot.acc_lim_theta, cfg_->robot.max_vel_theta);
     }
   }
   return;
