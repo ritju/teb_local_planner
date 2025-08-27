@@ -352,7 +352,7 @@ bool TebOptimalPlanner::buildGraph(double weight_multiplier)
   
   AddEdgesDistanceToWall();
 
-  AddEdgesParallelToWall();
+  // AddEdgesParallelToWall();
   
   AddEdgesVelocity();
   

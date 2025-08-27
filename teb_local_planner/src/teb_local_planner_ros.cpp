@@ -407,6 +407,10 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
     try
     {
       double corner_check_cost =  costmap_model_->scorePose(corner_check_pose2d, dwb_critics::getOrientedFootprint(corner_check_pose2d, footprint_spec_));
+      if (corner_check_cost > nav2_costmap_2d::FREE_SPACE)
+      {
+        goto jump_prune_transformed_plan;
+      }
     }
     catch(const dwb_core::IllegalTrajectoryException& e)
     {
@@ -900,10 +904,10 @@ void TebLocalPlannerROS::updateWallLineVec(
         wall_line_points_.emplace_back(Eigen::Vector2d(wall_end.x, wall_end.y));
         cfg_->optim.weight_wall_line_direction = weight_wall_line_direction_;
         cfg_->optim.weight_wall_line_dist = weight_wall_line_dist_;
-        cfg_->robot.acc_lim_theta = 0.15;
-        cfg_->robot.max_vel_theta = 0.15;
+        cfg_->robot.acc_lim_theta = cfg_->wall_line.edge_acc_lim_theta;
+        cfg_->robot.max_vel_theta = cfg_->wall_line.edge_max_vel_theta;
         cfg_->optim.weight_viapoint = 1.0;
-        cfg_->obstacles.min_obstacle_dist = cfg_->obstacles.min_obstacle_dist;
+        cfg_->obstacles.min_obstacle_dist = cfg_->wall_line.min_wall_dist;
         wall_line_update_time_ = clock_->now();
         RCLCPP_DEBUG(logger_, "Avg_distance: %f !", avg_distance);
 
@@ -952,7 +956,7 @@ void TebLocalPlannerROS::updateWallLineVec(
 //}
       
       
-bool TebLocalPlannerROS::pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& global_pose, std::vector<geometry_msgs::msg::PoseStamped>& global_plan, double dist_behind_robot)
+bool TebLocalPlannerROS::pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& global_pose, std::vector<geometry_msgs::msg::PoseStamped>& global_plan, double dist_behind_robot, double max_prune_dist)
 {
   if (global_plan.empty())
     return true;
@@ -972,11 +976,24 @@ bool TebLocalPlannerROS::pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& 
     // iterate plan until a pose close the robot is found
     std::vector<geometry_msgs::msg::PoseStamped>::iterator it = global_plan.begin();
     std::vector<geometry_msgs::msg::PoseStamped>::iterator erase_end = it;
-    while (it != global_plan.end())
+    double accum_dist = 0;
+    double min_dist_threshold = std::numeric_limits<double>::max();
+    while (it != global_plan.end() && accum_dist < max_prune_dist)
     {
       double dx = robot.pose.position.x - it->pose.position.x;
       double dy = robot.pose.position.y - it->pose.position.y;
       double dist_sq = dx * dx + dy * dy;
+      if (it != global_plan.begin())
+      {
+        double ddx = it->pose.position.x - (it-1)->pose.position.x;
+        double ddy = it->pose.position.y - (it-1)->pose.position.y;
+        accum_dist += std::sqrt(ddx*ddx + ddy*ddy);
+      }
+      if (dist_sq < min_dist_threshold)
+      {
+        min_dist_threshold = dist_sq;
+        erase_end = it;
+      }
       if (dist_sq < dist_thresh_sq)
       {
          erase_end = it;
@@ -1075,7 +1092,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
     
     //now we'll transform until points are outside of our distance threshold
     cfg_->optim.weight_viapoint = weight_via_point_;
-    while(i < (int)global_plan.size() && sq_dist <= sq_dist_threshold && (max_plan_length<=0 || plan_length <= max_plan_length))
+    while(i < (int)global_plan.size() && (max_plan_length<=0 || plan_length <= max_plan_length))
     {
       //const geometry_msgs::msg::PoseStamped& pose = global_plan[i];
       //tf::poseStampedMsgToTF(pose, tf_pose);
@@ -1108,10 +1125,6 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
           }
         }
       }
-
-      double x_diff = robot_pose.pose.position.x - global_plan[i].pose.position.x;
-      double y_diff = robot_pose.pose.position.y - global_plan[i].pose.position.y;
-      sq_dist = x_diff * x_diff + y_diff * y_diff;
       
       // caclulate distance to previous pose
       if (i>0 && max_plan_length>0)
@@ -1141,7 +1154,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
               );
             }
           }
-          else
+          else if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
           {
             max_plan_length += 0.5;
           }

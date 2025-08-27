@@ -273,7 +273,7 @@ protected:
     * @return \c true if the plan is pruned, \c false in case of a transform exception or if no pose cannot be found inside the threshold
     */
   bool pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& global_pose,
-                       std::vector<geometry_msgs::msg::PoseStamped>& global_plan, double dist_behind_robot=1);
+                       std::vector<geometry_msgs::msg::PoseStamped>& global_plan, double dist_behind_robot=1, double max_prune_dist=8);
   
   /**
     * @brief  Transforms the global plan of the robot from the planner frame to the local frame (modified).

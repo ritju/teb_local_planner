@@ -156,6 +156,8 @@ public:
     double min_wall_direction; //!< buffer zone around obstacles with non-zero penalty costs (should be larger than min_obstacle_dist in order to take effect)
     double parallel_tolerance;
     double distance_tolerance;
+    double edge_acc_lim_theta;
+    double edge_max_vel_theta;
   } wall_line; //!< Obstacle related parameters
 
 
@@ -336,6 +338,8 @@ public:
     wall_line.min_wall_direction = 0.0;
     wall_line.parallel_tolerance = 0.98;
     wall_line.distance_tolerance = 0.8;
+    wall_line.edge_acc_lim_theta = 0.2;
+    wall_line.edge_max_vel_theta = 0.3;
 
     // Optimization
 

@@ -76,9 +76,8 @@ public:
   {
     _measurement = NULL;
   }
-  const double ROBOT_TO_WALL_DEFAULT_DISTANCE = 0.5;
-  std::chrono::seconds intervel_ = 2s;
-  std::chrono::_V2::steady_clock::time_point last_time_ = steady_clock::now();
+  // std::chrono::seconds intervel_ = 2s;
+  // std::chrono::_V2::steady_clock::time_point last_time_ = steady_clock::now();
   /**
    * @brief Actual cost function
    */    
@@ -95,11 +94,11 @@ public:
       _error[0] = 0;
     }
 
-    if (steady_clock::now() - last_time_ > intervel_)
-    {
-      std::cout << "DistanceToWall::computeError() _error[0]: " << _error[0] << " !" << std::endl;
-      last_time_ = steady_clock::now();
-    }
+    // if (steady_clock::now() - last_time_ > intervel_)
+    // {
+    //   std::cout << "DistanceToWall::computeError() _error[0]: " << _error[0] << " !" << std::endl;
+    //   last_time_ = steady_clock::now();
+    // }
     TEB_ASSERT_MSG(std::isfinite(_error[0]), "DistanceToWall::computeError() _error[0]=%f\n",_error[0]);
   }
     
@@ -120,7 +119,7 @@ public:
   {
     // 验证输入有效性
     if (wall_direction.size() != 2) {
-      return ROBOT_TO_WALL_DEFAULT_DISTANCE;
+      return cfg_->wall_line.min_wall_dist;
     }
 
     const Eigen::Vector2d& p1 = wall_direction[0];
@@ -141,9 +140,9 @@ public:
     const double denominator = std::hypot(A, B);
 
     if (denominator < 1e-9) { // 处理两点重合的情况
-      return ROBOT_TO_WALL_DEFAULT_DISTANCE;
+      return cfg_->wall_line.min_wall_dist;
     }
-     double distance = (numerator / denominator) < 1.0 ? numerator / denominator : ROBOT_TO_WALL_DEFAULT_DISTANCE;
+     double distance = (numerator / denominator) < 1.0 ? numerator / denominator : cfg_->wall_line.min_wall_dist;
 
     // std::cout << "DistanceToWall : " << numerator / denominator << " !" << std::endl;
 
