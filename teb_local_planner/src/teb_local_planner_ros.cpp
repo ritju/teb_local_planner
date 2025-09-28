@@ -1154,7 +1154,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
               );
             }
           }
-          else if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
+          else if (!std::strcmp(e.what(), "Trajectory Hits Obstacle.") || (!std::strcmp(e.what(), "Footprint Goes Off Grid.") && (max_plan_length < costmap_->getSizeInMetersX() / 2.0 + 1.0)))
           {
             max_plan_length += 0.5;
           }
