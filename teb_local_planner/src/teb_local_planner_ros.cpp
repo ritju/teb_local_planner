@@ -1113,39 +1113,16 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
       try
       {
         check_cost =  costmap_model_->scorePose(check_pose2d, dwb_critics::getOrientedFootprint(check_pose2d, footprint_spec_));
-        // RCLCPP_WARN(logger_, "Check cost : %f, max_plan_length: %f !", cost, max_plan_length);
+        if (check_cost > 0)
+        {
+          cfg_->optim.weight_viapoint = 1.0;
+        }
       }
       catch(const dwb_core::IllegalTrajectoryException& e)
       {
         if ((int)global_plan.size() > 0)
         {
-          if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
-          {
-            cfg_->optim.weight_viapoint = 1.0;
-          }
-        }
-      }
-      
-      // caclulate distance to previous pose
-      if (i>0 && max_plan_length>0)
-        plan_length += distance_points2d(global_plan[i-1].pose.position, global_plan[i].pose.position);
-
-      //检查截取的目标点是否可达，若不可达，继续向后截取，截取至最后一个目标点，若仍不可达，抛出异常
-      if (plan_length >= max_plan_length || ((int)global_plan.size() > 0 && i == ((int)global_plan.size() - 1)))
-      {
-        geometry_msgs::msg::Pose2D pose2d;
-        pose2d.x = global_plan[i].pose.position.x;
-        pose2d.y = global_plan[i].pose.position.y;
-        pose2d.theta = tf2::getYaw(global_plan[i].pose.orientation);
-        double cost = 0;
-
-        try
-        {
-          cost =  costmap_model_->scorePose(pose2d, dwb_critics::getOrientedFootprint(pose2d, footprint_spec_));
-        }
-        catch(const dwb_core::IllegalTrajectoryException& e)
-        {
-          if ((int)global_plan.size() > 0 && i == ((int)global_plan.size() - 1))
+          if (i == ((int)global_plan.size() - 1))
           {
             if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
             {
@@ -1154,12 +1131,48 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
               );
             }
           }
-          else if (!std::strcmp(e.what(), "Trajectory Hits Obstacle.") || (!std::strcmp(e.what(), "Footprint Goes Off Grid.") && (max_plan_length < costmap_->getSizeInMetersX() / 2.0 + 1.0)))
+          if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
           {
-            max_plan_length += 0.5;
+            max_plan_length = costmap_->getSizeInMetersX() / 2.0 + 1.0;
           }
+          cfg_->optim.weight_viapoint = 1.0;
         }
       }
+      
+      // caclulate distance to previous pose
+      if (i>0 && max_plan_length>0)
+        plan_length += distance_points2d(global_plan[i-1].pose.position, global_plan[i].pose.position);
+
+      //检查截取的目标点是否可达，若不可达，继续向后截取，截取至最后一个目标点，若仍不可达，抛出异常
+      // if (plan_length >= max_plan_length || ((int)global_plan.size() > 0 && i == ((int)global_plan.size() - 1)))
+      // {
+      //   geometry_msgs::msg::Pose2D pose2d;
+      //   pose2d.x = global_plan[i].pose.position.x;
+      //   pose2d.y = global_plan[i].pose.position.y;
+      //   pose2d.theta = tf2::getYaw(global_plan[i].pose.orientation);
+      //   double cost = 0;
+
+      //   try
+      //   {
+      //     cost =  costmap_model_->scorePose(pose2d, dwb_critics::getOrientedFootprint(pose2d, footprint_spec_));
+      //   }
+      //   catch(const dwb_core::IllegalTrajectoryException& e)
+      //   {
+      //     if ((int)global_plan.size() > 0 && i == ((int)global_plan.size() - 1))
+      //     {
+      //       if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
+      //       {
+      //         throw nav2_core::PlannerException(
+      //           std::string("Teb cannot find a free goal, goals are occupied ! ") + e.what()
+      //         );
+      //       }
+      //     }
+      //     else if (!std::strcmp(e.what(), "Trajectory Hits Obstacle.") || (!std::strcmp(e.what(), "Footprint Goes Off Grid.") && (max_plan_length < costmap_->getSizeInMetersX() / 2.0 + 1.0)))
+      //     {
+      //       max_plan_length += 0.5;
+      //     }
+      //   }
+      // }
       //检查截取的目标点是否可达，若不可达，继续向后截取，截取至最后一个目标点，若仍不可达，抛出异常
 
       ++i;
