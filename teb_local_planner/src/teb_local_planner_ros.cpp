@@ -829,7 +829,7 @@ void TebLocalPlannerROS::updateWallLineVec(
     cfg_->robot.acc_lim_theta = cfg_max_angular_acc_;
     cfg_->robot.max_vel_theta = cfg_max_angular_vel_;
     cfg_->optim.weight_viapoint = weight_via_point_;
-    cfg_->obstacles.min_obstacle_dist = min_obstacle_dist_;
+    // cfg_->obstacles.min_obstacle_dist = min_obstacle_dist_;
     if(wall_line_points_.size() > 0) wall_line_points_.clear();
     return;
   }  
@@ -853,7 +853,7 @@ void TebLocalPlannerROS::updateWallLineVec(
         cfg_->robot.acc_lim_theta = cfg_max_angular_acc_;
         cfg_->robot.max_vel_theta = cfg_max_angular_vel_;
         cfg_->optim.weight_viapoint = weight_via_point_;
-        cfg_->obstacles.min_obstacle_dist = min_obstacle_dist_;
+        // cfg_->obstacles.min_obstacle_dist = min_obstacle_dist_;
         wall_line_points_.clear();
       }
     }
@@ -907,7 +907,7 @@ void TebLocalPlannerROS::updateWallLineVec(
         cfg_->robot.acc_lim_theta = cfg_->wall_line.edge_acc_lim_theta;
         cfg_->robot.max_vel_theta = cfg_->wall_line.edge_max_vel_theta;
         cfg_->optim.weight_viapoint = 1.0;
-        cfg_->obstacles.min_obstacle_dist = cfg_->wall_line.min_wall_dist;
+        // cfg_->obstacles.min_obstacle_dist = cfg_->wall_line.min_wall_dist;
         wall_line_update_time_ = clock_->now();
         RCLCPP_DEBUG(logger_, "Avg_distance: %f !", avg_distance);
 
@@ -939,7 +939,7 @@ void TebLocalPlannerROS::updateWallLineVec(
       cfg_->robot.acc_lim_theta = cfg_max_angular_acc_;
       cfg_->robot.max_vel_theta = cfg_max_angular_vel_;
       cfg_->optim.weight_viapoint = weight_via_point_;
-      cfg_->obstacles.min_obstacle_dist = min_obstacle_dist_;
+      // cfg_->obstacles.min_obstacle_dist = min_obstacle_dist_;
       wall_line_points_.clear();
       RCLCPP_DEBUG(logger_, "cfg_->robot.acc_lim_theta: %f , cfg_->robot.max_vel_theta: %f!", cfg_->robot.acc_lim_theta, cfg_->robot.max_vel_theta);
     }
