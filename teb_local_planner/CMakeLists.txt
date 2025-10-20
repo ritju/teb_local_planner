@@ -41,6 +41,7 @@ find_package(wall_line_detection_msgs REQUIRED)
 find_package(Boost REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(dwb_core REQUIRED)
+find_package(capella_ros_msg REQUIRED)
 
 
 message(STATUS "System: ${CMAKE_SYSTEM}")
@@ -115,6 +116,7 @@ set(ament_dependencies
     wall_line_detection_msgs
     rclcpp_components
     dwb_core
+    capella_ros_msg
 )
 ament_target_dependencies(teb_local_planner
    ${ament_dependencies}

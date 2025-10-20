@@ -77,6 +77,7 @@
 //#include <dynamic_reconfigure/server.h>
 #include "std_msgs/msg/bool.hpp"
 #include "laserline/line_path_compare.hpp"
+#include "capella_ros_msg/msg/lane_center_paths.hpp"
 namespace teb_local_planner
 {
 using TFBufferPtr = std::shared_ptr<tf2_ros::Buffer>;
@@ -232,7 +233,17 @@ protected:
     const std::vector<nav_msgs::msg::Path>& wall_line, 
     nav_msgs::msg::Path& input_path,
     const double parallel_tolerance,
-    const double distance_tolerance);
+    const double distance_tolerance,
+    const geometry_msgs::msg::PoseStamped& robot_pose);
+  // lane center callback
+  void lane_center_callback(const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr msg);
+    /**
+    * @brief Update internal lane_center_points container based on the current reference plan
+    * @remarks All previous lane_center_points will be cleared.
+    * @param lane_center contains pose of lane center
+    */
+  void updateLaneLineVec(const capella_ros_msg::msg::LaneCenterPaths& lane_center, nav_msgs::msg::Path& input_path, 
+                         const double parallel_tolerance, const double distance_tolerance);
   
   
   /**
@@ -408,8 +419,12 @@ private:
   costmap_converter_msgs::msg::ObstacleArrayMsg custom_obstacle_msg_; //!< Copy of the most recent obstacle message
 
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr via_points_sub_; //!< Subscriber for custom via-points received via a Path msg.
+  rclcpp::Subscription<capella_ros_msg::msg::LaneCenterPaths>::SharedPtr lane_center_sub_; // Subscriber for lane_center points.
+  std::vector<nav_msgs::msg::Path> lane_center_paths_;
   bool custom_via_points_active_; //!< Keep track whether valid via-points have been received from via_points_sub_
   std::mutex via_point_mutex_; //!< Mutex that locks the via_points container (multi-threaded)
+  std::mutex lane_center_mutex_; //!< Mutex that locks the lane_center container (multi-threaded)
+  std::mutex update_wall_line_mutex_; //!< Mutex that locks the wall_line container (multi-threaded)
 
   PoseSE2 robot_pose_; //!< Store current robot pose
   PoseSE2 robot_goal_; //!< Store current robot goal
@@ -434,7 +449,7 @@ private:
   geometry_msgs::msg::PoseStamped last_corner_pose_;
   // double via_sep_;
   // std::shared_ptr<DynamicGoalPub> dynamic_goal_pub_;
-  std::shared_ptr<line_path_compare::LinePathCompare> wall_line_ptr_;
+  // std::shared_ptr<line_path_compare::LinePathCompare> wall_line_ptr_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr wall_line_marker_publisher_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr transformed_path;
   double cfg_max_angular_vel_, cfg_max_angular_acc_;
