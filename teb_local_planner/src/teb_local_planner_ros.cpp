@@ -398,7 +398,7 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
     );
   }
 
-  if (corner_pose_robot.pose.position.x < 1.5 && corner_pose_robot.pose.position.x > 0.3)
+  if (corner_pose_robot.pose.position.x < cfg_->trajectory.corner_dist_threshold && corner_pose_robot.pose.position.x > 0.3)
   {
     geometry_msgs::msg::Pose2D corner_check_pose2d;
     corner_check_pose2d.x = corner_pose_global.pose.position.x;

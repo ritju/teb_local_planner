@@ -72,6 +72,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "min_global_plan_lookahead_dist_threshold", rclcpp::ParameterValue(trajectory.min_global_plan_lookahead_dist_threshold));
   declare_parameter_if_not_declared(nh, name + "." + "min_vel_x_threshold", rclcpp::ParameterValue(trajectory.min_vel_x_threshold));
   declare_parameter_if_not_declared(nh, name + "." + "pose_num_threshold", rclcpp::ParameterValue(trajectory.pose_num_threshold));
+  declare_parameter_if_not_declared(nh, name + "." + "corner_dist_threshold", rclcpp::ParameterValue(trajectory.corner_dist_threshold));
   // Robot
   declare_parameter_if_not_declared(nh, name + "." + "max_vel_x", rclcpp::ParameterValue(robot.max_vel_x));
   declare_parameter_if_not_declared(nh, name + "." + "max_vel_x_backwards", rclcpp::ParameterValue(robot.max_vel_x_backwards));
@@ -214,6 +215,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "min_global_plan_lookahead_dist_threshold", trajectory.min_global_plan_lookahead_dist_threshold, trajectory.min_global_plan_lookahead_dist_threshold);
   nh->get_parameter_or(name + "." + "min_vel_x_threshold", trajectory.min_vel_x_threshold, trajectory.min_vel_x_threshold);
   nh->get_parameter_or(name + "." + "pose_num_threshold", trajectory.pose_num_threshold, trajectory.pose_num_threshold);
+  nh->get_parameter_or(name + "." + "corner_dist_threshold", trajectory.corner_dist_threshold, trajectory.corner_dist_threshold);
   // Robot
   nh->get_parameter_or(name + "." + "max_vel_x", robot.max_vel_x, robot.max_vel_x);
   nh->get_parameter_or(name + "." + "max_vel_x_backwards", robot.max_vel_x_backwards, robot.max_vel_x_backwards);
@@ -505,6 +507,8 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.min_vel_x_threshold = parameter.as_double();
       } else if (name == node_name + ".pose_num_threshold") {
         trajectory.pose_num_threshold = parameter.as_int();
+      } else if (name == node_name + ".corner_dist_threshold") {
+        trajectory.corner_dist_threshold = parameter.as_double();
       }
       // Robot
       else if (name == node_name + ".max_vel_x") {

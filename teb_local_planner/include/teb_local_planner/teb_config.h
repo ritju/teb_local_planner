@@ -98,6 +98,7 @@ public:
     int control_look_ahead_poses; //! Index of the pose used to extract the velocity command
     double min_global_plan_lookahead_dist_threshold, min_vel_x_threshold;
     int theta_threshold, pose_num_threshold;
+    double corner_dist_threshold; //!< Distance threshold to consider a point a corner
   } trajectory; //!< Trajectory related parameters
 
   //! Robot related parameters
@@ -271,6 +272,7 @@ public:
     trajectory.min_global_plan_lookahead_dist_threshold = 0.3;
     trajectory.min_vel_x_threshold = 0.3;
     trajectory.pose_num_threshold = 30;
+    trajectory.corner_dist_threshold = 1.5;
     trajectory.teb_autosize = true;
     trajectory.dt_ref = 0.3;
     trajectory.dt_hysteresis = 0.1;
