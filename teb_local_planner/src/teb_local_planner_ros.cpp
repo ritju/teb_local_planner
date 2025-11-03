@@ -206,7 +206,7 @@ void TebLocalPlannerROS::initialize(nav2_util::LifecycleNode::SharedPtr node)
     time_last_infeasible_plan_ = clock_->now();
     time_last_oscillation_ = clock_->now();
     RCLCPP_DEBUG(logger_, "teb_local_planner plugin initialized.");
-    // wall_line_ptr_ = std::make_shared<line_path_compare::LinePathCompare>(node);
+    wall_line_ptr_ = std::make_shared<line_path_compare::LinePathCompare>(node);
     wall_line_marker_publisher_ = node->create_publisher<visualization_msgs::msg::Marker>("teb_selected_wall_line", 1);
     transformed_path = node->create_publisher<nav_msgs::msg::Path>("teb_transformed_path", 1);
   }
@@ -451,29 +451,9 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
     input_path.header = transformed_plan.at(0).header;
   }
   transformed_path->publish(input_path);
-  // RCLCPP_INFO(logger_, "input_path.header: %s", input_path.header.frame_id.c_str());
-  // std::vector<nav_msgs::msg::Path> path_from_wall_line;
-  // path_from_wall_line = wall_line_ptr_->get_compare_result(input_path);
-  // if (lane_center_paths_.size() > 0)
-  // {
-  //   // for (auto path : lane_center_paths_)
-  //   // {
-  //   //   RCLCPP_INFO(logger_, "Path front wall_line_point_.x: %f, wall_line_point_.y: %f !", path.poses.front().pose.position.x, path.poses.front().pose.position.y);
-  //   //   RCLCPP_INFO(logger_, "Path end wall_line_point_.x: %f, wall_line_point_.y: %f !", path.poses.back().pose.position.x, path.poses.back().pose.position.y);
-  //   // }
-
-  //   updateWallLineVec(lane_center_paths_, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance, robot_pose);
-  //   if (wall_line_points_.size() == 2)
-  //   {
-  //     // RCLCPP_INFO(logger_, "First updateWallLineVec wall_line_point_.x: %f, wall_line_point_.y: %f !", wall_line_points_.front().x(), wall_line_points_.front().y());
-  //     // RCLCPP_INFO(logger_, "Second updateWallLineVec wall_line_point_.x: %f, wall_line_point_.y: %f !", wall_line_points_.back().x(), wall_line_points_.back().y());
-  //   }
-  //   else if (wall_line_points_.size() == 0)
-  //   {
-  //     RCLCPP_INFO(logger_, "Can not found useful wall_line_points_ !");
-  //   }
-  // }
-
+  std::vector<nav_msgs::msg::Path> path_from_wall_line;
+  path_from_wall_line = wall_line_ptr_->get_compare_result(input_path);
+  updateWallLineVec(path_from_wall_line, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance, robot_pose);
   updateWallLineVec(lane_center_paths_, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance, robot_pose);
   if (wall_line_points_.size() == 0)
   {

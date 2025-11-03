@@ -449,7 +449,7 @@ private:
   geometry_msgs::msg::PoseStamped last_corner_pose_;
   // double via_sep_;
   // std::shared_ptr<DynamicGoalPub> dynamic_goal_pub_;
-  // std::shared_ptr<line_path_compare::LinePathCompare> wall_line_ptr_;
+  std::shared_ptr<line_path_compare::LinePathCompare> wall_line_ptr_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr wall_line_marker_publisher_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr transformed_path;
   double cfg_max_angular_vel_, cfg_max_angular_acc_;
