@@ -847,7 +847,7 @@ void TebLocalPlannerROS::updateWallLineVec(
       
       // 检查夹角是否超出±90度范围
       if (std::fabs(angle_diff) > M_PI / 4) {
-        RCLCPP_INFO(logger_, "路径方向与机器人朝向夹角超出±90度范围: %.2f度", angle_diff * 180 / M_PI);
+        RCLCPP_WARN_THROTTLE(logger_, *(clock_), 10000, "路径方向与机器人朝向夹角超出±90度范围: %.2f度", angle_diff * 180 / M_PI);
         cfg_->optim.weight_wall_line_direction = 0;
         cfg_->optim.weight_wall_line_dist = 0;
         cfg_->robot.acc_lim_theta = cfg_max_angular_acc_;
@@ -969,7 +969,7 @@ void TebLocalPlannerROS::updateWallLineVec(
     cfg_->optim.weight_viapoint = 1.0;
     wall_line_update_time_ = clock_->now();
     
-    RCLCPP_INFO(logger_, "Selected best wall line - Distance: %f", min_distance);
+    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 10000, "Selected best wall line - Distance: %f", min_distance);
     
     // 发布可视化标记
     visualization_msgs::msg::Marker marker_msg;
@@ -1002,7 +1002,7 @@ void TebLocalPlannerROS::updateWallLineVec(
   }
   else 
   {
-    RCLCPP_INFO(logger_, "No valid wall line found, clearing configuration");
+    RCLCPP_DEBUG(logger_, "No valid wall line found, clearing configuration");
     // 6. 如果没有找到合适的墙线，检查是否需要清除现有配置
     if(wall_line_points_.size() > 0)
     {
