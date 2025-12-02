@@ -455,10 +455,10 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
   path_from_wall_line = wall_line_ptr_->get_compare_result(input_path);
   updateWallLineVec(path_from_wall_line, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance, robot_pose);
   updateWallLineVec(lane_center_paths_, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance, robot_pose);
-  if (wall_line_points_.size() == 0)
-  {
-    RCLCPP_INFO(logger_, "Can not found useful wall_line_points_ !");
-  }
+  // if (wall_line_points_.size() == 0)
+  // {
+  //   RCLCPP_INFO(logger_, "Can not found useful wall_line_points_ !");
+  // }
 
   // update via-points container
   if (!custom_via_points_active_)
@@ -847,7 +847,7 @@ void TebLocalPlannerROS::updateWallLineVec(
       
       // 检查夹角是否超出±90度范围
       if (std::fabs(angle_diff) > M_PI / 4) {
-        RCLCPP_WARN_THROTTLE(logger_, *(clock_), 10000, "路径方向与机器人朝向夹角超出±90度范围: %.2f度", angle_diff * 180 / M_PI);
+        RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 10000, "路径方向与机器人朝向夹角超出±90度范围: %.2f度", angle_diff * 180 / M_PI);
         cfg_->optim.weight_wall_line_direction = 0;
         cfg_->optim.weight_wall_line_dist = 0;
         cfg_->robot.acc_lim_theta = cfg_max_angular_acc_;
