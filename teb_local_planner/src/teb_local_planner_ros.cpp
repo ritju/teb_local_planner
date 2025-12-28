@@ -77,7 +77,7 @@ TebLocalPlannerROS::TebLocalPlannerROS()
                                            last_preferred_rotdir_(RotType::none), initialized_(false),
                                            launch_max_vel_x_(0), launch_max_global_plan_lookahead_dist_(0),weight_via_point_(1.0),
                                            cfg_max_angular_vel_(0.6), cfg_max_angular_acc_(0.6), wall_line_update_time_(0),
-                                           min_obstacle_dist_(0.5)
+                                           min_obstacle_dist_(0.5), lane_center_sub_(nullptr), wall_line_ptr_(nullptr)
 {
 }
 
@@ -188,11 +188,15 @@ void TebLocalPlannerROS::initialize(nav2_util::LifecycleNode::SharedPtr node)
                 rclcpp::SystemDefaultsQoS(),
                 std::bind(&TebLocalPlannerROS::customViaPointsCB, this, std::placeholders::_1));
     // setup callback for lane center points
-    lane_center_sub_ = node->create_subscription<capella_ros_msg::msg::LaneCenterPaths>(
-                "lane_center_paths", 
-                rclcpp::SystemDefaultsQoS(),
-                std::bind(&TebLocalPlannerROS::lane_center_callback, this, std::placeholders::_1)); 
-    
+    if (cfg_->optim.weight_wall_line_dist > 0.0)
+    {
+      lane_center_sub_ = node->create_subscription<capella_ros_msg::msg::LaneCenterPaths>(
+                  "lane_center_paths", 
+                  rclcpp::SystemDefaultsQoS(),
+                  std::bind(&TebLocalPlannerROS::lane_center_callback, this, std::placeholders::_1)); 
+      wall_line_ptr_ = std::make_shared<line_path_compare::LinePathCompare>(node);
+      wall_line_marker_publisher_ = node->create_publisher<visualization_msgs::msg::Marker>("teb_selected_wall_line", 1);
+    }
     // initialize failure detector
     //rclcpp::Node::SharedPtr nh_move_base("~");
     double controller_frequency = 5;
@@ -206,8 +210,7 @@ void TebLocalPlannerROS::initialize(nav2_util::LifecycleNode::SharedPtr node)
     time_last_infeasible_plan_ = clock_->now();
     time_last_oscillation_ = clock_->now();
     RCLCPP_DEBUG(logger_, "teb_local_planner plugin initialized.");
-    wall_line_ptr_ = std::make_shared<line_path_compare::LinePathCompare>(node);
-    wall_line_marker_publisher_ = node->create_publisher<visualization_msgs::msg::Marker>("teb_selected_wall_line", 1);
+    
     transformed_path = node->create_publisher<nav_msgs::msg::Path>("teb_transformed_path", 1);
   }
   else
@@ -451,10 +454,14 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
     input_path.header = transformed_plan.at(0).header;
   }
   transformed_path->publish(input_path);
-  std::vector<nav_msgs::msg::Path> path_from_wall_line;
-  path_from_wall_line = wall_line_ptr_->get_compare_result(input_path);
-  updateWallLineVec(path_from_wall_line, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance, robot_pose);
-  updateWallLineVec(lane_center_paths_, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance, robot_pose);
+  if (cfg_->optim.weight_wall_line_dist > 0.0)
+  {
+    std::vector<nav_msgs::msg::Path> path_from_wall_line;
+    path_from_wall_line = wall_line_ptr_->get_compare_result(input_path);
+    updateWallLineVec(path_from_wall_line, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance, robot_pose);
+    // updateWallLineVec(lane_center_paths_, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance, robot_pose);
+  }
+  
   // if (wall_line_points_.size() == 0)
   // {
   //   RCLCPP_INFO(logger_, "Can not found useful wall_line_points_ !");
