@@ -132,7 +132,7 @@ void TebVisualization::publishRobotFootprintModel(const PoseSE2& current_pose, c
     marker_it->ns = ns;
     marker_it->id = idx;
     marker_it->lifetime = rclcpp::Duration(2, 0);
-    teb_marker_pub_->publish(*marker_it);
+    // teb_marker_pub_->publish(*marker_it);
   }
   
 }
@@ -148,11 +148,15 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
   if ( obstacles.empty() || printErrorWhenNotInitialized() )
     return;
   
+  // 收集所有障碍物的 marker，最后一次性发布
+  std::vector<visualization_msgs::msg::Marker> markers;
+  rclcpp::Time current_time = nh_->now();
+  
   // Visualize point obstacles
   {
     visualization_msgs::msg::Marker marker;
     marker.header.frame_id = cfg_->map_frame;
-    marker.header.stamp = nh_->now();
+    marker.header.stamp = current_time;
     marker.ns = "PointObstacles";
     marker.id = 0;
     marker.type = visualization_msgs::msg::Marker::POINTS;
@@ -201,7 +205,11 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
     marker.color.g = 0.0;
     marker.color.b = 0.0;
 
-    teb_marker_pub_->publish( marker );
+    // 只有当有点障碍物时才添加到数组
+    if (!marker.points.empty())
+    {
+      markers.push_back(marker);
+    }
   }
   
   // Visualize circular obstacles
@@ -215,7 +223,7 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
 
       visualization_msgs::msg::Marker marker;
       marker.header.frame_id = cfg_->map_frame;
-      marker.header.stamp = nh_->now();
+      marker.header.stamp = current_time;
       marker.ns = "CircularObstacles";
       marker.id = idx++;
       marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
@@ -234,7 +242,7 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       marker.color.g = 1.0;
       marker.color.b = 0.0;
 
-      teb_marker_pub_->publish( marker );
+      markers.push_back(marker);
     }
   }
 
@@ -249,7 +257,7 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       
       visualization_msgs::msg::Marker marker;
       marker.header.frame_id = cfg_->map_frame;
-      marker.header.stamp = nh_->now();
+      marker.header.stamp = current_time;
       marker.ns = "LineObstacles";
       marker.id = idx++;
       marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
@@ -275,7 +283,7 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       marker.color.g = 1.0;
       marker.color.b = 0.0;
       
-      teb_marker_pub_->publish( marker );
+      markers.push_back(marker);
     }
   }
   
@@ -291,7 +299,7 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       
       visualization_msgs::msg::Marker marker;
       marker.header.frame_id = cfg_->map_frame;
-      marker.header.stamp = nh_->now();
+      marker.header.stamp = current_time;
       marker.ns = "PolyObstacles";
       marker.id = idx++;
       marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
@@ -325,8 +333,16 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       marker.color.g = 0.0;
       marker.color.b = 0.0;
       
-      teb_marker_pub_->publish( marker );
+      markers.push_back(marker);
     }
+  }
+  
+  // 一次性发布所有障碍物 marker，使用 MarkerArray
+  if (!markers.empty())
+  {
+    visualization_msgs::msg::MarkerArray marker_array;
+    marker_array.markers = markers;
+    teb_marker_array_pub_->publish(marker_array);
   }
 }
 
@@ -362,7 +378,7 @@ void TebVisualization::publishViaPoints(const std::vector< Eigen::Vector2d, Eige
   marker.color.g = 0.0;
   marker.color.b = 1.0;
 
-  teb_marker_pub_->publish( marker );
+  // teb_marker_pub_->publish( marker );
 }
 
 void TebVisualization::publishTebContainer(const TebOptPlannerContainer& teb_planner, const std::string& ns)
@@ -520,6 +536,7 @@ nav2_util::CallbackReturn TebVisualization::on_configure()
   local_plan_pub_ = nh_->create_publisher<nav_msgs::msg::Path>("local_plan",1);
   teb_poses_pub_ = nh_->create_publisher<geometry_msgs::msg::PoseArray>("teb_poses", 1);
   teb_marker_pub_ = nh_->create_publisher<visualization_msgs::msg::Marker>("teb_markers", 1);
+  teb_marker_array_pub_ = nh_->create_publisher<visualization_msgs::msg::MarkerArray>("teb_marker_array", 1);
   feedback_pub_ = nh_->create_publisher<teb_msgs::msg::FeedbackMsg>("teb_feedback", 1);
 
   initialized_ = true;
@@ -533,6 +550,7 @@ TebVisualization::on_activate()
   local_plan_pub_->on_activate();
   teb_poses_pub_->on_activate();
   teb_marker_pub_->on_activate();
+  teb_marker_array_pub_->on_activate();
   feedback_pub_->on_activate();
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -544,6 +562,7 @@ TebVisualization::on_deactivate()
   local_plan_pub_->on_deactivate();
   teb_poses_pub_->on_deactivate();
   teb_marker_pub_->on_deactivate();
+  teb_marker_array_pub_->on_deactivate();
   feedback_pub_->on_deactivate();
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -555,6 +574,7 @@ TebVisualization::on_cleanup()
   local_plan_pub_.reset();
   teb_poses_pub_.reset();
   teb_marker_pub_.reset();
+  teb_marker_array_pub_.reset();
   feedback_pub_.reset();
 
   return nav2_util::CallbackReturn::SUCCESS;

@@ -67,6 +67,7 @@
 #include <std_msgs/msg/color_rgba.hpp>
 #include <tf2/transform_datatypes.h>
 #include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 namespace teb_local_planner
 {
@@ -245,6 +246,7 @@ protected:
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr local_plan_pub_; //!< Publisher for the local plan
   rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseArray>::SharedPtr teb_poses_pub_; //!< Publisher for the trajectory pose sequence
   rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::Marker>::SharedPtr teb_marker_pub_; //!< Publisher for visualization markers
+  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr teb_marker_array_pub_; //!< Publisher for visualization marker arrays
   rclcpp_lifecycle::LifecyclePublisher<teb_msgs::msg::FeedbackMsg>::SharedPtr feedback_pub_; //!< Publisher for the feedback message for analysis and debug purposes
   
   const TebConfig* cfg_; //!< Config class that stores and manages all related parameters

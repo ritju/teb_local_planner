@@ -76,6 +76,7 @@
 //#include "teb_local_planner/TebLocalPlannerReconfigureConfig.h>
 //#include <dynamic_reconfigure/server.h>
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/float32.hpp"
 #include "laserline/line_path_compare.hpp"
 #include "capella_ros_msg/msg/lane_center_paths.hpp"
 namespace teb_local_planner
@@ -451,6 +452,7 @@ private:
   // std::shared_ptr<DynamicGoalPub> dynamic_goal_pub_;
   std::shared_ptr<line_path_compare::LinePathCompare> wall_line_ptr_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr wall_line_marker_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr edge_distance_publisher_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr curb_line_subscriber_;
   void curb_line_callback(const nav_msgs::msg::Path::ConstSharedPtr msg);
   std::mutex curb_line_mutex_;
