@@ -235,15 +235,17 @@ protected:
     const double parallel_tolerance,
     const double distance_tolerance,
     const geometry_msgs::msg::PoseStamped& robot_pose);
-  // lane center callback
-  void lane_center_callback(const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr msg);
     /**
-    * @brief Update internal lane_center_points container based on the current reference plan
-    * @remarks All previous lane_center_points will be cleared.
-    * @param lane_center contains pose of lane center
-    */
-  void updateLaneLineVec(const capella_ros_msg::msg::LaneCenterPaths& lane_center, nav_msgs::msg::Path& input_path, 
-                         const double parallel_tolerance, const double distance_tolerance);
+   * @brief Update internal curb_line_points container based on the current reference plan
+   * @remarks All previous curb_line_points will be cleared.
+   * @param wall_line contains direction of wall line
+   */
+  void updateCurbLineVec(
+    const nav_msgs::msg::Path curb_line, 
+    nav_msgs::msg::Path& input_path,
+    const double parallel_tolerance,
+    const double distance_tolerance,
+    const geometry_msgs::msg::PoseStamped& robot_pose);
   
   
   /**
@@ -419,12 +421,10 @@ private:
   costmap_converter_msgs::msg::ObstacleArrayMsg custom_obstacle_msg_; //!< Copy of the most recent obstacle message
 
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr via_points_sub_; //!< Subscriber for custom via-points received via a Path msg.
-  rclcpp::Subscription<capella_ros_msg::msg::LaneCenterPaths>::SharedPtr lane_center_sub_; // Subscriber for lane_center points.
-  std::vector<nav_msgs::msg::Path> lane_center_paths_;
   bool custom_via_points_active_; //!< Keep track whether valid via-points have been received from via_points_sub_
   std::mutex via_point_mutex_; //!< Mutex that locks the via_points container (multi-threaded)
-  std::mutex lane_center_mutex_; //!< Mutex that locks the lane_center container (multi-threaded)
   std::mutex update_wall_line_mutex_; //!< Mutex that locks the wall_line container (multi-threaded)
+  std::mutex update_curb_line_mutex_; //!< Mutex that locks the wall_line container (multi-threaded)
 
   PoseSE2 robot_pose_; //!< Store current robot pose
   PoseSE2 robot_goal_; //!< Store current robot goal
@@ -451,6 +451,10 @@ private:
   // std::shared_ptr<DynamicGoalPub> dynamic_goal_pub_;
   std::shared_ptr<line_path_compare::LinePathCompare> wall_line_ptr_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr wall_line_marker_publisher_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr curb_line_subscriber_;
+  void curb_line_callback(const nav_msgs::msg::Path::ConstSharedPtr msg);
+  std::mutex curb_line_mutex_;
+  nav_msgs::msg::Path curb_line_path_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr transformed_path;
   double cfg_max_angular_vel_, cfg_max_angular_acc_;
   rclcpp::Time wall_line_update_time_;

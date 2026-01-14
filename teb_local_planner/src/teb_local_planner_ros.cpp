@@ -68,6 +68,8 @@ using nav2_util::declare_parameter_if_not_declared;
 
 namespace teb_local_planner
 {
+
+const char* use_curb_or_wall = std::getenv("USE_CURB_OR_WALL");
   
 
 TebLocalPlannerROS::TebLocalPlannerROS() 
@@ -77,7 +79,7 @@ TebLocalPlannerROS::TebLocalPlannerROS()
                                            last_preferred_rotdir_(RotType::none), initialized_(false),
                                            launch_max_vel_x_(0), launch_max_global_plan_lookahead_dist_(0),weight_via_point_(1.0),
                                            cfg_max_angular_vel_(0.6), cfg_max_angular_acc_(0.6), wall_line_update_time_(0),
-                                           min_obstacle_dist_(0.5), lane_center_sub_(nullptr), wall_line_ptr_(nullptr)
+                                           min_obstacle_dist_(0.5), wall_line_ptr_(nullptr), curb_line_subscriber_(nullptr)
 {
 }
 
@@ -187,14 +189,21 @@ void TebLocalPlannerROS::initialize(nav2_util::LifecycleNode::SharedPtr node)
                 "via_points", 
                 rclcpp::SystemDefaultsQoS(),
                 std::bind(&TebLocalPlannerROS::customViaPointsCB, this, std::placeholders::_1));
-    // setup callback for lane center points
+    // setup callback for line center points
     if (cfg_->optim.weight_wall_line_dist > 0.0)
     {
-      lane_center_sub_ = node->create_subscription<capella_ros_msg::msg::LaneCenterPaths>(
-                  "lane_center_paths", 
-                  rclcpp::SystemDefaultsQoS(),
-                  std::bind(&TebLocalPlannerROS::lane_center_callback, this, std::placeholders::_1)); 
-      wall_line_ptr_ = std::make_shared<line_path_compare::LinePathCompare>(node);
+      if (use_curb_or_wall != nullptr && std::strcmp(use_curb_or_wall, "WALL") == 0)
+      {
+        wall_line_ptr_ = std::make_shared<line_path_compare::LinePathCompare>(node);
+      }
+      else if (use_curb_or_wall != nullptr && std::strcmp(use_curb_or_wall, "CURB") == 0)
+      {
+        curb_line_subscriber_ = node->create_subscription<nav_msgs::msg::Path>(
+                "camera1/extracted_line_path", 
+                rclcpp::QoS{5}.best_effort(),
+                std::bind(&TebLocalPlannerROS::curb_line_callback, this, std::placeholders::_1));
+      }
+      
       wall_line_marker_publisher_ = node->create_publisher<visualization_msgs::msg::Marker>("teb_selected_wall_line", 1);
     }
     // initialize failure detector
@@ -323,7 +332,7 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
   }
   else
   {
-    double theta = 120;
+    double theta = cfg_->trajectory.theta_threshold;
     for (size_t i = 2; i < global_plan_.size() - 2 && i < cfg_->trajectory.pose_num_threshold; ++i)
     {
       double x0 = global_plan_.at(i).pose.position.x;
@@ -445,21 +454,31 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
   }
 
   jump_prune_transformed_plan:
-
-  nav_msgs::msg::Path input_path;
-  input_path.poses = (transformed_plan.size() > 40 ? std::vector<geometry_msgs::msg::PoseStamped>(transformed_plan.begin(), transformed_plan.begin() + 40) : transformed_plan);
-  
-  if (transformed_plan.size() > 0)
+  if (use_curb_or_wall != nullptr && std::strcmp(use_curb_or_wall, "WALL") == 0)
   {
-    input_path.header = transformed_plan.at(0).header;
-  }
-  transformed_path->publish(input_path);
-  if (cfg_->optim.weight_wall_line_dist > 0.0)
-  {
+    nav_msgs::msg::Path input_path;
+    input_path.poses = (transformed_plan.size() > 40 ? std::vector<geometry_msgs::msg::PoseStamped>(transformed_plan.begin(), transformed_plan.begin() + 40) : transformed_plan);
+    
+    if (transformed_plan.size() > 0)
+    {
+      input_path.header = transformed_plan.at(0).header;
+    }
+    transformed_path->publish(input_path);
     std::vector<nav_msgs::msg::Path> path_from_wall_line;
     path_from_wall_line = wall_line_ptr_->get_compare_result(input_path);
     updateWallLineVec(path_from_wall_line, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance, robot_pose);
-    // updateWallLineVec(lane_center_paths_, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance, robot_pose);
+  }
+  else if (use_curb_or_wall != nullptr && std::strcmp(use_curb_or_wall, "CURB") == 0)
+  {
+    nav_msgs::msg::Path input_path;
+    input_path.poses = (transformed_plan.size() > 40 ? std::vector<geometry_msgs::msg::PoseStamped>(transformed_plan.begin(), transformed_plan.begin() + 40) : transformed_plan);
+    
+    if (transformed_plan.size() > 0)
+    {
+      input_path.header = transformed_plan.at(0).header;
+    }
+    transformed_path->publish(input_path);
+    updateCurbLineVec(curb_line_path_, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance, robot_pose);
   }
   
   // if (wall_line_points_.size() == 0)
@@ -854,7 +873,7 @@ void TebLocalPlannerROS::updateWallLineVec(
       
       // 检查夹角是否超出±90度范围
       if (std::fabs(angle_diff) > M_PI / 4) {
-        RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 10000, "路径方向与机器人朝向夹角超出±90度范围: %.2f度", angle_diff * 180 / M_PI);
+        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "路径方向与机器人朝向夹角超出±%.2f度范围: %.2f度", std::fabs(angle_diff) > M_PI / 4, angle_diff * 180 / M_PI);
         cfg_->optim.weight_wall_line_direction = 0;
         cfg_->optim.weight_wall_line_dist = 0;
         cfg_->robot.acc_lim_theta = cfg_max_angular_acc_;
@@ -874,7 +893,6 @@ void TebLocalPlannerROS::updateWallLineVec(
     cfg_->robot.acc_lim_theta = cfg_max_angular_acc_;
     cfg_->robot.max_vel_theta = cfg_max_angular_vel_;
     cfg_->optim.weight_viapoint = weight_via_point_;
-    // cfg_->obstacles.min_obstacle_dist = min_obstacle_dist_;
     if(wall_line_points_.size() > 0) wall_line_points_.clear();
     return;
   }  
@@ -898,7 +916,6 @@ void TebLocalPlannerROS::updateWallLineVec(
         cfg_->robot.acc_lim_theta = cfg_max_angular_acc_;
         cfg_->robot.max_vel_theta = cfg_max_angular_vel_;
         cfg_->optim.weight_viapoint = weight_via_point_;
-        // cfg_->obstacles.min_obstacle_dist = min_obstacle_dist_;
         wall_line_points_.clear();
       }
     }
@@ -916,7 +933,7 @@ void TebLocalPlannerROS::updateWallLineVec(
   for(const auto& wall_path : wall_line) 
   {
     if(wall_path.poses.size() < 2) continue; // 无效墙线
-    // RCLCPP_INFO(logger_, "Wall_path.poses.size(): %ld !", wall_path.poses.size());
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Wall_path.poses.size(): %ld !", wall_path.poses.size());
     
     // 4. 提取墙线端点
     const auto& wall_start = wall_path.poses.front().pose.position;
@@ -927,7 +944,7 @@ void TebLocalPlannerROS::updateWallLineVec(
     const double dy_wall = wall_end.y - wall_start.y;
     const double wall_length = std::hypot(dx_wall, dy_wall);
     if(wall_length < 1e-6) continue; // 无效墙线
-    // RCLCPP_INFO(logger_, "Wall_length: %f !", wall_length);
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Wall_length: %f !", wall_length);
     
     const double dir_wall_x = dx_wall / wall_length;
     const double dir_wall_y = dy_wall / wall_length;
@@ -938,7 +955,7 @@ void TebLocalPlannerROS::updateWallLineVec(
     const double parallel_threshold = std::cos(parallel_tolerance / 180 * M_PI);
     
     // 检查平行度是否满足要求
-    if(cos_theta < parallel_threshold) continue;
+    if(cos_theta > parallel_threshold) continue;
     
     // 计算垂直距离
     const double A = dy_wall;
@@ -949,7 +966,7 @@ void TebLocalPlannerROS::updateWallLineVec(
     const double denominator = std::hypot(A, B);
     const double avg_distance = numerator / denominator;
     
-    RCLCPP_DEBUG(logger_, "Wall path - Parallelism: %f, Distance: %f", cos_theta, avg_distance);
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Wall path - Parallelism: %f, Distance: %f", cos_theta, avg_distance);
     
     // 记录满足平行度且距离最小的墙线
     if (avg_distance <= distance_tolerance && avg_distance < min_distance) 
@@ -976,7 +993,7 @@ void TebLocalPlannerROS::updateWallLineVec(
     cfg_->optim.weight_viapoint = 1.0;
     wall_line_update_time_ = clock_->now();
     
-    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 10000, "Selected best wall line - Distance: %f", min_distance);
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Selected best wall line - Distance: %f", min_distance);
     
     // 发布可视化标记
     visualization_msgs::msg::Marker marker_msg;
@@ -1009,7 +1026,7 @@ void TebLocalPlannerROS::updateWallLineVec(
   }
   else 
   {
-    RCLCPP_DEBUG(logger_, "No valid wall line found, clearing configuration");
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "No valid wall line found, clearing configuration");
     // 6. 如果没有找到合适的墙线，检查是否需要清除现有配置
     if(wall_line_points_.size() > 0)
     {
@@ -1023,6 +1040,259 @@ void TebLocalPlannerROS::updateWallLineVec(
         cfg_->optim.weight_viapoint = weight_via_point_;
         wall_line_points_.clear();
       }
+    }
+  }
+}
+
+void TebLocalPlannerROS::updateCurbLineVec(
+  const nav_msgs::msg::Path curb_line, 
+  nav_msgs::msg::Path& input_path,
+  const double parallel_tolerance,
+  const double distance_tolerance,
+  const geometry_msgs::msg::PoseStamped& robot_pose)
+{
+  std::lock_guard<std::mutex> l(update_curb_line_mutex_);
+  if (input_path.poses.size() >= 2) {
+    // 提取机器人当前朝向（从四元数转换为偏航角）
+    double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
+    
+    // 提取输入路径的首尾点
+    const auto& start_pose = input_path.poses.front().pose.position;
+    const auto& end_pose = input_path.poses.back().pose.position;
+    
+    // 计算路径方向向量（从起点指向终点）
+    const double dx_path = end_pose.x - start_pose.x;
+    const double dy_path = end_pose.y - start_pose.y;
+    const double path_length = std::hypot(dx_path, dy_path);
+    
+    if (path_length > 1e-6) {
+      // 计算路径方向角度（相对于世界坐标系）
+      const double path_yaw = std::atan2(dy_path, dx_path);
+      
+      // 计算机器人朝向与路径方向的夹角
+      double angle_diff = path_yaw - robot_yaw;
+      
+      // 归一化角度到[-π, π]范围
+      while (angle_diff > M_PI) angle_diff -= 2 * M_PI;
+      while (angle_diff < -M_PI) angle_diff += 2 * M_PI;
+      
+      // 检查夹角是否超出±90度范围
+      if (std::fabs(angle_diff) > M_PI / 4) {
+        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "路径方向与机器人朝向夹角超出±%.2f度范围: %.2f度", std::fabs(angle_diff) > M_PI / 4, angle_diff * 180 / M_PI);
+        if(wall_line_points_.size() > 0) wall_line_points_.clear();
+        return;
+      }
+    }
+  }
+
+
+  if (curb_line.poses.size() == 0 || input_path.poses.size() < 2)
+  {
+    if(wall_line_points_.size() > 0) wall_line_points_.clear();
+    return;
+  }  
+  // 1. 提取输入路径的首尾点
+  const auto& start_pose = input_path.poses.front().pose.position;
+  const auto& end_pose = input_path.poses.back().pose.position;
+  
+  // 2. 计算输入路径方向向量
+  const double dx_input = end_pose.x - start_pose.x;
+  const double dy_input = end_pose.y - start_pose.y;
+  const double input_length = std::hypot(dx_input, dy_input);
+  if (input_length < 1e-6)
+  {
+    if(wall_line_points_.size() > 0)
+    {
+      auto time_diff  = clock_->now() - wall_line_update_time_;
+      if (time_diff.seconds() > 1.0)
+      {
+        wall_line_points_.clear();
+      }
+    }
+    return;
+  }  
+  
+  const double dir_input_x = dx_input / input_length;
+  const double dir_input_y = dy_input / input_length;
+
+  // 3. 遍历所有墙线
+  bool found_valid_wall = false;
+  double min_distance = std::numeric_limits<double>::max();
+  nav_msgs::msg::Path best_wall_path;
+  geometry_msgs::msg::Point best_wall_start, best_wall_end;
+  if(curb_line.poses.size() == 2)
+  {
+    // 4. 提取墙线端点
+    const auto& wall_start = curb_line.poses.front().pose.position;
+    const auto& wall_end = curb_line.poses.back().pose.position;
+    
+    // 5. 计算墙线方向向量
+    const double dx_wall = wall_end.x - wall_start.x;
+    const double dy_wall = wall_end.y - wall_start.y;
+    const double wall_length = std::hypot(dx_wall, dy_wall);
+    if(wall_length > 1e-6)
+    {
+      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Wall_length: %f !", wall_length);
+      const double dir_wall_x = dx_wall / wall_length;
+      const double dir_wall_y = dy_wall / wall_length;
+      
+      // 计算平行度（余弦值）
+      const double dot_product = dir_input_x * dir_wall_x + dir_input_y * dir_wall_y;
+      const double cos_theta = std::fabs(dot_product);
+      const double parallel_threshold = std::abs(std::cos(parallel_tolerance / 180 * M_PI));
+      if (cos_theta <= 1.0)
+      {
+        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "马路边沿与路径夹角: %f !", std::acos(cos_theta) / M_PI * 180);
+      }
+      // 检查平行度是否满足要求
+      if(cos_theta > parallel_threshold)
+      {
+        // 计算垂直距离
+        const double A = dy_wall;
+        const double B = -dx_wall;
+        const double C = wall_end.x * wall_start.y - wall_start.x * wall_end.y;
+        
+        const double numerator = std::fabs(A * start_pose.x + B * start_pose.y + C);
+        const double denominator = std::hypot(A, B);
+        const double avg_distance = numerator / denominator;
+        
+        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Wall path - Parallelism: %f, Distance: %f", cos_theta, avg_distance);
+        
+        // 记录满足平行度且距离最小的墙线
+        if (avg_distance <= distance_tolerance && avg_distance < min_distance) 
+        {
+          found_valid_wall = true;
+          min_distance = avg_distance;
+          best_wall_path = curb_line;
+          best_wall_start = wall_start;
+          best_wall_end = wall_end;
+        }
+      }
+    }
+  }
+  
+  // 5. 如果找到最佳匹配的墙线，更新配置
+  if (found_valid_wall) 
+  {
+    if(wall_line_points_.size() > 0) wall_line_points_.clear();
+    wall_line_points_.emplace_back(Eigen::Vector2d(best_wall_start.x, best_wall_start.y));
+    wall_line_points_.emplace_back(Eigen::Vector2d(best_wall_end.x, best_wall_end.y));
+    if (cfg_->wall_line.min_wall_dist > 1e-5){
+      cfg_->optim.weight_wall_line_dist = std::min(5.0, std::max(1.0, std::fabs((weight_wall_line_dist_ - 1.0) / (cfg_->wall_line.distance_tolerance - cfg_->wall_line.min_wall_dist) * (min_distance - cfg_->wall_line.min_wall_dist) + 1.0)));
+    }
+    cfg_->robot.acc_lim_theta = cfg_->wall_line.edge_acc_lim_theta;
+    cfg_->robot.max_vel_theta = cfg_->wall_line.edge_max_vel_theta;
+    wall_line_update_time_ = clock_->now();
+    
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Selected best wall line - Distance: %f", min_distance);
+    
+    // 发布可视化标记
+    visualization_msgs::msg::Marker marker_msg;
+    marker_msg.ns = "teb_local_planner";
+    marker_msg.id = 0;
+    marker_msg.type = visualization_msgs::msg::Marker::LINE_LIST;
+    marker_msg.action = visualization_msgs::msg::Marker::ADD;
+    marker_msg.scale.x = 0.1;
+    marker_msg.color.r = 1.0;
+    marker_msg.color.g = 1.0;
+    marker_msg.color.b = 0.0;
+    marker_msg.color.a = 1.0;
+    
+    geometry_msgs::msg::Point start_point, end_point;
+    start_point.x = best_wall_start.x;
+    start_point.y = best_wall_start.y;
+    start_point.z = 0.0;
+    
+    end_point.x = best_wall_end.x;
+    end_point.y = best_wall_end.y;
+    end_point.z = 0.0;
+    
+    marker_msg.points.push_back(start_point);
+    marker_msg.points.push_back(end_point);
+    
+    marker_msg.header.stamp = clock_->now();
+    marker_msg.header.frame_id = input_path.header.frame_id;
+    
+    wall_line_marker_publisher_->publish(marker_msg);
+  }
+  else 
+  {
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "No valid wall line found, clearing configuration");
+    // 6. 如果没有找到合适的墙线，检查是否需要清除现有配置
+    if(wall_line_points_.size() > 0)
+    {
+      auto time_diff = clock_->now() - wall_line_update_time_;
+      if (time_diff.seconds() > 1.0)
+      {
+        wall_line_points_.clear();
+      }
+    }
+  }
+}
+
+
+void TebLocalPlannerROS::curb_line_callback(const nav_msgs::msg::Path::ConstSharedPtr msg)
+{
+  std::lock_guard<std::mutex> l(curb_line_mutex_);
+
+  curb_line_path_.poses.clear();
+  if (msg->poses.size() == 0) {return;}
+  // 获取当前时间戳
+  rclcpp::Time current_time = clock_->now();
+
+  if (msg->poses.size() > 1)
+  {
+    try {
+      // 转换路径的起点和终点到map坐标系
+      geometry_msgs::msg::PoseStamped start_pose_transformed;
+      geometry_msgs::msg::PoseStamped end_pose_transformed;
+      
+      // 转换起点
+      if (msg->header.frame_id != "map") {
+        geometry_msgs::msg::TransformStamped transform_start = tf_->lookupTransform(
+          "map", 
+          msg->header.frame_id,
+          tf2::TimePointZero);
+        tf2::doTransform(msg->poses.front(), start_pose_transformed, transform_start);
+      } else {
+        start_pose_transformed = msg->poses.front();
+      }
+      
+      // 转换终点
+      if (msg->header.frame_id != "map") {
+        geometry_msgs::msg::TransformStamped transform_end = tf_->lookupTransform(
+          "map", 
+          msg->header.frame_id,
+          tf2::TimePointZero);
+        tf2::doTransform(msg->poses.back(), end_pose_transformed, transform_end);
+      } else {
+        end_pose_transformed = msg->poses.back();
+      }
+      
+      // 更新转换后的位姿的时间戳和坐标系
+      start_pose_transformed.header.stamp = current_time;
+      start_pose_transformed.header.frame_id = "map";
+      end_pose_transformed.header.stamp = current_time;
+      end_pose_transformed.header.frame_id = "map";
+      
+      // 添加到路径中
+      curb_line_path_.poses.emplace_back(start_pose_transformed);
+      curb_line_path_.poses.emplace_back(end_pose_transformed);
+    }
+    catch (tf2::TransformException &ex) {
+      RCLCPP_WARN(logger_, 
+                  "坐标变换失败: %s, 使用原始坐标但frame_id设为map", ex.what());
+      
+      // 变换失败时的备选方案
+      geometry_msgs::msg::PoseStamped fallback_start = msg->poses.front();
+      geometry_msgs::msg::PoseStamped fallback_end = msg->poses.back();
+      fallback_start.header.frame_id = "map";
+      fallback_end.header.frame_id = "map";
+      fallback_start.header.stamp = current_time;
+      fallback_end.header.stamp = current_time;
+      
+      curb_line_path_.poses.emplace_back(fallback_start);
+      curb_line_path_.poses.emplace_back(fallback_end);
     }
   }
 }
@@ -1589,98 +1859,6 @@ void TebLocalPlannerROS::customViaPointsCB(const nav_msgs::msg::Path::ConstShare
     via_points_.emplace_back(pose.pose.position.x, pose.pose.position.y);
   }
   custom_via_points_active_ = !via_points_.empty();
-}
-
-void TebLocalPlannerROS::lane_center_callback(const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr msg)
-{
-  std::lock_guard<std::mutex> l(lane_center_mutex_);
-
-  lane_center_paths_.clear();
-  if (msg->paths.size() == 0) {return;}
-  // 获取当前时间戳
-  rclcpp::Time current_time = clock_->now();
-
-  for (const auto& path : msg->paths)
-  {
-    if (path.poses.size() > 1)
-    {
-      nav_msgs::msg::Path single_path;
-      single_path.header.stamp = current_time;
-      single_path.header.frame_id = "map"; // 目标坐标系设为map
-
-      try {
-        // 转换路径的起点和终点到map坐标系
-        geometry_msgs::msg::PoseStamped start_pose_transformed;
-        geometry_msgs::msg::PoseStamped end_pose_transformed;
-        
-        // 转换起点
-        if (path.poses.front().header.frame_id != "map") {
-          geometry_msgs::msg::TransformStamped transform_start = tf_->lookupTransform(
-            "map", 
-            path.poses.front().header.frame_id,
-            tf2::TimePointZero);
-          tf2::doTransform(path.poses.front(), start_pose_transformed, transform_start);
-        } else {
-          start_pose_transformed = path.poses.front();
-        }
-        
-        // 转换终点
-        if (path.poses.back().header.frame_id != "map") {
-          geometry_msgs::msg::TransformStamped transform_end = tf_->lookupTransform(
-            "map", 
-            path.poses.back().header.frame_id,
-            tf2::TimePointZero);
-          tf2::doTransform(path.poses.back(), end_pose_transformed, transform_end);
-        } else {
-          end_pose_transformed = path.poses.back();
-        }
-        
-        // 更新转换后的位姿的时间戳和坐标系
-        start_pose_transformed.header.stamp = current_time;
-        start_pose_transformed.header.frame_id = "map";
-        end_pose_transformed.header.stamp = current_time;
-        end_pose_transformed.header.frame_id = "map";
-        
-        // 添加到路径中
-        single_path.poses.emplace_back(start_pose_transformed);
-        single_path.poses.emplace_back(end_pose_transformed);
-        
-        lane_center_paths_.emplace_back(single_path);
-      }
-      catch (tf2::TransformException &ex) {
-        RCLCPP_WARN(logger_, 
-                    "坐标变换失败: %s, 使用原始坐标但frame_id设为map", ex.what());
-        
-        // 变换失败时的备选方案
-        geometry_msgs::msg::PoseStamped fallback_start = path.poses.front();
-        geometry_msgs::msg::PoseStamped fallback_end = path.poses.back();
-        fallback_start.header.frame_id = "map";
-        fallback_end.header.frame_id = "map";
-        fallback_start.header.stamp = current_time;
-        fallback_end.header.stamp = current_time;
-        
-        single_path.poses.emplace_back(fallback_start);
-        single_path.poses.emplace_back(fallback_end);
-        lane_center_paths_.emplace_back(single_path);
-      }
-    }
-  }
-
-  RCLCPP_DEBUG(logger_, 
-               "成功转换 %zu 条车道中心线到map坐标系", 
-               lane_center_paths_.size());
-
-  // for (const auto& path : msg->paths)
-  // {
-  //   if (path.poses.size() > 1)
-  //   {
-  //     nav_msgs::msg::Path single_path;
-  //     single_path.header = path.header;
-  //     single_path.poses.emplace_back(path.poses.front());
-  //     single_path.poses.emplace_back(path.poses.back());
-  //     lane_center_paths_.emplace_back(single_path);
-  //   }
-  // }
 }
 
 // void TebLocalPlannerROS::rotation_sigh_callback(const std_msgs::msg::Bool &msg)
