@@ -458,6 +458,7 @@ private:
   std::mutex curb_line_mutex_;
   nav_msgs::msg::Path curb_line_path_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr transformed_path;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_plan_pub_;
   double cfg_max_angular_vel_, cfg_max_angular_acc_;
   rclcpp::Time wall_line_update_time_;
 protected:

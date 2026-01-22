@@ -41,6 +41,7 @@
 //#include <tf_conversions/tf_eigen.h>
 #include <boost/algorithm/string.hpp>
 
+#include <nav2_costmap_2d/cost_values.hpp>
 #include <string>
 
 // pluginlib macros
@@ -71,7 +72,7 @@ using nav2_util::declare_parameter_if_not_declared;
 namespace teb_local_planner
 {
 
-const char* use_curb_or_wall = std::getenv("USE_CURB_OR_WALL");
+  const char* use_curb_or_wall = std::getenv("USE_CURB_OR_WALL");
   
 
 TebLocalPlannerROS::TebLocalPlannerROS() 
@@ -226,6 +227,7 @@ void TebLocalPlannerROS::initialize(nav2_util::LifecycleNode::SharedPtr node)
     RCLCPP_DEBUG(logger_, "teb_local_planner plugin initialized.");
     
     transformed_path = node->create_publisher<nav_msgs::msg::Path>("teb_transformed_path", 1);
+    global_plan_pub_ = node->create_publisher<nav_msgs::msg::Path>("teb_global_plan", 1);
   }
   else
   {
@@ -327,15 +329,25 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
   pruneGlobalPlan(robot_pose, global_plan_, cfg_->trajectory.global_plan_prune_distance);
   // pruneGlobalPlan(robot_pose, origin_plan_, 3);
   geometry_msgs::msg::PoseStamped corner_pose_global, corner_pose_robot;
+  bool corner_found = false;
+  size_t corner_index = 0;  // Index of corner in global_plan_
+  
   if (global_plan_.size() < 30)
   {
     cfg_->trajectory.max_global_plan_lookahead_dist = launch_max_global_plan_lookahead_dist_;
     cfg_->robot.max_vel_x = launch_max_vel_x_;
+    // Initialize corner poses to avoid using uninitialized variables
+    corner_pose_global = robot_pose;
+    corner_pose_robot = robot_pose;
     // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! Set succed !", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
   }
   else
   {
     double theta = cfg_->trajectory.theta_threshold;
+    const double min_segment_length = 1e-6;  // Minimum segment length to avoid division by zero
+    const double position_tolerance = 0.01;  // Tolerance for position comparison
+    
+    // Find the nearest corner point that satisfies the condition
     for (size_t i = 2; i < global_plan_.size() - 2 && i < cfg_->trajectory.pose_num_threshold; ++i)
     {
       double x0 = global_plan_.at(i).pose.position.x;
@@ -345,64 +357,186 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
       double x2 = global_plan_.at(i + 2).pose.position.x;
       double y2 = global_plan_.at(i + 2).pose.position.y;
 
-      double dot = (x1 - x0) * (x2 - x0) + (y1 - y0) * (y2 - y0);
-      double lenth_1 = std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
-      double lenth_2 = std::sqrt((x2 - x0) * (x2 - x0) + (y2 - y0) * (y2 - y0));
-      double temp_theta = std::acos(dot / (lenth_1 * lenth_2)) * 180 / M_PI;
-      if (temp_theta < theta && global_plan_.at(i).pose != last_corner_pose_.pose)
+      // Calculate triangle side lengths for geometric cosine theorem
+      // Three points form a triangle: x1 -> x0 -> x2
+      // Calculate the angle at x0 using cosine theorem: cos(θ) = (a² + b² - c²) / (2ab)
+      double dx_a = x0 - x1;  // Side a: from x1 to x0
+      double dy_a = y0 - y1;
+      double dx_b = x2 - x0;  // Side b: from x0 to x2
+      double dy_b = y2 - y0;
+      double dx_c = x2 - x1;  // Side c: from x1 to x2 (opposite to angle at x0)
+      double dy_c = y2 - y1;
+      
+      double length_a = std::sqrt(dx_a * dx_a + dy_a * dy_a);  // |x1 - x0|
+      double length_b = std::sqrt(dx_b * dx_b + dy_b * dy_b);  // |x0 - x2|
+      double length_c = std::sqrt(dx_c * dx_c + dy_c * dy_c);  // |x1 - x2|
+      
+      // Check for zero-length segments to avoid division by zero
+      if (length_a < min_segment_length || length_b < min_segment_length)
       {
-        theta = temp_theta; 
+        continue;
+      }
+      
+      // Geometric cosine theorem: cos(θ) = (a² + b² - c²) / (2ab)
+      // The result is naturally constrained to [0, 180] degrees
+      double a_sq = length_a * length_a;
+      double b_sq = length_b * length_b;
+      double c_sq = length_c * length_c;
+      double cos_theta = (a_sq + b_sq - c_sq) / (2.0 * length_a * length_b);
+      
+      // Clamp cos_theta to valid range [-1, 1] to avoid NaN from acos due to numerical errors
+      cos_theta = std::max(-1.0, std::min(1.0, cos_theta));
+      
+      // Calculate the turning angle using arccosine (0-180 degrees)
+      // For sharp corners, we want small angles (acute)
+      double temp_theta = std::acos(cos_theta) * 180.0 / M_PI;      
+      // Check if this point is different from last_corner_pose_ (using distance tolerance)
+      bool is_different_from_last = true;
+      if (last_corner_pose_.header.frame_id == global_plan_.at(0).header.frame_id)
+      {
+        double dx = global_plan_.at(i).pose.position.x - last_corner_pose_.pose.position.x;
+        double dy = global_plan_.at(i).pose.position.y - last_corner_pose_.pose.position.y;
+        double dist_sq = dx * dx + dy * dy;
+        if (dist_sq < position_tolerance * position_tolerance)
+        {
+          is_different_from_last = false;
+        }
+      }
+      
+      if (temp_theta < theta && is_different_from_last)
+      {
+        theta = temp_theta;
         corner_pose_global = global_plan_.at(i);
-        break;
+        corner_index = i;
+        corner_found = true;
+        break;  // Find the nearest corner that satisfies the condition
       }
     }
-    corner_pose_global.header.stamp = clock_->now();
-    corner_pose_global.header.frame_id = global_plan_.at(0).header.frame_id;
-    try 
+    
+    if (corner_found)
     {
-      geometry_msgs::msg::TransformStamped transform = tf_->lookupTransform(corner_pose_global.header.frame_id , costmap_ros_->getBaseFrameID(), tf2::TimePointZero);
-      corner_pose_global.header.stamp = transform.header.stamp;
-    } 
-    catch (tf2::TransformException &ex) 
-    {
+      corner_pose_global.header.frame_id = global_plan_.at(0).header.frame_id;
+      // Use TimePointZero to get the latest available transform, avoiding extrapolation errors
+      try 
+      {
+        geometry_msgs::msg::TransformStamped transform = tf_->lookupTransform(
+          corner_pose_global.header.frame_id, 
+          costmap_ros_->getBaseFrameID(), 
+          tf2::TimePointZero,
+          tf2::durationFromSec(0.5));
+        corner_pose_global.header.stamp = transform.header.stamp;
+      } 
+      catch (const tf2::ExtrapolationException& ex) 
+      {
+        // If TimePointZero fails with extrapolation, try to get latest common time
+        try {
+          rclcpp::Time latest_time;
+          if (tf_->canTransform(corner_pose_global.header.frame_id, costmap_ros_->getBaseFrameID(), tf2::TimePointZero)) {
+            geometry_msgs::msg::TransformStamped transform = tf_->lookupTransform(
+              corner_pose_global.header.frame_id, 
+              costmap_ros_->getBaseFrameID(), 
+              tf2::TimePointZero);
+            corner_pose_global.header.stamp = transform.header.stamp;
+          } else {
+            RCLCPP_WARN(logger_, "TF 查询失败 (ExtrapolationException): %s, 尝试使用最新可用时间", ex.what());
+            corner_found = false;
+          }
+        } catch (const tf2::TransformException& ex2) {
+          RCLCPP_ERROR(logger_, "TF 查询失败: %s", ex2.what());
+          corner_found = false;
+        }
+      }
+      catch (const tf2::TransformException &ex) 
+      {
         RCLCPP_ERROR(logger_, "TF 查询失败: %s", ex.what());
-    }
-    nav2_util::transformPoseInTargetFrame(corner_pose_global, corner_pose_robot, *tf_, costmap_ros_->getBaseFrameID());
-    if (theta < cfg_->trajectory.theta_threshold && corner_pose_robot.pose.position.x > 0)
-    {
-      cfg_->trajectory.max_global_plan_lookahead_dist = cfg_->trajectory.min_global_plan_lookahead_dist_threshold;
-      cfg_->robot.max_vel_x = cfg_->trajectory.min_vel_x_threshold;
-      // RCLCPP_INFO(logger_, "Theta: %f! Set theta succed !", theta);
-      // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! In small theta!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
-      //设置 max_global_plan_lookahead_dist、max_vel_x 为较小值
+        corner_found = false;  // Mark corner as invalid if TF fails
+      }
+      
+      if (corner_found)
+      {
+        // transformPoseInTargetFrame uses TimePointZero internally, which should be safe
+        if (nav2_util::transformPoseInTargetFrame(corner_pose_global, corner_pose_robot, *tf_, costmap_ros_->getBaseFrameID()))
+        {
+          if (theta < cfg_->trajectory.theta_threshold && corner_pose_robot.pose.position.x > 0)
+          {
+            cfg_->trajectory.max_global_plan_lookahead_dist = cfg_->trajectory.min_global_plan_lookahead_dist_threshold;
+            cfg_->robot.max_vel_x = cfg_->trajectory.min_vel_x_threshold;
+            // RCLCPP_INFO(logger_, "Theta: %f! Set theta succed !", theta);
+            // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! In small theta!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
+            //设置 max_global_plan_lookahead_dist、max_vel_x 为较小值
+          }
+          else
+          {
+            cfg_->trajectory.max_global_plan_lookahead_dist = launch_max_global_plan_lookahead_dist_;
+            cfg_->robot.max_vel_x = launch_max_vel_x_;
+            // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! In big theta!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
+          }
+        }
+        else
+        {
+          corner_found = false;  // Mark corner as invalid if transform fails
+          cfg_->trajectory.max_global_plan_lookahead_dist = launch_max_global_plan_lookahead_dist_;
+          cfg_->robot.max_vel_x = launch_max_vel_x_;
+        }
+      }
     }
     else
     {
+      // No corner found, initialize corner poses
+      corner_pose_global = robot_pose;
+      corner_pose_robot = robot_pose;
       cfg_->trajectory.max_global_plan_lookahead_dist = launch_max_global_plan_lookahead_dist_;
       cfg_->robot.max_vel_x = launch_max_vel_x_;
-      // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! In big theta!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
     }
   }
+  
   // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
-  double corner_pose_dist = corner_pose_robot.pose.position.x * corner_pose_robot.pose.position.x + 
-         corner_pose_robot.pose.position.y * corner_pose_robot.pose.position.y;
-  if (corner_pose_robot.pose.position.x > 0 && corner_pose_robot.pose.position.x < 0.3 && corner_pose_dist < 0.25)
+  
+  // Record corner pose if it's close enough
+  if (corner_found)
   {
-    last_corner_pose_ = corner_pose_global;
-  }
-
-  for (auto prune_before_last_corner = global_plan_.begin(); prune_before_last_corner != global_plan_.end() && prune_before_last_corner != global_plan_.begin() + 30; ++prune_before_last_corner)
-  {
-    if (prune_before_last_corner->pose.position == last_corner_pose_.pose.position)
+    double corner_pose_dist = corner_pose_robot.pose.position.x * corner_pose_robot.pose.position.x + 
+           corner_pose_robot.pose.position.y * corner_pose_robot.pose.position.y;
+    if (corner_pose_robot.pose.position.x > 0 && corner_pose_robot.pose.position.x < 0.3 && corner_pose_dist < 0.25)
     {
-      if (global_plan_.end() - prune_before_last_corner > 10)
-      {
-        global_plan_.erase(global_plan_.begin(), prune_before_last_corner);
-      }
-      break;
+      last_corner_pose_ = corner_pose_global;
     }
   }
 
+  // Prune path before last corner using distance tolerance
+  if (last_corner_pose_.header.frame_id == global_plan_.at(0).header.frame_id)
+  {
+    const double prune_position_tolerance = 0.05;  // Tolerance for finding corner in path
+    for (auto prune_before_last_corner = global_plan_.begin(); 
+         prune_before_last_corner != global_plan_.end() && 
+         prune_before_last_corner != global_plan_.begin() + 40; 
+         ++prune_before_last_corner)
+    {
+      double dx = prune_before_last_corner->pose.position.x - last_corner_pose_.pose.position.x;
+      double dy = prune_before_last_corner->pose.position.y - last_corner_pose_.pose.position.y;
+      double dist_sq = dx * dx + dy * dy;
+      
+      if (dist_sq < prune_position_tolerance * prune_position_tolerance)
+      {
+        if (global_plan_.end() - prune_before_last_corner > 10)
+        {
+          global_plan_.erase(global_plan_.begin(), prune_before_last_corner);
+        }
+        break;
+      }
+    }
+  }
+
+
+  // Publish global_plan_ for visualization/debugging
+  if (global_plan_pub_ && !global_plan_.empty())
+  {
+    nav_msgs::msg::Path global_plan_msg;
+    global_plan_msg.header.stamp = clock_->now();
+    global_plan_msg.header.frame_id = global_plan_.front().header.frame_id;
+    global_plan_msg.poses = global_plan_;
+    global_plan_pub_->publish(global_plan_msg);
+  }
 
   // Transform global plan to the frame of interest (w.r.t. the local costmap)
   std::vector<geometry_msgs::msg::PoseStamped> transformed_plan;
@@ -415,38 +549,82 @@ geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(con
       std::string("Could not transform the global plan to the frame of the controller")
     );
   }
-
-  if (corner_pose_robot.pose.position.x < 1.5 && corner_pose_robot.pose.position.x > 0.3)
+  // Check if corner has obstacle and prune path before corner if needed
+  if (corner_found && corner_pose_robot.pose.position.x < cfg_->trajectory.max_global_plan_lookahead_dist && corner_pose_robot.pose.position.x > 0.3)
   {
     geometry_msgs::msg::PoseStamped local_corner_check_pose2d;
     tf2::doTransform(corner_pose_global, local_corner_check_pose2d, tf_plan_to_global);
+    
+    // Get robot pose in local costmap frame (from transformed_plan, which starts with robot pose)
+    geometry_msgs::msg::Pose2D robot_pose_local;
+    if (!transformed_plan.empty())
+    {
+      robot_pose_local.x = transformed_plan.front().pose.position.x;
+      robot_pose_local.y = transformed_plan.front().pose.position.y;
+      robot_pose_local.theta = tf2::getYaw(transformed_plan.front().pose.orientation);
+    }
+    else
+    {
+      // Fallback: robot is at origin in local costmap frame
+      robot_pose_local.x = 0.0;
+      robot_pose_local.y = 0.0;
+      robot_pose_local.theta = 0.0;
+    }
+    
+    // Calculate direction from robot to corner
+    double dx = local_corner_check_pose2d.pose.position.x - robot_pose_local.x;
+    double dy = local_corner_check_pose2d.pose.position.y - robot_pose_local.y;
+    double direction_to_corner = std::atan2(dy, dx);
+    
     geometry_msgs::msg::Pose2D corner_check_pose2d;
     corner_check_pose2d.x = local_corner_check_pose2d.pose.position.x;
     corner_check_pose2d.y = local_corner_check_pose2d.pose.position.y;
-    corner_check_pose2d.theta = tf2::getYaw(local_corner_check_pose2d.pose.orientation);
+    corner_check_pose2d.theta = direction_to_corner;  // Use direction from robot to corner
+    
+    bool corner_has_obstacle = false;
     try
     {
-      double corner_check_cost =  costmap_model_->scorePose(corner_check_pose2d, dwb_critics::getOrientedFootprint(corner_check_pose2d, footprint_spec_));
-      if (corner_check_cost > nav2_costmap_2d::FREE_SPACE)
+      unsigned char corner_check_cost = costmap_model_->scorePose(corner_check_pose2d, dwb_critics::getOrientedFootprint(corner_check_pose2d, footprint_spec_));
+      if (corner_check_cost == nav2_costmap_2d::LETHAL_OBSTACLE)
       {
-        goto jump_prune_transformed_plan;
+        corner_has_obstacle = true;
       }
     }
     catch(const dwb_core::IllegalTrajectoryException& e)
     {
-        if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
-        {
-          goto jump_prune_transformed_plan;
-        }
+      if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
+      {
+        corner_has_obstacle = true;
+      }
     }
     
-    for (auto check_it = transformed_plan.begin(); check_it != transformed_plan.end() && check_it != transformed_plan.begin() + 80; ++check_it)
+    // If corner has obstacle, delete all path points before the corner in global_plan_
+    if (corner_has_obstacle)
     {
-      if (check_it->pose.position == local_corner_check_pose2d.pose.position)
+      if (corner_index > 0 && corner_index < global_plan_.size() && corner_pose_robot.pose.position.x < std::max(cfg_->trajectory.max_global_plan_lookahead_dist / 2.0, 2.0))
+      {
+        // Erase all points before the corner (keep the corner point itself)
+        global_plan_.erase(global_plan_.begin(), global_plan_.begin() + corner_index);
+      }
+      goto jump_prune_transformed_plan;
+    }
+    
+    // If no obstacle, find corner in transformed_plan and prune after corner if needed
+    const double corner_position_tolerance = 0.05;  // Tolerance for finding corner in transformed plan
+    for (auto check_it = transformed_plan.begin(); 
+         check_it != transformed_plan.end() && check_it != transformed_plan.begin() + 80; 
+         ++check_it)
+    {
+      double dx = check_it->pose.position.x - local_corner_check_pose2d.pose.position.x;
+      double dy = check_it->pose.position.y - local_corner_check_pose2d.pose.position.y;
+      double dist_sq = dx * dx + dy * dy;
+      
+      if (dist_sq < corner_position_tolerance * corner_position_tolerance)
       {
         auto front_differance = check_it - transformed_plan.begin();
         auto end_differance = transformed_plan.end() - check_it;
-        if (front_differance > 5 && end_differance > 5)
+        // Use a reasonable threshold (10 points) instead of cfg_->max_samples which may not exist
+        if (front_differance > cfg_->trajectory.min_samples && end_differance > cfg_->trajectory.min_samples)
         {
           transformed_plan.erase(check_it, transformed_plan.end());
         }
@@ -748,16 +926,23 @@ void TebLocalPlannerROS::updateObstacleContainerWithCustomObstacles()
     Eigen::Affine3d obstacle_to_map_eig;
     try 
     {
+      // Use TimePointZero to get the latest available transform, avoiding extrapolation errors
       geometry_msgs::msg::TransformStamped obstacle_to_map = tf_->lookupTransform(
-                  cfg_->map_frame, tf2::timeFromSec(0),
-                  custom_obstacle_msg_.header.frame_id, tf2::timeFromSec(0),
-                  custom_obstacle_msg_.header.frame_id, tf2::durationFromSec(0.5));
+                  cfg_->map_frame,
+                  custom_obstacle_msg_.header.frame_id,
+                  tf2::TimePointZero,
+                  tf2::durationFromSec(0.5));
       obstacle_to_map_eig = tf2::transformToEigen(obstacle_to_map);
       //tf2::fromMsg(obstacle_to_map.transform, obstacle_to_map_eig);
     }
-    catch (tf2::TransformException ex)
+    catch (const tf2::ExtrapolationException& ex)
     {
-      RCLCPP_ERROR(logger_, "%s",ex.what());
+      RCLCPP_WARN(logger_, "updateObstacleContainerWithCustomObstacles: ExtrapolationException: %s, using identity transform", ex.what());
+      obstacle_to_map_eig.setIdentity();
+    }
+    catch (const tf2::TransformException& ex)
+    {
+      RCLCPP_ERROR(logger_, "updateObstacleContainerWithCustomObstacles: TransformException: %s, using identity transform", ex.what());
       obstacle_to_map_eig.setIdentity();
     }
     
@@ -873,7 +1058,6 @@ void TebLocalPlannerROS::updateWallLineVec(
       
       // 检查夹角是否超出±90度范围
       if (std::fabs(angle_diff) > M_PI / 4) {
-        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "路径方向与机器人朝向夹角超出±45度，夹角为: %.2f度", angle_diff * 180 / M_PI);
         if(wall_line_points_.size() > 0) wall_line_points_.clear();
         return;
       }
@@ -1068,7 +1252,6 @@ void TebLocalPlannerROS::updateCurbLineVec(
       
       // 检查夹角是否超出±90度范围
       if (std::fabs(angle_diff) > M_PI / 4) {
-        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "路径方向与机器人朝向夹角超出±%.2f度范围: %.2f度", std::fabs(angle_diff) > M_PI / 4, angle_diff * 180 / M_PI);
         if(wall_line_points_.size() > 0) wall_line_points_.clear();
         return;
       }
@@ -1243,22 +1426,58 @@ void TebLocalPlannerROS::curb_line_callback(const nav_msgs::msg::Path::ConstShar
       
       // 转换起点
       if (msg->header.frame_id != cfg_->map_frame) {
-        geometry_msgs::msg::TransformStamped transform_start = tf_->lookupTransform(
-          cfg_->map_frame, 
-          msg->header.frame_id,
-          tf2::TimePointZero);
-        tf2::doTransform(msg->poses.front(), start_pose_transformed, transform_start);
+        try {
+          geometry_msgs::msg::TransformStamped transform_start = tf_->lookupTransform(
+            cfg_->map_frame, 
+            msg->header.frame_id,
+            tf2::TimePointZero,
+            tf2::durationFromSec(0.5));
+          tf2::doTransform(msg->poses.front(), start_pose_transformed, transform_start);
+        } catch (const tf2::ExtrapolationException& ex) {
+          RCLCPP_WARN(logger_, "curbLinePathCallback: ExtrapolationException when transforming start pose: %s, retrying", ex.what());
+          try {
+            geometry_msgs::msg::TransformStamped transform_start = tf_->lookupTransform(
+              cfg_->map_frame, 
+              msg->header.frame_id,
+              tf2::TimePointZero);
+            tf2::doTransform(msg->poses.front(), start_pose_transformed, transform_start);
+          } catch (const tf2::TransformException& ex2) {
+            RCLCPP_ERROR(logger_, "curbLinePathCallback: Failed to transform start pose: %s", ex2.what());
+            return; // Skip this message if transform fails
+          }
+        } catch (const tf2::TransformException& ex) {
+          RCLCPP_ERROR(logger_, "curbLinePathCallback: TransformException when transforming start pose: %s", ex.what());
+          return; // Skip this message if transform fails
+        }
       } else {
         start_pose_transformed = msg->poses.front();
       }
       
       // 转换终点
       if (msg->header.frame_id != cfg_->map_frame) {
-        geometry_msgs::msg::TransformStamped transform_end = tf_->lookupTransform(
-          cfg_->map_frame, 
-          msg->header.frame_id,
-          tf2::TimePointZero);
-        tf2::doTransform(msg->poses.back(), end_pose_transformed, transform_end);
+        try {
+          geometry_msgs::msg::TransformStamped transform_end = tf_->lookupTransform(
+            cfg_->map_frame, 
+            msg->header.frame_id,
+            tf2::TimePointZero,
+            tf2::durationFromSec(0.5));
+          tf2::doTransform(msg->poses.back(), end_pose_transformed, transform_end);
+        } catch (const tf2::ExtrapolationException& ex) {
+          RCLCPP_WARN(logger_, "curbLinePathCallback: ExtrapolationException when transforming end pose: %s, retrying", ex.what());
+          try {
+            geometry_msgs::msg::TransformStamped transform_end = tf_->lookupTransform(
+              cfg_->map_frame, 
+              msg->header.frame_id,
+              tf2::TimePointZero);
+            tf2::doTransform(msg->poses.back(), end_pose_transformed, transform_end);
+          } catch (const tf2::TransformException& ex2) {
+            RCLCPP_ERROR(logger_, "curbLinePathCallback: Failed to transform end pose: %s", ex2.what());
+            return; // Skip this message if transform fails
+          }
+        } catch (const tf2::TransformException& ex) {
+          RCLCPP_ERROR(logger_, "curbLinePathCallback: TransformException when transforming end pose: %s", ex.what());
+          return; // Skip this message if transform fails
+        }
       } else {
         end_pose_transformed = msg->poses.back();
       }
@@ -1322,15 +1541,13 @@ bool TebLocalPlannerROS::pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& 
       // Apply transform manually to avoid using global_pose.header.stamp
       tf2::doTransform(global_pose, robot, global_to_plan_transform);
     } catch (const tf2::ExtrapolationException& ex) {
-      RCLCPP_WARN(logger_, "pruneGlobalPlan: ExtrapolationException in transform, using fallback: %s", ex.what());
-      // Fallback: try with current time if TimePointZero fails
-      rclcpp::Time current_time = clock_->now();
-      geometry_msgs::msg::TransformStamped global_to_plan_transform = tf_->lookupTransform(
-                  global_plan.front().header.frame_id,
-                  global_pose.header.frame_id,
-                  tf2_ros::fromMsg(current_time),
-                  tf2::durationFromSec(0.5));
-      tf2::doTransform(global_pose, robot, global_to_plan_transform);
+      RCLCPP_WARN(logger_, "pruneGlobalPlan: ExtrapolationException in transform: %s, skipping pruning this cycle", ex.what());
+      // If TimePointZero fails with extrapolation, skip pruning this cycle rather than using future time
+      // This prevents further extrapolation errors
+      return true;
+    } catch (const tf2::TransformException& ex) {
+      RCLCPP_WARN(logger_, "pruneGlobalPlan: TransformException: %s, skipping pruning this cycle", ex.what());
+      return true;
     }
     
     double dist_thresh_sq = dist_behind_robot*dist_behind_robot;    
@@ -1418,10 +1635,26 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
       // RCLCPP_INFO(logger_, "transformGlobalPlan: Successfully got transform, transform.header.stamp = %.6f", 
       //              rclcpp::Time(plan_to_global_transform.header.stamp).seconds());
     } catch (const tf2::ExtrapolationException& ex) {
-      RCLCPP_ERROR(logger_, "transformGlobalPlan: ExtrapolationException in lookupTransform: %s", ex.what());
-      RCLCPP_ERROR(logger_, "transformGlobalPlan: Requested from %s to %s with TimePointZero", 
+      RCLCPP_WARN(logger_, "transformGlobalPlan: ExtrapolationException in lookupTransform: %s", ex.what());
+      RCLCPP_WARN(logger_, "transformGlobalPlan: Requested from %s to %s with TimePointZero, retrying with latest available time", 
                    plan_pose.header.frame_id.c_str(), global_frame.c_str());
-      throw; // Re-throw to be caught by outer catch block
+      // Retry with TimePointZero but without specifying source time (uses latest available)
+      try {
+        plan_to_global_transform = tf_->lookupTransform(
+                    global_frame,
+                    plan_pose.header.frame_id,
+                    tf2::TimePointZero);
+      } catch (const tf2::TransformException& ex2) {
+        RCLCPP_ERROR(logger_, "transformGlobalPlan: Failed to get transform after retry: %s", ex2.what());
+        throw nav2_core::PlannerException(
+          std::string("Could not transform the global plan to the frame of the controller: ") + ex2.what()
+        );
+      }
+    } catch (const tf2::TransformException& ex) {
+      RCLCPP_ERROR(logger_, "transformGlobalPlan: TransformException: %s", ex.what());
+      throw nav2_core::PlannerException(
+        std::string("Could not transform the global plan to the frame of the controller: ") + ex.what()
+      );
     }
 
 //    tf_->waitForTransform(global_frame, ros::Time::now(),
@@ -1454,11 +1687,25 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
       tf2::doTransform(global_pose, robot_pose, global_to_plan_transform);
       // RCLCPP_INFO(logger_, "transformGlobalPlan: Successfully transformed robot pose");
     } catch (const tf2::ExtrapolationException& ex) {
-      RCLCPP_ERROR(logger_, "transformGlobalPlan: ExtrapolationException in robot pose transform: %s", ex.what());
-      RCLCPP_ERROR(logger_, "transformGlobalPlan: global_pose.header.stamp = %.6f, plan_pose.header.frame_id = %s", 
-                   rclcpp::Time(global_pose.header.stamp).seconds(),
-                   plan_pose.header.frame_id.c_str());
-      throw; // Re-throw to be caught by outer catch block
+      RCLCPP_WARN(logger_, "transformGlobalPlan: ExtrapolationException when transforming robot pose: %s, retrying", ex.what());
+      // Retry with TimePointZero but without specifying source time
+      try {
+        geometry_msgs::msg::TransformStamped global_to_plan_transform = tf_->lookupTransform(
+                    plan_pose.header.frame_id,
+                    global_pose.header.frame_id,
+                    tf2::TimePointZero);
+        tf2::doTransform(global_pose, robot_pose, global_to_plan_transform);
+      } catch (const tf2::TransformException& ex2) {
+        RCLCPP_ERROR(logger_, "transformGlobalPlan: Failed to transform robot pose after retry: %s", ex2.what());
+        throw nav2_core::PlannerException(
+          std::string("Could not transform the global plan to the frame of the controller: ") + ex2.what()
+        );
+      }
+    } catch (const tf2::TransformException& ex) {
+      RCLCPP_ERROR(logger_, "transformGlobalPlan: TransformException in robot pose transform: %s", ex.what());
+      throw nav2_core::PlannerException(
+        std::string("Could not transform the global plan to the frame of the controller: ") + ex.what()
+      );
     }
 
     //we'll discard points on the plan that are outside the local costmap
