@@ -159,6 +159,9 @@ public:
     double distance_tolerance;
     double edge_acc_lim_theta;
     double edge_max_vel_theta;
+    double edge_weight_optimaltime; //!< weight_optimaltime parameter for edge-following mode
+    double edge_min_obstacle_dist; //!< min_obstacle_dist parameter for edge-following mode
+    std::string edge_footprint_vertices; //!< footprint vertices parameter for edge-following mode
   } wall_line; //!< Obstacle related parameters
 
 
@@ -342,6 +345,9 @@ public:
     wall_line.distance_tolerance = 0.8;
     wall_line.edge_acc_lim_theta = 0.2;
     wall_line.edge_max_vel_theta = 0.3;
+    wall_line.edge_weight_optimaltime = 10.0;
+    wall_line.edge_min_obstacle_dist = 0.05;
+    wall_line.edge_footprint_vertices = "[[1.25, 0.5], [1.25, -0.5], [-0.65, -0.5], [-0.65, 0.5]]";
 
     // Optimization
 

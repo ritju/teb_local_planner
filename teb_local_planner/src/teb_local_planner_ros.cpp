@@ -82,8 +82,17 @@ TebLocalPlannerROS::TebLocalPlannerROS()
                                            last_preferred_rotdir_(RotType::none), initialized_(false),
                                            launch_max_vel_x_(0), launch_max_global_plan_lookahead_dist_(0),weight_via_point_(1.0),
                                            cfg_max_angular_vel_(0.6), cfg_max_angular_acc_(0.6), wall_line_update_time_(0),
-                                           min_obstacle_dist_(0.5), wall_line_ptr_(nullptr), curb_line_subscriber_(nullptr)
+                                           min_obstacle_dist_(0.5), wall_line_ptr_(nullptr), curb_line_subscriber_(nullptr),
+                                           normal_weight_optimaltime_(2.0), normal_min_obstacle_dist_(0.2),
+                                           normal_footprint_vertices_("[[1.25, 0.55], [1.25, -0.55], [-0.65, -0.55], [-0.65, 0.55]]"),
+                                           edge_weight_optimaltime_(10.0), edge_min_obstacle_dist_(0.05),
+                                           edge_footprint_vertices_("[[1.25, 0.5], [1.25, -0.5], [-0.65, -0.5], [-0.65, 0.5]]"),
+                                           is_edge_following_mode_(false)
 {
+  // Initialize edge mode parameters from config defaults (will be overridden by parameters if available)
+  edge_weight_optimaltime_ = cfg_->wall_line.edge_weight_optimaltime;
+  edge_min_obstacle_dist_ = cfg_->wall_line.edge_min_obstacle_dist;
+  edge_footprint_vertices_ = cfg_->wall_line.edge_footprint_vertices;
 }
 
 
@@ -113,6 +122,20 @@ void TebLocalPlannerROS::initialize(nav2_util::LifecycleNode::SharedPtr node)
     cfg_max_angular_vel_ = cfg_->robot.max_vel_theta;
     cfg_max_angular_acc_= cfg_->robot.acc_lim_theta;
     min_obstacle_dist_ = cfg_->obstacles.min_obstacle_dist;
+    
+    // Save normal mode parameters
+    normal_weight_optimaltime_ = cfg_->optim.weight_optimaltime;
+    normal_min_obstacle_dist_ = cfg_->obstacles.min_obstacle_dist;
+    // Try to get footprint vertices from parameter server
+    std::string footprint_string;
+    if (node->get_parameter(name_ + "." + "footprint_model.vertices", footprint_string)) {
+      normal_footprint_vertices_ = footprint_string;
+    }
+    
+    // Load edge-following mode parameters from config
+    edge_weight_optimaltime_ = cfg_->wall_line.edge_weight_optimaltime;
+    edge_min_obstacle_dist_ = cfg_->wall_line.edge_min_obstacle_dist;
+    edge_footprint_vertices_ = cfg_->wall_line.edge_footprint_vertices;
     // via_sep_ = cfg_->trajectory.global_plan_viapoint_sep;
     RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! In initialize!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
 
@@ -1167,6 +1190,9 @@ void TebLocalPlannerROS::updateWallLineVec(
     distance.data = robot_to_edge_distance;
     edge_distance_publisher_->publish(distance);
     
+    // Switch to edge-following mode parameters
+    switchParameterMode(true);
+    
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Selected best wall line - Distance: %f", min_distance);
     
     // 发布可视化标记
@@ -1213,6 +1239,9 @@ void TebLocalPlannerROS::updateWallLineVec(
         cfg_->robot.max_vel_theta = cfg_max_angular_vel_;
         cfg_->optim.weight_viapoint = weight_via_point_;
         wall_line_points_.clear();
+        
+        // Switch back to normal mode parameters
+        switchParameterMode(false);
       }
     }
   }
@@ -1361,6 +1390,9 @@ void TebLocalPlannerROS::updateCurbLineVec(
     cfg_->robot.max_vel_theta = cfg_->wall_line.edge_max_vel_theta;
     wall_line_update_time_ = clock_->now();
     
+    // Switch to edge-following mode parameters
+    switchParameterMode(true);
+    
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Selected best wall line - Distance: %f", min_distance);
     
     // 发布可视化标记
@@ -1402,6 +1434,9 @@ void TebLocalPlannerROS::updateCurbLineVec(
       if (time_diff.seconds() > 1.0)
       {
         wall_line_points_.clear();
+        
+        // Switch back to normal mode parameters
+        switchParameterMode(false);
       }
     }
   }
@@ -2100,6 +2135,59 @@ void TebLocalPlannerROS::setSpeedLimit(
         cfg_->robot.base_max_vel_theta = cfg_->robot.base_max_vel_theta * ratio;
       }
     }
+  }
+}
+
+void TebLocalPlannerROS::switchParameterMode(bool enable_edge_mode)
+{
+  if (!initialized_ || !nh_.lock()) {
+    return;
+  }
+  
+  auto node = nh_.lock();
+  
+  // Avoid redundant parameter updates
+  if (enable_edge_mode == is_edge_following_mode_) {
+    return;
+  }
+  
+  try {
+    if (enable_edge_mode) {
+      // Switch to edge-following mode
+      // Read latest edge mode parameters from config (they may have been updated dynamically)
+      double current_edge_weight_optimaltime = cfg_->wall_line.edge_weight_optimaltime;
+      double current_edge_min_obstacle_dist = cfg_->wall_line.edge_min_obstacle_dist;
+      std::string current_edge_footprint_vertices = cfg_->wall_line.edge_footprint_vertices;
+      
+      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Switching to edge-following mode parameters");
+      
+      // Set weight_optimaltime
+      node->set_parameter(rclcpp::Parameter(name_ + "." + "weight_optimaltime", current_edge_weight_optimaltime));
+      
+      // Set min_obstacle_dist
+      node->set_parameter(rclcpp::Parameter(name_ + "." + "min_obstacle_dist", current_edge_min_obstacle_dist));
+      
+      // Set footprint vertices
+      node->set_parameter(rclcpp::Parameter(name_ + "." + "footprint_model.vertices", current_edge_footprint_vertices));
+      
+      is_edge_following_mode_ = true;
+    } else {
+      // Switch to normal mode
+      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Switching to normal mode parameters");
+      
+      // Set weight_optimaltime
+      node->set_parameter(rclcpp::Parameter(name_ + "." + "weight_optimaltime", normal_weight_optimaltime_));
+      
+      // Set min_obstacle_dist
+      node->set_parameter(rclcpp::Parameter(name_ + "." + "min_obstacle_dist", normal_min_obstacle_dist_));
+      
+      // Set footprint vertices
+      node->set_parameter(rclcpp::Parameter(name_ + "." + "footprint_model.vertices", normal_footprint_vertices_));
+      
+      is_edge_following_mode_ = false;
+    }
+  } catch (const std::exception& ex) {
+    RCLCPP_WARN(logger_, "Failed to switch parameter mode: %s", ex.what());
   }
 }
 

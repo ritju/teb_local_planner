@@ -388,6 +388,12 @@ protected:
 
   std::vector<Eigen::Vector2d> get_line_vec();
 
+  /**
+   * @brief Switch between normal mode and edge-following mode parameters
+   * @param enable_edge_mode If true, switch to edge-following mode; otherwise, switch to normal mode
+   */
+  void switchParameterMode(bool enable_edge_mode);
+
 private:
   // Definition of member variables
   rclcpp_lifecycle::LifecycleNode::WeakPtr nh_;
@@ -461,6 +467,15 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_plan_pub_;
   double cfg_max_angular_vel_, cfg_max_angular_acc_;
   rclcpp::Time wall_line_update_time_;
+  // Parameters for normal mode (saved during initialization)
+  double normal_weight_optimaltime_;
+  double normal_min_obstacle_dist_;
+  std::string normal_footprint_vertices_;
+  // Parameters for edge-following mode
+  double edge_weight_optimaltime_;
+  double edge_min_obstacle_dist_;
+  std::string edge_footprint_vertices_;
+  bool is_edge_following_mode_;
 protected:
   // Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler;

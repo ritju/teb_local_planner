@@ -142,6 +142,9 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "distance_tolerance", rclcpp::ParameterValue(wall_line.distance_tolerance));
   declare_parameter_if_not_declared(nh, name + "." + "edge_acc_lim_theta", rclcpp::ParameterValue(wall_line.edge_acc_lim_theta));
   declare_parameter_if_not_declared(nh, name + "." + "edge_max_vel_theta", rclcpp::ParameterValue(wall_line.edge_max_vel_theta));
+  declare_parameter_if_not_declared(nh, name + "." + "edge_weight_optimaltime", rclcpp::ParameterValue(wall_line.edge_weight_optimaltime));
+  declare_parameter_if_not_declared(nh, name + "." + "edge_min_obstacle_dist", rclcpp::ParameterValue(wall_line.edge_min_obstacle_dist));
+  declare_parameter_if_not_declared(nh, name + "." + "edge_footprint_vertices", rclcpp::ParameterValue(wall_line.edge_footprint_vertices));
 
 
   // Homotopy Class Planner
@@ -286,6 +289,9 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
 
   nh->get_parameter_or(name + "." + "edge_acc_lim_theta", wall_line.edge_acc_lim_theta, wall_line.edge_acc_lim_theta);
   nh->get_parameter_or(name + "." + "edge_max_vel_theta", wall_line.edge_max_vel_theta, wall_line.edge_max_vel_theta);
+  nh->get_parameter_or(name + "." + "edge_weight_optimaltime", wall_line.edge_weight_optimaltime, wall_line.edge_weight_optimaltime);
+  nh->get_parameter_or(name + "." + "edge_min_obstacle_dist", wall_line.edge_min_obstacle_dist, wall_line.edge_min_obstacle_dist);
+  nh->get_parameter_or(name + "." + "edge_footprint_vertices", wall_line.edge_footprint_vertices, wall_line.edge_footprint_vertices);
 
 
   // Homotopy Class Planner
@@ -612,6 +618,10 @@ rcl_interfaces::msg::SetParametersResult
         wall_line.edge_acc_lim_theta = parameter.as_double();
       } else if (name == node_name + ".edge_max_vel_theta") {
         wall_line.edge_max_vel_theta = parameter.as_double();
+      } else if (name == node_name + ".edge_weight_optimaltime") {
+        wall_line.edge_weight_optimaltime = parameter.as_double();
+      } else if (name == node_name + ".edge_min_obstacle_dist") {
+        wall_line.edge_min_obstacle_dist = parameter.as_double();
       }
       // Homotopy Class Planner
       else if (name == node_name + ".selection_cost_hysteresis") {
@@ -802,6 +812,10 @@ rcl_interfaces::msg::SetParametersResult
       // Optimization
       // Homotopy Class Planner
       // Recovery
+      // WallLine
+      else if (name == node_name + ".edge_footprint_vertices") {
+        wall_line.edge_footprint_vertices = parameter.as_string();
+      }
       // Footprint model
       else if (name == node_name + ".footprint_model.type") {
         RCLCPP_WARN(logger_, "Changing footprint model type is not allowed at runtime");
