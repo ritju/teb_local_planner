@@ -467,6 +467,7 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_plan_pub_;
   double cfg_max_angular_vel_, cfg_max_angular_acc_;
   rclcpp::Time wall_line_update_time_;
+  rclcpp::Time curb_line_update_time_;
   // Parameters for normal mode (saved during initialization)
   double normal_weight_optimaltime_;
   double normal_min_obstacle_dist_;
