@@ -1216,7 +1216,7 @@ void TebLocalPlannerROS::updateWallLineVec(
     switchParameterMode(true);
     
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Selected best wall line - Distance: %f", min_distance);
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Min obstacle distance: %f, Weight optimal time: %f", cfg_->obstacle.min_obstacle_dist, cfg_->optim.weight_optimal_time);
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Min obstacle distance: %f, Weight optimal time: %f", cfg_->obstacles.min_obstacle_dist, cfg_->optim.weight_optimal_time);
     
     // 发布可视化标记
     visualization_msgs::msg::Marker marker_msg;
@@ -1425,7 +1425,7 @@ void TebLocalPlannerROS::updateCurbLineVec(
     switchParameterMode(true);
     
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Selected best wall line - Distance: %f", min_distance);
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Min obstacle distance: %f, Weight optimal time: %f", cfg_->obstacle.min_obstacle_dist, cfg_->optim.weight_optimal_time);
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Min obstacle distance: %f, Weight optimal time: %f", cfg_->obstacles.min_obstacle_dist, cfg_->optim.weight_optimal_time);
     
     // 发布可视化标记
     visualization_msgs::msg::Marker marker_msg;
