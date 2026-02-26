@@ -153,6 +153,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "rotation_max_angular_accel", rclcpp::ParameterValue(rotation.max_angular_accel));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_forward_lookahead_distance", rclcpp::ParameterValue(rotation.forward_lookahead_distance));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_rotate_min_angular_vel", rclcpp::ParameterValue(rotation.rotate_min_angular_vel));
+  declare_parameter_if_not_declared(nh, name + "." + "rotation_simulate_ahead_time", rclcpp::ParameterValue(rotation.simulate_ahead_time));
 
   // Homotopy Class Planner
   declare_parameter_if_not_declared(nh, name + "." + "enable_homotopy_class_planning", rclcpp::ParameterValue(hcp.enable_homotopy_class_planning));
@@ -347,6 +348,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "rotation_max_angular_accel", rotation.max_angular_accel, rotation.max_angular_accel);
   nh->get_parameter_or(name + "." + "rotation_forward_lookahead_distance", rotation.forward_lookahead_distance, rotation.forward_lookahead_distance);
   nh->get_parameter_or(name + "." + "rotation_rotate_min_angular_vel", rotation.rotate_min_angular_vel, rotation.rotate_min_angular_vel);
+  nh->get_parameter_or(name + "." + "rotation_simulate_ahead_time", rotation.simulate_ahead_time, rotation.simulate_ahead_time);
 
   // footprint model
   if (!nh->get_parameter(name + "." + "footprint_model.type", model_name))
@@ -715,6 +717,8 @@ rcl_interfaces::msg::SetParametersResult
         rotation.forward_lookahead_distance = parameter.as_double();
       } else if (name == node_name + ".rotation.rotate_min_angular_vel") {
         rotation.rotate_min_angular_vel = parameter.as_double();
+      } else if (name == node_name + ".rotation.simulate_ahead_time") {
+        rotation.simulate_ahead_time = parameter.as_double();
       }
     }
 
