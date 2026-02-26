@@ -258,6 +258,7 @@ public:
     double max_angular_accel; //!< Maximum angular acceleration for in-place rotation [rad/s^2]
     double simulate_ahead_time; //!< Time to simulate ahead for collision checking during rotation [s] (deprecated, not used)
     double forward_lookahead_distance; //!< Forward lookahead distance to select target pose for rotation [m]
+    double rotate_min_angular_vel; //!< Minimum angular velocity for in-place rotation [rad/s]
   } rotation; //!< Parameters related to in-place rotation
 
 
@@ -440,6 +441,7 @@ public:
     rotation.rotate_to_heading_angular_vel = 0.35;
     rotation.max_angular_accel = 0.35;
     rotation.forward_lookahead_distance = 0.5;  // 0.5 meters forward
+    rotation.rotate_min_angular_vel = 0.05;
   }
   
   void declareParameters(const nav2_util::LifecycleNode::SharedPtr, const std::string name);

@@ -2456,6 +2456,8 @@ bool TebLocalPlannerROS::computeRotateToHeadingCommand(
   double max_feasible_angular_speed = current_angular_vel + cfg_->rotation.max_angular_accel * control_duration_;
   test_cmd_vel.twist.angular.z = std::clamp(
     test_cmd_vel.twist.angular.z, min_feasible_angular_speed, max_feasible_angular_speed);
+  test_cmd_vel.twist.angular.z = test_cmd_vel.twist.angular.z > 0 ? std::max(test_cmd_vel.twist.angular.z, cfg_->rotation.rotate_min_angular_vel) : 
+                                 std::min(test_cmd_vel.twist.angular.z, -cfg_->rotation.rotate_min_angular_vel);
   
   // Check collision for first direction
   double test_angular_distance = use_clockwise ? clockwise_angle : counterclockwise_angle;
