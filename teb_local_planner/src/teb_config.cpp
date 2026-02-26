@@ -705,19 +705,19 @@ rcl_interfaces::msg::SetParametersResult
         reload_footprint = true;
         rear_radius = parameter.as_double();
       }
-      else if (name == node_name + ".rotation.linear_vel_threshold") {
+      else if (name == node_name + ".rotation_linear_vel_threshold") {
         rotation.linear_vel_threshold = parameter.as_double();
-      } else if (name == node_name + ".rotation.angle_threshold") {
+      } else if (name == node_name + ".rotation_angle_threshold") {
         rotation.angle_threshold = parameter.as_double();
-      } else if (name == node_name + ".rotation.rotate_to_heading_angular_vel") {
+      } else if (name == node_name + ".rotate_to_heading_angular_vel") {
         rotation.rotate_to_heading_angular_vel = parameter.as_double();
-      } else if (name == node_name + ".rotation.max_angular_accel") {
+      } else if (name == node_name + ".rotation_max_angular_accel") {
         rotation.max_angular_accel = parameter.as_double();
-      } else if (name == node_name + ".rotation.forward_lookahead_distance") {
+      } else if (name == node_name + ".rotation_forward_lookahead_distance") {
         rotation.forward_lookahead_distance = parameter.as_double();
-      } else if (name == node_name + ".rotation.rotate_min_angular_vel") {
+      } else if (name == node_name + ".rotation_rotate_min_angular_vel") {
         rotation.rotate_min_angular_vel = parameter.as_double();
-      } else if (name == node_name + ".rotation.simulate_ahead_time") {
+      } else if (name == node_name + ".rotation_simulate_ahead_time") {
         rotation.simulate_ahead_time = parameter.as_double();
       }
     }
