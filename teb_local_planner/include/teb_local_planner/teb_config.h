@@ -249,6 +249,17 @@ public:
     int divergence_detection_max_chi_squared; //!< Maximum acceptable Mahalanobis distance above which it is assumed that the optimization diverged.
   } recovery; //!< Parameters related to recovery and backup strategies
 
+  //! In-place rotation related parameters
+  struct Rotation
+  {
+    double linear_vel_threshold; //!< Threshold for linear velocity to enable in-place rotation [m/s]
+    double angle_threshold; //!< Threshold for angle difference to trigger in-place rotation [rad]
+    double rotate_to_heading_angular_vel; //!< Angular velocity for in-place rotation [rad/s]
+    double max_angular_accel; //!< Maximum angular acceleration for in-place rotation [rad/s^2]
+    double simulate_ahead_time; //!< Time to simulate ahead for collision checking during rotation [s] (deprecated, not used)
+    double forward_lookahead_distance; //!< Forward lookahead distance to select target pose for rotation [m]
+  } rotation; //!< Parameters related to in-place rotation
+
 
   /**
   * @brief Construct the TebConfig using default values.
@@ -422,6 +433,13 @@ public:
     recovery.oscillation_filter_duration = 10;
     recovery.divergence_detection_enable = false;
     recovery.divergence_detection_max_chi_squared = 10;
+
+    // Rotation
+    rotation.linear_vel_threshold = 0.1;
+    rotation.angle_threshold = 0.3875;  // 45 degrees
+    rotation.rotate_to_heading_angular_vel = 0.35;
+    rotation.max_angular_accel = 0.35;
+    rotation.forward_lookahead_distance = 0.5;  // 0.5 meters forward
   }
   
   void declareParameters(const nav2_util::LifecycleNode::SharedPtr, const std::string name);

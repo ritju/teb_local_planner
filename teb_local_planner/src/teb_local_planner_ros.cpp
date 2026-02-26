@@ -87,7 +87,9 @@
                                             normal_footprint_vertices_("[[1.25, 0.55], [1.25, -0.55], [-0.65, -0.55], [-0.65, 0.55]]"),
                                             edge_weight_optimaltime_(10.0), edge_min_obstacle_dist_(0.05),
                                             edge_footprint_vertices_("[[1.25, 0.5], [1.25, -0.5], [-0.65, -0.5], [-0.65, 0.5]]"),
-                                            is_edge_following_mode_(false)
+                                            prune_angle_threshold_(1.57079632679),
+                                            is_edge_following_mode_(false),
+                                            control_duration_(0.2)
  {
    // Initialize edge mode parameters from config defaults (will be overridden by parameters if available)
    edge_weight_optimaltime_ = cfg_->wall_line.edge_weight_optimaltime;
@@ -105,152 +107,160 @@
    // check if the plugin is already initialized
    if(!initialized_)
    {	
-     // declare parameters (ros2-dashing)
-     intra_proc_node_.reset( 
-             new rclcpp::Node("costmap_converter", node->get_namespace(), 
-               rclcpp::NodeOptions()));
-     cfg_->declareParameters(node, name_);
- 
-     // get parameters of TebConfig via the nodehandle and override the default config
-     cfg_->loadRosParamFromNodeHandle(node, name_);
-     // 获取默认值
-     launch_max_vel_x_ = cfg_->robot.max_vel_x;
-     launch_max_global_plan_lookahead_dist_ = cfg_->trajectory.max_global_plan_lookahead_dist;
-     weight_wall_line_direction_ = cfg_->optim.weight_wall_line_direction;
-     weight_wall_line_dist_ = cfg_->optim.weight_wall_line_dist;
-     weight_via_point_ = cfg_->optim.weight_viapoint;
-     cfg_max_angular_vel_ = cfg_->robot.max_vel_theta;
-     cfg_max_angular_acc_= cfg_->robot.acc_lim_theta;
-     min_obstacle_dist_ = cfg_->obstacles.min_obstacle_dist;
-     
-     // Save normal mode parameters
-     normal_weight_optimaltime_ = cfg_->optim.weight_optimaltime;
-     normal_min_obstacle_dist_ = cfg_->obstacles.min_obstacle_dist;
-     // Try to get footprint vertices from parameter server
-     std::string footprint_string;
-     if (node->get_parameter(name_ + "." + "footprint_model.vertices", footprint_string)) {
-       normal_footprint_vertices_ = footprint_string;
-     }
-     
-     // Load edge-following mode parameters from config
-     edge_weight_optimaltime_ = cfg_->wall_line.edge_weight_optimaltime;
-     edge_min_obstacle_dist_ = cfg_->wall_line.edge_min_obstacle_dist;
-     edge_footprint_vertices_ = cfg_->wall_line.edge_footprint_vertices;
-     // via_sep_ = cfg_->trajectory.global_plan_viapoint_sep;
-     RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! In initialize!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
- 
-     // reserve some memory for obstacles
-     obstacles_.reserve(500);
-         
-     // create the planner instance
-     if (cfg_->hcp.enable_homotopy_class_planning)
-     {
-       planner_ = PlannerInterfacePtr(new HomotopyClassPlanner(node, *cfg_.get(), &obstacles_, visualization_, &via_points_, &wall_line_points_));
-       RCLCPP_INFO(logger_, "Parallel planning in distinctive topologies enabled.");
-     }
-     else
-     {
-       planner_ = PlannerInterfacePtr(new TebOptimalPlanner(node, *cfg_.get(), &obstacles_, visualization_, &via_points_, &wall_line_points_));
-       RCLCPP_INFO(logger_, "Parallel planning in distinctive topologies disabled.");
-     }
-     
-     // init other variables
-     costmap_ = costmap_ros_->getCostmap(); // locking should be done in MoveBase.
-     
-     costmap_model_ = std::make_shared<dwb_critics::ObstacleFootprintCritic>();
-     std::string costmap_model_name("costmap_model");
-     costmap_model_->initialize(node, costmap_model_name, name_, costmap_ros_);
- 
-     cfg_->map_frame = costmap_ros_->getGlobalFrameID(); // TODO
- 
-     //Initialize a costmap to polygon converter
-     if (!cfg_->obstacles.costmap_converter_plugin.empty())
-     {
-       try
-       {
-         costmap_converter_ = costmap_converter_loader_.createSharedInstance(cfg_->obstacles.costmap_converter_plugin);
-         std::string converter_name = costmap_converter_loader_.getName(cfg_->obstacles.costmap_converter_plugin);
-         RCLCPP_INFO(logger_, "library path : %s", costmap_converter_loader_.getClassLibraryPath(cfg_->obstacles.costmap_converter_plugin).c_str());
-         // replace '::' by '/' to convert the c++ namespace to a NodeHandle namespace
-         boost::replace_all(converter_name, "::", "/");
- 
-         costmap_converter_->setOdomTopic(cfg_->odom_topic);
-         
-         // Pass the main (lifecycle) node directly to costmap_converter so it can read parameters from controller node
-         // Parameters will be read directly from the node's namespace (e.g., controller_server.FollowPath.cluster_max_distance)
-         costmap_converter_->initialize(node);
-         costmap_converter_->setCostmap2D(costmap_);
-         const auto rate = std::make_shared<rclcpp::Rate>((double)cfg_->obstacles.costmap_converter_rate);
-         costmap_converter_->startWorker(rate, costmap_, cfg_->obstacles.costmap_converter_spin_thread);
-         RCLCPP_INFO(logger_, "Costmap conversion plugin %s loaded.", cfg_->obstacles.costmap_converter_plugin.c_str());
-       }
-       catch(pluginlib::PluginlibException& ex)
-       {
-         RCLCPP_INFO(logger_,
-                     "The specified costmap converter plugin cannot be loaded. All occupied costmap cells are treaten as point obstacles. Error message: %s", ex.what());
-         costmap_converter_.reset();
-       }
-     }
-     else {
-       RCLCPP_INFO(logger_, "No costmap conversion plugin specified. All occupied costmap cells are treaten as point obstacles.");
-     }
-   
-     
-     // Get footprint of the robot and minimum and maximum distance from the center of the robot to its footprint vertices.
-     footprint_spec_ = costmap_ros_->getRobotFootprint();
-     nav2_costmap_2d::calculateMinAndMaxDistances(footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius);
- 
-     // Add callback for dynamic parameters
-     dyn_params_handler = node->add_on_set_parameters_callback(
-       std::bind(&TebConfig::dynamicParametersCallback, std::ref(cfg_), std::placeholders::_1));
- 
-     // validate optimization footprint and costmap footprint
-     validateFootprints(cfg_->robot_model->getInscribedRadius(), robot_inscribed_radius_, cfg_->obstacles.min_obstacle_dist);
-         
-     // setup callback for custom obstacles
-     custom_obst_sub_ = node->create_subscription<costmap_converter_msgs::msg::ObstacleArrayMsg>(
-                 "obstacles", 
-                 rclcpp::SystemDefaultsQoS(),
-                 std::bind(&TebLocalPlannerROS::customObstacleCB, this, std::placeholders::_1));
- 
-     // setup callback for custom via-points
-     via_points_sub_ = node->create_subscription<nav_msgs::msg::Path>(
-                 "via_points", 
-                 rclcpp::SystemDefaultsQoS(),
-                 std::bind(&TebLocalPlannerROS::customViaPointsCB, this, std::placeholders::_1));
-     // setup callback for line center points
-     if (cfg_->optim.weight_wall_line_dist > 0.0)
-     {
-       if (use_curb_or_wall != nullptr && std::strcmp(use_curb_or_wall, "WALL") == 0)
-       {
-         wall_line_ptr_ = std::make_shared<line_path_compare::LinePathCompare>(node);
-       }
-       else if (use_curb_or_wall != nullptr && std::strcmp(use_curb_or_wall, "CURB") == 0)
-       {
-         curb_line_subscriber_ = node->create_subscription<nav_msgs::msg::Path>(
-                 "camera1/extracted_line_path", 
-                 rclcpp::QoS{5}.best_effort(),
-                 std::bind(&TebLocalPlannerROS::curb_line_callback, this, std::placeholders::_1));
-       }
-     
-     wall_line_marker_publisher_ = node->create_publisher<visualization_msgs::msg::Marker>("teb_selected_wall_line", 1);
-     edge_distance_publisher_  = node->create_publisher<std_msgs::msg::Float32>("edge_distance", 1);
-     // initialize failure detector
-     //rclcpp::Node::SharedPtr nh_move_base("~");
-     double controller_frequency = 5;
-     node->get_parameter("controller_frequency", controller_frequency);
-     failure_detector_.setBufferLength(std::round(cfg_->recovery.oscillation_filter_duration*controller_frequency));
-     
-     // set initialized flag
-     initialized_ = true;
- 
-     // This should be called since to prevent different time sources exception
-     time_last_infeasible_plan_ = clock_->now();
-     time_last_oscillation_ = clock_->now();
-     RCLCPP_DEBUG(logger_, "teb_local_planner plugin initialized.");
-     
-     transformed_path = node->create_publisher<nav_msgs::msg::Path>("teb_transformed_path", 1);
-     global_plan_pub_ = node->create_publisher<nav_msgs::msg::Path>("teb_global_plan", 1);
+    // declare parameters (ros2-dashing)
+    intra_proc_node_.reset( 
+            new rclcpp::Node("costmap_converter", node->get_namespace(), 
+              rclcpp::NodeOptions()));
+    cfg_->declareParameters(node, name_);
+
+    // get parameters of TebConfig via the nodehandle and override the default config
+    cfg_->loadRosParamFromNodeHandle(node, name_);
+    // 获取默认值
+    launch_max_vel_x_ = cfg_->robot.max_vel_x;
+    launch_max_global_plan_lookahead_dist_ = cfg_->trajectory.max_global_plan_lookahead_dist;
+    weight_wall_line_direction_ = cfg_->optim.weight_wall_line_direction;
+    weight_wall_line_dist_ = cfg_->optim.weight_wall_line_dist;
+    weight_via_point_ = cfg_->optim.weight_viapoint;
+    cfg_max_angular_vel_ = cfg_->robot.max_vel_theta;
+    cfg_max_angular_acc_= cfg_->robot.acc_lim_theta;
+    min_obstacle_dist_ = cfg_->obstacles.min_obstacle_dist;
+    
+    // Save normal mode parameters
+    normal_weight_optimaltime_ = cfg_->optim.weight_optimaltime;
+    normal_min_obstacle_dist_ = cfg_->obstacles.min_obstacle_dist;
+    // Try to get footprint vertices from parameter server
+    std::string footprint_string;
+    if (node->get_parameter(name_ + "." + "footprint_model.vertices", footprint_string)) {
+      normal_footprint_vertices_ = footprint_string;
+    }
+    
+    // Load edge-following mode parameters from config
+    edge_weight_optimaltime_ = cfg_->wall_line.edge_weight_optimaltime;
+    edge_min_obstacle_dist_ = cfg_->wall_line.edge_min_obstacle_dist;
+    edge_footprint_vertices_ = cfg_->wall_line.edge_footprint_vertices;
+    // via_sep_ = cfg_->trajectory.global_plan_viapoint_sep;
+    RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! In initialize!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
+
+    // reserve some memory for obstacles
+    obstacles_.reserve(500);
+        
+    // create the planner instance
+    if (cfg_->hcp.enable_homotopy_class_planning)
+    {
+      planner_ = PlannerInterfacePtr(new HomotopyClassPlanner(node, *cfg_.get(), &obstacles_, visualization_, &via_points_, &wall_line_points_));
+      RCLCPP_INFO(logger_, "Parallel planning in distinctive topologies enabled.");
+    }
+    else
+    {
+      planner_ = PlannerInterfacePtr(new TebOptimalPlanner(node, *cfg_.get(), &obstacles_, visualization_, &via_points_, &wall_line_points_));
+      RCLCPP_INFO(logger_, "Parallel planning in distinctive topologies disabled.");
+    }
+    
+    // init other variables
+    costmap_ = costmap_ros_->getCostmap(); // locking should be done in MoveBase.
+    
+    costmap_model_ = std::make_shared<dwb_critics::ObstacleFootprintCritic>();
+    std::string costmap_model_name("costmap_model");
+    costmap_model_->initialize(node, costmap_model_name, name_, costmap_ros_);
+
+    // Initialize rotation collision checker
+    rotation_collision_checker_ = std::make_unique<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
+  
+    // Get controller frequency for control_duration
+    double controller_frequency = 5.0;
+    node->get_parameter("controller_frequency", controller_frequency);
+    control_duration_ = 1.0 / controller_frequency;
+
+    cfg_->map_frame = costmap_ros_->getGlobalFrameID(); // TODO
+
+    //Initialize a costmap to polygon converter
+    if (!cfg_->obstacles.costmap_converter_plugin.empty())
+    {
+      try
+      {
+        costmap_converter_ = costmap_converter_loader_.createSharedInstance(cfg_->obstacles.costmap_converter_plugin);
+        std::string converter_name = costmap_converter_loader_.getName(cfg_->obstacles.costmap_converter_plugin);
+        RCLCPP_INFO(logger_, "library path : %s", costmap_converter_loader_.getClassLibraryPath(cfg_->obstacles.costmap_converter_plugin).c_str());
+        // replace '::' by '/' to convert the c++ namespace to a NodeHandle namespace
+        boost::replace_all(converter_name, "::", "/");
+
+        costmap_converter_->setOdomTopic(cfg_->odom_topic);
+        
+        // Pass the main (lifecycle) node directly to costmap_converter so it can read parameters from controller node
+        // Parameters will be read directly from the node's namespace (e.g., controller_server.FollowPath.cluster_max_distance)
+        costmap_converter_->initialize(node);
+        costmap_converter_->setCostmap2D(costmap_);
+        const auto rate = std::make_shared<rclcpp::Rate>((double)cfg_->obstacles.costmap_converter_rate);
+        costmap_converter_->startWorker(rate, costmap_, cfg_->obstacles.costmap_converter_spin_thread);
+        RCLCPP_INFO(logger_, "Costmap conversion plugin %s loaded.", cfg_->obstacles.costmap_converter_plugin.c_str());
+      }
+      catch(pluginlib::PluginlibException& ex)
+      {
+        RCLCPP_INFO(logger_,
+                    "The specified costmap converter plugin cannot be loaded. All occupied costmap cells are treaten as point obstacles. Error message: %s", ex.what());
+        costmap_converter_.reset();
+      }
+    }
+    else {
+      RCLCPP_INFO(logger_, "No costmap conversion plugin specified. All occupied costmap cells are treaten as point obstacles.");
+    }
+  
+    
+    // Get footprint of the robot and minimum and maximum distance from the center of the robot to its footprint vertices.
+    footprint_spec_ = costmap_ros_->getRobotFootprint();
+    nav2_costmap_2d::calculateMinAndMaxDistances(footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius);
+
+    // Add callback for dynamic parameters
+    dyn_params_handler = node->add_on_set_parameters_callback(
+      std::bind(&TebConfig::dynamicParametersCallback, std::ref(cfg_), std::placeholders::_1));
+
+    // validate optimization footprint and costmap footprint
+    validateFootprints(cfg_->robot_model->getInscribedRadius(), robot_inscribed_radius_, cfg_->obstacles.min_obstacle_dist);
+        
+    // setup callback for custom obstacles
+    custom_obst_sub_ = node->create_subscription<costmap_converter_msgs::msg::ObstacleArrayMsg>(
+                "obstacles", 
+                rclcpp::SystemDefaultsQoS(),
+                std::bind(&TebLocalPlannerROS::customObstacleCB, this, std::placeholders::_1));
+
+    // setup callback for custom via-points
+    via_points_sub_ = node->create_subscription<nav_msgs::msg::Path>(
+                "via_points", 
+                rclcpp::SystemDefaultsQoS(),
+                std::bind(&TebLocalPlannerROS::customViaPointsCB, this, std::placeholders::_1));
+    // setup callback for line center points
+    if (cfg_->optim.weight_wall_line_dist > 0.0)
+    {
+      if (use_curb_or_wall != nullptr && std::strcmp(use_curb_or_wall, "WALL") == 0)
+      {
+        wall_line_ptr_ = std::make_shared<line_path_compare::LinePathCompare>(node);
+      }
+      else if (use_curb_or_wall != nullptr && std::strcmp(use_curb_or_wall, "CURB") == 0)
+      {
+        curb_line_subscriber_ = node->create_subscription<nav_msgs::msg::Path>(
+                "camera1/extracted_line_path", 
+                rclcpp::QoS{5}.best_effort(),
+                std::bind(&TebLocalPlannerROS::curb_line_callback, this, std::placeholders::_1));
+      }
+    
+    wall_line_marker_publisher_ = node->create_publisher<visualization_msgs::msg::Marker>("teb_selected_wall_line", 1);
+    edge_distance_publisher_  = node->create_publisher<std_msgs::msg::Float32>("edge_distance", 1);
+    // initialize failure detector
+    //rclcpp::Node::SharedPtr nh_move_base("~");
+    double controller_frequency = 5;
+    node->get_parameter("controller_frequency", controller_frequency);
+    failure_detector_.setBufferLength(std::round(cfg_->recovery.oscillation_filter_duration*controller_frequency));
+    
+    // set initialized flag
+    initialized_ = true;
+
+    // This should be called since to prevent different time sources exception
+    time_last_infeasible_plan_ = clock_->now();
+    time_last_oscillation_ = clock_->now();
+    RCLCPP_DEBUG(logger_, "teb_local_planner plugin initialized.");
+    
+    transformed_path = node->create_publisher<nav_msgs::msg::Path>("teb_transformed_path", 1);
+    global_plan_pub_ = node->create_publisher<nav_msgs::msg::Path>("teb_global_plan", 1);
    }
    else
    {
@@ -715,6 +725,49 @@
        std::string("Transformed plan is empty. Cannot determine a local plan.")
      );
    }
+
+   // Check if in-place rotation should be performed before TEB planning
+  if (shouldRotateInPlace(velocity, transformed_plan, robot_pose))
+  {
+    geometry_msgs::msg::TwistStamped rotation_cmd_vel;
+    // Calculate angle difference to target heading using forward lookahead distance
+    const geometry_msgs::msg::PoseStamped *target_pose = nullptr;
+    double accumulated_distance = 0.0;
+    
+    for (size_t i = 1; i < transformed_plan.size(); ++i)
+    {
+      double dx = transformed_plan[i].pose.position.x - transformed_plan[i-1].pose.position.x;
+      double dy = transformed_plan[i].pose.position.y - transformed_plan[i-1].pose.position.y;
+      accumulated_distance += std::sqrt(dx * dx + dy * dy);
+      
+      if (accumulated_distance >= cfg_->rotation.forward_lookahead_distance)
+      {
+        target_pose = &transformed_plan[i];
+        break;
+      }
+    }
+    
+    // If no pose found within lookahead distance, use the last pose
+    if (target_pose == nullptr)
+    {
+      target_pose = &transformed_plan.back();
+    }
+    
+    double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
+    double target_yaw = tf2::getYaw(target_pose->pose.orientation);
+    double angular_distance_to_heading = target_yaw - robot_yaw;
+    // Normalize to [-PI, PI]
+    while (angular_distance_to_heading > M_PI) angular_distance_to_heading -= 2.0 * M_PI;
+    while (angular_distance_to_heading < -M_PI) angular_distance_to_heading += 2.0 * M_PI;
+    
+    if (computeRotateToHeadingCommand(angular_distance_to_heading, robot_pose, velocity, rotation_cmd_vel))
+    {
+      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000, "Performing in-place rotation before TEB planning");
+      return rotation_cmd_vel;
+    }
+    // If rotation fails due to collision, continue with TEB planning
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000, "In-place rotation blocked by collision, using TEB planning");
+  }
                
    // Get current goal point (last point of the transformed plan)
    const geometry_msgs::msg::PoseStamped &goal_point = transformed_plan.back();
@@ -1634,8 +1687,20 @@
        }
        if (dist_sq < dist_thresh_sq)
        {
-          erase_end = it;
-          break;
+         // If close enough, additionally require plan pose orientation to align with robot orientation
+         // If yaw misalignment is too large, keep searching forward until we find a close pose with aligned yaw
+         double robot_yaw = tf2::getYaw(robot.pose.orientation);
+         double pose_yaw = tf2::getYaw(it->pose.orientation);
+         double yaw_diff = pose_yaw - robot_yaw;
+         while (yaw_diff > M_PI) yaw_diff -= 2.0 * M_PI;
+         while (yaw_diff < -M_PI) yaw_diff += 2.0 * M_PI;
+
+         if (std::fabs(yaw_diff) <= prune_angle_threshold_)
+         {
+           erase_end = it;
+           break;
+         }
+         // else: do not break, continue searching forward
        }
        ++it;
        // ++count_it;
@@ -1848,7 +1913,7 @@
            }
            if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
            {
-             max_plan_length = costmap_->getSizeInMetersX() / 2.0 + 1.0;
+             max_plan_length = std::min(max_plan_length + 1.0, costmap_->getSizeInMetersX());
            }
            cfg_->optim.weight_viapoint = 1.0;
          }
@@ -2287,6 +2352,229 @@
    
    return;
  }
+
+ bool TebLocalPlannerROS::shouldRotateInPlace(
+  const geometry_msgs::msg::Twist & velocity,
+  const std::vector<geometry_msgs::msg::PoseStamped> & transformed_plan,
+  const geometry_msgs::msg::PoseStamped & robot_pose)
+{
+  // Check linear velocity threshold
+  double linear_vel = std::sqrt(velocity.linear.x * velocity.linear.x + velocity.linear.y * velocity.linear.y);
+  if (linear_vel >= cfg_->rotation.linear_vel_threshold)
+  {
+    return false;
+  }
+  
+  // Note: do NOT gate rotation on current angular velocity (intentionally removed)
+  
+  // Check if plan is not empty
+  if (transformed_plan.empty())
+  {
+    return false;
+  }
+  
+  // Find target pose based on forward lookahead distance
+  // Start from the first pose (robot position) and find the first pose that is at least forward_lookahead_distance away
+  const geometry_msgs::msg::PoseStamped *target_pose = nullptr;
+  double accumulated_distance = 0.0;
+  
+  for (size_t i = 1; i < transformed_plan.size(); ++i)
+  {
+    double dx = transformed_plan[i].pose.position.x - transformed_plan[i-1].pose.position.x;
+    double dy = transformed_plan[i].pose.position.y - transformed_plan[i-1].pose.position.y;
+    accumulated_distance += std::sqrt(dx * dx + dy * dy);
+    
+    if (accumulated_distance >= cfg_->rotation.forward_lookahead_distance)
+    {
+      target_pose = &transformed_plan[i];
+      break;
+    }
+  }
+  
+  // If no pose found within lookahead distance, use the last pose
+  if (target_pose == nullptr)
+  {
+    target_pose = &transformed_plan.back();
+  }
+  
+  // Calculate angle difference between robot orientation and target pose orientation
+  double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
+  double target_yaw = tf2::getYaw(target_pose->pose.orientation);
+  double angular_distance = target_yaw - robot_yaw;
+  
+  // Normalize to [-PI, PI]
+  while (angular_distance > M_PI) angular_distance -= 2.0 * M_PI;
+  while (angular_distance < -M_PI) angular_distance += 2.0 * M_PI;
+  
+  // Check if angle difference exceeds threshold
+  if (std::abs(angular_distance) <= cfg_->rotation.angle_threshold)
+  {
+    return false;
+  }
+  
+  return true;
+}
+
+bool TebLocalPlannerROS::computeRotateToHeadingCommand(
+  const double & angular_distance_to_heading,
+  const geometry_msgs::msg::PoseStamped & pose,
+  const geometry_msgs::msg::Twist & velocity,
+  geometry_msgs::msg::TwistStamped & cmd_vel)
+{
+  // Calculate rotation time for both directions
+  double abs_angular_distance = std::abs(angular_distance_to_heading);
+  double clockwise_angle = abs_angular_distance;
+  double counterclockwise_angle = 2.0 * M_PI - abs_angular_distance;
+  double clockwise_time = clockwise_angle / cfg_->rotation.rotate_to_heading_angular_vel;
+  double counterclockwise_time = counterclockwise_angle / cfg_->rotation.rotate_to_heading_angular_vel;
+  
+  // Determine which direction is faster
+  bool use_clockwise = (clockwise_time <= counterclockwise_time);
+  
+  // Determine angular velocity sign based on angular_distance_to_heading
+  // Positive angular_distance means rotate counterclockwise (positive angular velocity)
+  // Negative angular_distance means rotate clockwise (negative angular velocity)
+  double angular_vel_sign = (angular_distance_to_heading > 0.0) ? 1.0 : -1.0;
+  
+  // If counterclockwise is faster, we need to reverse the sign
+  if (!use_clockwise)
+  {
+    angular_vel_sign = -angular_vel_sign;
+  }
+  
+  // Create command for first direction (faster direction)
+  geometry_msgs::msg::TwistStamped test_cmd_vel;
+  test_cmd_vel.header = pose.header;
+  test_cmd_vel.header.stamp = clock_->now();
+  test_cmd_vel.twist.linear.x = 0.0;
+  test_cmd_vel.twist.linear.y = 0.0;
+  test_cmd_vel.twist.angular.z = angular_vel_sign * cfg_->rotation.rotate_to_heading_angular_vel;
+  
+  // Apply acceleration limits
+  double current_angular_vel = velocity.angular.z;
+  double min_feasible_angular_speed = current_angular_vel - cfg_->rotation.max_angular_accel * control_duration_;
+  double max_feasible_angular_speed = current_angular_vel + cfg_->rotation.max_angular_accel * control_duration_;
+  test_cmd_vel.twist.angular.z = std::clamp(
+    test_cmd_vel.twist.angular.z, min_feasible_angular_speed, max_feasible_angular_speed);
+  
+  // Check collision for first direction
+  double test_angular_distance = use_clockwise ? clockwise_angle : counterclockwise_angle;
+  if (isRotationCollisionFree(test_cmd_vel, test_angular_distance, pose))
+  {
+    cmd_vel = test_cmd_vel;
+    return true;
+  }
+  
+  // If first direction has collision, try opposite direction
+  angular_vel_sign = -angular_vel_sign;
+  test_cmd_vel.twist.angular.z = angular_vel_sign * cfg_->rotation.rotate_to_heading_angular_vel;
+  test_cmd_vel.twist.angular.z = std::clamp(
+    test_cmd_vel.twist.angular.z, min_feasible_angular_speed, max_feasible_angular_speed);
+  
+  test_angular_distance = use_clockwise ? counterclockwise_angle : clockwise_angle;
+  if (isRotationCollisionFree(test_cmd_vel, test_angular_distance, pose))
+  {
+    cmd_vel = test_cmd_vel;
+    return true;
+  }
+  
+  // Both directions have collision, return false
+  return false;
+}
+
+bool TebLocalPlannerROS::isRotationCollisionFree(
+  const geometry_msgs::msg::TwistStamped & cmd_vel,
+  const double & angular_distance_to_heading,
+  const geometry_msgs::msg::PoseStamped & pose)
+{
+  double initial_yaw = tf2::getYaw(pose.pose.orientation);
+  double abs_angular_distance = std::abs(angular_distance_to_heading);
+  double abs_angular_vel = std::abs(cmd_vel.twist.angular.z);
+  
+  if (abs_angular_vel < 1e-6)
+  {
+    // No rotation, check current pose only
+    using namespace nav2_costmap_2d;  // NOLINT
+    double footprint_cost = rotation_collision_checker_->footprintCostAtPose(
+      pose.pose.position.x, pose.pose.position.y,
+      initial_yaw, costmap_ros_->getRobotFootprint());
+    
+    if (footprint_cost == static_cast<double>(NO_INFORMATION) &&
+      costmap_ros_->getLayeredCostmap()->isTrackingUnknown())
+    {
+      return false;
+    }
+    
+    if (footprint_cost >= static_cast<double>(LETHAL_OBSTACLE))
+    {
+      return false;
+    }
+    
+    return true;
+  }
+  
+  // Calculate total rotation time needed
+  double total_rotation_time = abs_angular_distance / abs_angular_vel;
+  int num_steps = static_cast<int>(std::ceil(total_rotation_time / control_duration_));
+  
+  // Ensure at least one step (check current and target)
+  if (num_steps < 1)
+  {
+    num_steps = 1;
+  }
+  
+  // Check collision at each step from current orientation to target orientation
+  for (int step = 0; step <= num_steps; ++step)
+  {
+    double simulated_time = step * control_duration_;
+    double rotated_angle = abs_angular_vel * simulated_time;
+    
+    // Clamp rotated_angle to not exceed the target
+    if (rotated_angle >= abs_angular_distance)
+    {
+      rotated_angle = abs_angular_distance;
+    }
+    
+    // Calculate current yaw based on rotation direction
+    double current_yaw = initial_yaw;
+    if (cmd_vel.twist.angular.z > 0)
+    {
+      current_yaw += rotated_angle;
+    }
+    else
+    {
+      current_yaw -= rotated_angle;
+    }
+    
+    // Normalize current_yaw to [-PI, PI]
+    while (current_yaw > M_PI) current_yaw -= 2.0 * M_PI;
+    while (current_yaw < -M_PI) current_yaw += 2.0 * M_PI;
+    
+    using namespace nav2_costmap_2d;  // NOLINT
+    double footprint_cost = rotation_collision_checker_->footprintCostAtPose(
+      pose.pose.position.x, pose.pose.position.y,
+      current_yaw, costmap_ros_->getRobotFootprint());
+    
+    if (footprint_cost == static_cast<double>(NO_INFORMATION) &&
+      costmap_ros_->getLayeredCostmap()->isTrackingUnknown())
+    {
+      return false;  // Potential collision detected
+    }
+    
+    if (footprint_cost >= static_cast<double>(LETHAL_OBSTACLE))
+    {
+      return false;  // Collision detected
+    }
+    
+    // If we've reached the target, break
+    if (rotated_angle >= abs_angular_distance)
+    {
+      break;
+    }
+  }
+  
+  return true;  // No collision detected
+}
  
  } // end namespace teb_local_planner
  

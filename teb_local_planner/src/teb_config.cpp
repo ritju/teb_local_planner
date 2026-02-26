@@ -146,6 +146,12 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "edge_min_obstacle_dist", rclcpp::ParameterValue(wall_line.edge_min_obstacle_dist));
   declare_parameter_if_not_declared(nh, name + "." + "edge_footprint_vertices", rclcpp::ParameterValue(wall_line.edge_footprint_vertices));
 
+  // Rotation
+  declare_parameter_if_not_declared(nh, name + "." + "rotation_linear_vel_threshold", rclcpp::ParameterValue(rotation.linear_vel_threshold));
+  declare_parameter_if_not_declared(nh, name + "." + "rotation_angle_threshold", rclcpp::ParameterValue(rotation.angle_threshold));
+  declare_parameter_if_not_declared(nh, name + "." + "rotate_to_heading_angular_vel", rclcpp::ParameterValue(rotation.rotate_to_heading_angular_vel));
+  declare_parameter_if_not_declared(nh, name + "." + "rotation_max_angular_accel", rclcpp::ParameterValue(rotation.max_angular_accel));
+  declare_parameter_if_not_declared(nh, name + "." + "rotation_forward_lookahead_distance", rclcpp::ParameterValue(rotation.forward_lookahead_distance));
 
   // Homotopy Class Planner
   declare_parameter_if_not_declared(nh, name + "." + "enable_homotopy_class_planning", rclcpp::ParameterValue(hcp.enable_homotopy_class_planning));
@@ -332,6 +338,13 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "oscillation_filter_duration", recovery.oscillation_filter_duration, recovery.oscillation_filter_duration);
   nh->get_parameter_or(name + "." + "divergence_detection_enable", recovery.divergence_detection_enable, recovery.divergence_detection_enable);
   nh->get_parameter_or(name + "." + "divergence_detection_max_chi_squared", recovery.divergence_detection_max_chi_squared, recovery.divergence_detection_max_chi_squared);
+
+  // Rotation
+  nh->get_parameter_or(name + "." + "rotation_linear_vel_threshold", rotation.linear_vel_threshold, rotation.linear_vel_threshold);
+  nh->get_parameter_or(name + "." + "rotation_angle_threshold", rotation.angle_threshold, rotation.angle_threshold);
+  nh->get_parameter_or(name + "." + "rotate_to_heading_angular_vel", rotation.rotate_to_heading_angular_vel, rotation.rotate_to_heading_angular_vel);
+  nh->get_parameter_or(name + "." + "rotation_max_angular_accel", rotation.max_angular_accel, rotation.max_angular_accel);
+  nh->get_parameter_or(name + "." + "rotation_forward_lookahead_distance", rotation.forward_lookahead_distance, rotation.forward_lookahead_distance);
 
   // footprint model
   if (!nh->get_parameter(name + "." + "footprint_model.type", model_name))
@@ -687,6 +700,17 @@ rcl_interfaces::msg::SetParametersResult
       } else if (name == node_name + ".footprint_model.rear_radius") {
         reload_footprint = true;
         rear_radius = parameter.as_double();
+      }
+      else if (name == node_name + ".rotation.linear_vel_threshold") {
+        rotation.linear_vel_threshold = parameter.as_double();
+      } else if (name == node_name + ".rotation.angle_threshold") {
+        rotation.angle_threshold = parameter.as_double();
+      } else if (name == node_name + ".rotation.rotate_to_heading_angular_vel") {
+        rotation.rotate_to_heading_angular_vel = parameter.as_double();
+      } else if (name == node_name + ".rotation.max_angular_accel") {
+        rotation.max_angular_accel = parameter.as_double();
+      } else if (name == node_name + ".rotation.forward_lookahead_distance") {
+        rotation.forward_lookahead_distance = parameter.as_double();
       }
     }
 

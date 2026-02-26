@@ -67,6 +67,7 @@
 // costmap
 #include <costmap_converter/costmap_converter_interface.h>
 #include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
+#include <nav2_costmap_2d/footprint_collision_checker.hpp>
 
 #include <nav2_util/lifecycle_node.hpp>
 #include <nav2_costmap_2d/costmap_2d_ros.hpp>
@@ -469,6 +470,7 @@ private:
   rclcpp::Time wall_line_update_time_;
   rclcpp::Time curb_line_update_time_;
   // Parameters for normal mode (saved during initialization)
+  double prune_angle_threshold_;  // rad, default 90deg
   double normal_weight_optimaltime_;
   double normal_min_obstacle_dist_;
   std::string normal_footprint_vertices_;
@@ -477,6 +479,49 @@ private:
   double edge_min_obstacle_dist_;
   std::string edge_footprint_vertices_;
   bool is_edge_following_mode_;
+
+  // In-place rotation
+  double control_duration_;  // Control loop duration (1.0 / controller_frequency)
+  std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>> rotation_collision_checker_;
+  
+  /**
+   * @brief Check if in-place rotation should be performed
+   * @param velocity Current robot velocity
+   * @param transformed_plan The transformed plan
+   * @param robot_pose Current robot pose
+   * @return true if rotation should be performed, false otherwise
+   */
+  bool shouldRotateInPlace(
+    const geometry_msgs::msg::Twist & velocity,
+    const std::vector<geometry_msgs::msg::PoseStamped> & transformed_plan,
+    const geometry_msgs::msg::PoseStamped & robot_pose);
+  
+  /**
+   * @brief Compute rotation command for in-place rotation
+   * @param angular_distance_to_heading Angle difference to target heading
+   * @param pose Current robot pose
+   * @param velocity Current robot velocity
+   * @param[out] cmd_vel Output velocity command
+   * @return true if rotation command is valid, false if collision detected
+   */
+  bool computeRotateToHeadingCommand(
+    const double & angular_distance_to_heading,
+    const geometry_msgs::msg::PoseStamped & pose,
+    const geometry_msgs::msg::Twist & velocity,
+    geometry_msgs::msg::TwistStamped & cmd_vel);
+  
+  /**
+   * @brief Check if rotation is collision-free
+   * @param cmd_vel Velocity command to check
+   * @param angular_distance_to_heading Angle difference to target heading
+   * @param pose Current robot pose
+   * @return true if collision-free, false otherwise
+   */
+  bool isRotationCollisionFree(
+    const geometry_msgs::msg::TwistStamped & cmd_vel,
+    const double & angular_distance_to_heading,
+    const geometry_msgs::msg::PoseStamped & pose);
+    
 protected:
   // Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler;
