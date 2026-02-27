@@ -89,7 +89,8 @@
                                             edge_footprint_vertices_("[[1.25, 0.5], [1.25, -0.5], [-0.65, -0.5], [-0.65, 0.5]]"),
                                             prune_angle_threshold_(1.57079632679),
                                             is_edge_following_mode_(false),
-                                            control_duration_(0.2)
+                                            control_duration_(0.2), 
+                                            safe_linear_speed_limit_(2.0)
  {
    // Initialize edge mode parameters from config defaults (will be overridden by parameters if available)
    edge_weight_optimaltime_ = cfg_->wall_line.edge_weight_optimaltime;
@@ -228,6 +229,17 @@
                 "via_points", 
                 rclcpp::SystemDefaultsQoS(),
                 std::bind(&TebLocalPlannerROS::customViaPointsCB, this, std::placeholders::_1));
+
+    // setup callback for external speed limit (linear x)
+    {
+      rclcpp::QoS speed_limit_qos(rclcpp::KeepLast(1));
+      speed_limit_qos.transient_local();
+      speed_limit_qos.reliable();
+      speed_limit_sub_ = node->create_subscription<std_msgs::msg::Float64>(
+                "/nav/speed_limit",
+                speed_limit_qos,
+                std::bind(&TebLocalPlannerROS::speedLimitCallback, this, std::placeholders::_1));
+    }
     // setup callback for line center points
     if (cfg_->optim.weight_wall_line_dist > 0.0)
     {
@@ -570,6 +582,24 @@
      global_plan_msg.poses = global_plan_;
      global_plan_pub_->publish(global_plan_msg);
    }
+
+  // Apply external speed limit (if any) before planning
+  {
+    std::lock_guard<std::mutex> l(speed_limit_mutex_);
+    if (has_speed_limit_) {
+      // Ensure non-negative limit and cap by robot's nominal base maximum
+      const double limit = std::max(0.0, speed_limit_linear_x_);
+      if (std::isfinite(limit) && speed_limit_linear_x_ > 0) {
+        cfg_->robot.max_vel_x = std::min(limit, safe_linear_speed_limit_);
+        cfg_->robot.max_vel_x_backwards = std::min(limit, safe_linear_speed_limit_);
+      }
+      else
+      {
+        cfg_->robot.max_vel_x = cfg_->robot.base_max_vel_x;
+        cfg_->robot.max_vel_x_backwards = cfg_->robot.base_max_vel_x_backwards;
+      }
+    }
+  }
  
    // Transform global plan to the frame of interest (w.r.t. the local costmap)
    std::vector<geometry_msgs::msg::PoseStamped> transformed_plan;
@@ -2225,8 +2255,20 @@
          cfg_->robot.base_max_vel_theta = cfg_->robot.base_max_vel_theta * ratio;
        }
      }
-   }
- }
+    }
+  }
+
+void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstSharedPtr msg)
+{
+  if (!msg) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> l(speed_limit_mutex_);
+  speed_limit_linear_x_ = msg->data;
+  has_speed_limit_ = true;
+}
+
  
  void TebLocalPlannerROS::switchParameterMode(bool enable_edge_mode)
  {

@@ -121,6 +121,7 @@ public:
     bool is_footprint_dynamic; //<! If true, updated the footprint before checking trajectory feasibility
     bool use_proportional_saturation; //<! If true, reduce all twists components (linear x and y, and angular z) proportionally if any exceed its corresponding bounds, instead of saturating each one individually
     double transform_tolerance = 0.5; //<! Tolerance when querying the TF Tree for a transformation (seconds)
+    double safe_linear_speed_limit; //!< Maximum linear speed limit for the robot
   } robot; //!< Robot related parameters
 
   //! Goal tolerance related parameters
@@ -326,6 +327,7 @@ public:
     robot.cmd_angle_instead_rotvel = false;
     robot.is_footprint_dynamic = false;
     robot.use_proportional_saturation = false;
+    robot.safe_linear_speed_limit = 2.0;
 
     // GoalTolerance
 

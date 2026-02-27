@@ -85,6 +85,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "wheelbase", rclcpp::ParameterValue(robot.wheelbase));
   declare_parameter_if_not_declared(nh, name + "." + "cmd_angle_instead_rotvel", rclcpp::ParameterValue(robot.cmd_angle_instead_rotvel));
   declare_parameter_if_not_declared(nh, name + "." + "is_footprint_dynamic", rclcpp::ParameterValue(robot.is_footprint_dynamic));
+  declare_parameter_if_not_declared(nh, name + "." + "safe_linear_speed_limit", rclcpp::ParameterValue(robot.safe_linear_speed_limit));
 
   // GoalTolerance
   declare_parameter_if_not_declared(nh, name + "." + "free_goal_vel", rclcpp::ParameterValue(goal_tolerance.free_goal_vel));
@@ -239,6 +240,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "wheelbase", robot.wheelbase, robot.wheelbase);
   nh->get_parameter_or(name + "." + "cmd_angle_instead_rotvel", robot.cmd_angle_instead_rotvel, robot.cmd_angle_instead_rotvel);
   nh->get_parameter_or(name + "." + "is_footprint_dynamic", robot.is_footprint_dynamic, robot.is_footprint_dynamic);
+  nh->get_parameter_or(name + "." + "safe_linear_speed_limit", robot.safe_linear_speed_limit, robot.safe_linear_speed_limit);
   
   // GoalTolerance
   nh->get_parameter_or(name + "." + "free_goal_vel", goal_tolerance.free_goal_vel, goal_tolerance.free_goal_vel);
@@ -556,6 +558,8 @@ rcl_interfaces::msg::SetParametersResult
         robot.min_turning_radius = parameter.as_double();
       } else if (name == node_name + ".wheelbase") {
         robot.wheelbase = parameter.as_double();
+      } else if (name == node_name + ".safe_linear_speed_limit") {
+        robot.safe_linear_speed_limit = parameter.as_double();
       }
       // GoalTolerance
       // Obstacles
@@ -931,7 +935,10 @@ void TebConfig::checkParameters() const
   
   if (robot.acc_lim_theta <= optim.penalty_epsilon)
     RCLCPP_WARN(logger_, "TebLocalPlannerROS() Param Warning: acc_lim_theta <= penalty_epsilon. The resulting bound is negative. Undefined behavior... Change at least one of them!");
-      
+  
+  if (robot.safe_linear_speed_limit <= 0)
+    RCLCPP_WARN(logger_, "TebLocalPlannerROS() Param Warning: safe_linear_speed_limit <= 0. The resulting bound is negative. Undefined behavior... Change at least one of them!");
+  
   // dt_ref and dt_hyst
   if (trajectory.dt_ref <= trajectory.dt_hysteresis)
     RCLCPP_WARN(logger_, "TebLocalPlannerROS() Param Warning: dt_ref <= dt_hysteresis. The hysteresis is not allowed to be greater or equal!. Undefined behavior... Change at least one of them!");
