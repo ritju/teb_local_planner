@@ -145,6 +145,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "edge_max_vel_theta", rclcpp::ParameterValue(wall_line.edge_max_vel_theta));
   declare_parameter_if_not_declared(nh, name + "." + "edge_weight_optimaltime", rclcpp::ParameterValue(wall_line.edge_weight_optimaltime));
   declare_parameter_if_not_declared(nh, name + "." + "edge_min_obstacle_dist", rclcpp::ParameterValue(wall_line.edge_min_obstacle_dist));
+  declare_parameter_if_not_declared(nh, name + "." + "keep_wall_line_time", rclcpp::ParameterValue(wall_line.keep_wall_line_time));
   declare_parameter_if_not_declared(nh, name + "." + "edge_footprint_vertices", rclcpp::ParameterValue(wall_line.edge_footprint_vertices));
 
   // Rotation
@@ -301,6 +302,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "edge_max_vel_theta", wall_line.edge_max_vel_theta, wall_line.edge_max_vel_theta);
   nh->get_parameter_or(name + "." + "edge_weight_optimaltime", wall_line.edge_weight_optimaltime, wall_line.edge_weight_optimaltime);
   nh->get_parameter_or(name + "." + "edge_min_obstacle_dist", wall_line.edge_min_obstacle_dist, wall_line.edge_min_obstacle_dist);
+  nh->get_parameter_or(name + "." + "keep_wall_line_time", wall_line.keep_wall_line_time, wall_line.keep_wall_line_time);
   nh->get_parameter_or(name + "." + "edge_footprint_vertices", wall_line.edge_footprint_vertices, wall_line.edge_footprint_vertices);
 
 
@@ -643,6 +645,8 @@ rcl_interfaces::msg::SetParametersResult
         wall_line.edge_weight_optimaltime = parameter.as_double();
       } else if (name == node_name + ".edge_min_obstacle_dist") {
         wall_line.edge_min_obstacle_dist = parameter.as_double();
+      } else if (name == node_name + ".keep_wall_line_time") {
+        wall_line.keep_wall_line_time = parameter.as_double();
       }
       // Homotopy Class Planner
       else if (name == node_name + ".selection_cost_hysteresis") {

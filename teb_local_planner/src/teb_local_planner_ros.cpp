@@ -90,7 +90,8 @@
                                             prune_angle_threshold_(1.57079632679),
                                             is_edge_following_mode_(false),
                                             control_duration_(0.2), 
-                                            safe_linear_speed_limit_(2.0)
+                                            safe_linear_speed_limit_(2.0),
+                                            keep_wall_line_time_(5.0)
  {
    // Initialize edge mode parameters from config defaults (will be overridden by parameters if available)
    edge_weight_optimaltime_ = cfg_->wall_line.edge_weight_optimaltime;
@@ -1335,7 +1336,7 @@
      if(wall_line_points_.size() > 0)
      {
        auto time_diff = clock_->now() - wall_line_update_time_;
-       if (time_diff.seconds() > 1.0)
+       if (time_diff.seconds() > keep_wall_line_time_)
        {
          wall_line_points_.clear();
          
@@ -1537,7 +1538,7 @@
      if(wall_line_points_.size() > 0)
      {
        auto time_diff = clock_->now() - wall_line_update_time_;
-       if (time_diff.seconds() > 1.0)
+       if (time_diff.seconds() > keep_wall_line_time_)
        {
          wall_line_points_.clear();
          

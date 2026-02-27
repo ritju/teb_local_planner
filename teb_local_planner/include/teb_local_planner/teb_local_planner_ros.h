@@ -531,6 +531,7 @@
    double speed_limit_linear_x_{std::numeric_limits<double>::infinity()};
    bool has_speed_limit_{false};
    double safe_linear_speed_limit_ = 2.0;
+   double keep_wall_line_time_ = 5.0;
      
  protected:
    // Dynamic parameters handler
