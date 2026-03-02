@@ -42,6 +42,7 @@
  #include <boost/algorithm/string.hpp>
  
  #include <nav2_costmap_2d/cost_values.hpp>
+#include <rclcpp/logging.hpp>
  #include <string>
  
  // pluginlib macros
@@ -606,16 +607,16 @@
       // Ensure non-negative limit and cap by robot's nominal base maximum
       const double limit = std::max(0.0, speed_limit_linear_x_);
       if (std::isfinite(limit) && speed_limit_linear_x_ > 0) {
-        RCLCPP_INFO(logger_, "Performing change speed limit !");
+        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 5000, "Performing change speed limit !");
         cfg_->robot.max_vel_x = std::min(limit, safe_linear_speed_limit_);
-        RCLCPP_INFO(logger_, "change cfg_->robot.max_vel_x: %f", cfg_->robot.max_vel_x);
+        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 5000, "change cfg_->robot.max_vel_x: %f", cfg_->robot.max_vel_x);
         cfg_->robot.max_vel_x_backwards = std::min(limit, safe_linear_speed_limit_);
       }
       else
       {
-        RCLCPP_INFO(logger_, "Performing recover speed limit !");
+        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 5000, "Performing recover speed limit !");
         cfg_->robot.max_vel_x = cfg_->robot.base_max_vel_x;
-        RCLCPP_INFO(logger_, "recover cfg_->robot.max_vel_x: %f", cfg_->robot.max_vel_x);
+        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 5000,  "recover cfg_->robot.max_vel_x: %f", cfg_->robot.max_vel_x);
         cfg_->robot.max_vel_x_backwards = cfg_->robot.base_max_vel_x_backwards;
       }
     }
