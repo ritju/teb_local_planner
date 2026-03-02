@@ -91,7 +91,10 @@
                                             is_edge_following_mode_(false),
                                             control_duration_(0.2), 
                                             safe_linear_speed_limit_(2.0),
-                                            keep_wall_line_time_(5.0)
+                                            keep_wall_line_time_(5.0),
+                                            close_vehicle_distance_threshold_(1.5),
+                                            new_vehicle_distance_threshold_(5.0),
+                                            erase_vehicle_distance_threshold_(10.0)
  {
    // Initialize edge mode parameters from config defaults (will be overridden by parameters if available)
    edge_weight_optimaltime_ = cfg_->wall_line.edge_weight_optimaltime;
@@ -231,6 +234,17 @@
                 rclcpp::SystemDefaultsQoS(),
                 std::bind(&TebLocalPlannerROS::customViaPointsCB, this, std::placeholders::_1));
 
+    // setup callback for surrounding vehicle poses
+    {
+      rclcpp::QoS vehicle_qos(rclcpp::KeepLast(1));
+      vehicle_qos.transient_local();
+      vehicle_qos.reliable();
+      vehicle_poses_sub_ = node->create_subscription<geometry_msgs::msg::PoseArray>(
+        "/vehicle_poses_around",
+        vehicle_qos,
+        std::bind(&TebLocalPlannerROS::vehiclePosesCallback, this, std::placeholders::_1));
+    }
+
     // setup callback for external speed limit (linear x)
     {
       rclcpp::QoS speed_limit_qos(rclcpp::KeepLast(1));
@@ -263,7 +277,7 @@
     double controller_frequency = 5;
     node->get_parameter("controller_frequency", controller_frequency);
     failure_detector_.setBufferLength(std::round(cfg_->recovery.oscillation_filter_duration*controller_frequency));
-    
+
     // set initialized flag
     initialized_ = true;
 
@@ -1159,6 +1173,27 @@
      switchParameterMode(false);
      return;
    }
+
+   // 如果存在附近车辆，则确保退出边沿跟随模式（多线程安全检查）
+   bool has_near_vehicles = false;
+   {
+     std::lock_guard<std::mutex> veh_lock(global_vehicle_poses_mutex_);
+     for (const auto& vehicle : global_vehicle_poses_)
+     {
+      if (distance_points2d(robot_pose.pose.position, vehicle.pose.position) < close_vehicle_distance_threshold_)
+      {
+        has_near_vehicles = true;
+        break;
+      }
+     }
+   }
+   if (has_near_vehicles)
+   {
+    if(wall_line_points_.size() > 0) wall_line_points_.clear();
+    switchParameterMode(false);
+    return;
+   }
+
    if (input_path.poses.size() >= 2) {
      // 提取机器人当前朝向（从四元数转换为偏航角）
      double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
@@ -1357,9 +1392,30 @@
    std::lock_guard<std::mutex> l(update_curb_line_mutex_);
    if (curb_line.poses.size() == 0) {
      if(wall_line_points_.size() > 0) wall_line_points_.clear();
+    switchParameterMode(false);
+    return;
+   }
+
+   // 如果存在附近车辆，则确保退出边沿跟随模式（多线程安全检查）
+   bool has_near_vehicles = false;
+   {
+     std::lock_guard<std::mutex> veh_lock(global_vehicle_poses_mutex_);
+     for (const auto& vehicle : global_vehicle_poses_)
+     {
+      if (distance_points2d(robot_pose.pose.position, vehicle.pose.position) < close_vehicle_distance_threshold_)
+      {
+        has_near_vehicles = true;
+        break;
+      }
+     }
+   }
+   if (has_near_vehicles)
+   {
+     if(wall_line_points_.size() > 0) wall_line_points_.clear();
      switchParameterMode(false);
      return;
    }
+    
    if (input_path.poses.size() >= 2) {
      // 提取机器人当前朝向（从四元数转换为偏航角）
      double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
@@ -2364,6 +2420,114 @@ void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstS
    }
    custom_via_points_active_ = !via_points_.empty();
  }
+
+void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArray::ConstSharedPtr msg)
+{
+  if (!msg || !initialized_ || !costmap_ros_ || !tf_) {
+    return;
+  }
+
+  // 获取机器人在 map 坐标系下的当前位姿
+  geometry_msgs::msg::PoseStamped robot_pose_map;
+  try {
+    geometry_msgs::msg::TransformStamped tf_base_to_map =
+      tf_->lookupTransform(
+        cfg_->map_frame,
+        costmap_ros_->getBaseFrameID(),
+        tf2::TimePointZero,
+        tf2::durationFromSec(0.5));
+
+    robot_pose_map.header.stamp = tf_base_to_map.header.stamp;
+    robot_pose_map.header.frame_id = cfg_->map_frame;
+    robot_pose_map.pose.position.x = tf_base_to_map.transform.translation.x;
+    robot_pose_map.pose.position.y = tf_base_to_map.transform.translation.y;
+    robot_pose_map.pose.position.z = tf_base_to_map.transform.translation.z;
+    robot_pose_map.pose.orientation = tf_base_to_map.transform.rotation;
+  } catch (const tf2::TransformException &ex) {
+    RCLCPP_WARN_THROTTLE(
+      logger_, *(clock_), 2000,
+      "vehiclePosesCallback: Failed to get robot pose in map frame: %s", ex.what());
+    return;
+  }
+
+  const double new_vehicle_distance_threshold_sq = new_vehicle_distance_threshold_ * new_vehicle_distance_threshold_;
+
+  // 先构造当前消息中、距离机器人小于阈值的候选车辆（位姿统一转换到 map 坐标系）
+  std::vector<geometry_msgs::msg::PoseStamped> near_vehicles;
+  near_vehicles.reserve(msg->poses.size());
+
+  for (const auto &pose : msg->poses) {
+    geometry_msgs::msg::PoseStamped vehicle_pose;
+    vehicle_pose.header = msg->header;
+    vehicle_pose.pose = pose;
+
+    // 如有必要，将车辆位姿转换到 map 坐标系
+    if (vehicle_pose.header.frame_id != cfg_->map_frame) {
+      try {
+        geometry_msgs::msg::TransformStamped tf_to_map =
+          tf_->lookupTransform(
+            cfg_->map_frame,
+            vehicle_pose.header.frame_id,
+            tf2::TimePointZero,
+            tf2::durationFromSec(0.5));
+        tf2::doTransform(vehicle_pose, vehicle_pose, tf_to_map);
+      } catch (const tf2::TransformException &ex) {
+        RCLCPP_WARN_THROTTLE(
+          logger_, *(clock_), 2000,
+          "vehiclePosesCallback: Failed to transform vehicle pose to map frame: %s", ex.what());
+        continue;
+      }
+    }
+
+    const double dx = vehicle_pose.pose.position.x - robot_pose_map.pose.position.x;
+    const double dy = vehicle_pose.pose.position.y - robot_pose_map.pose.position.y;
+    const double dist_sq = dx * dx + dy * dy;
+
+    if (dist_sq <= new_vehicle_distance_threshold_sq) {
+      near_vehicles.emplace_back(vehicle_pose);
+    }
+  }
+
+  // 更新全局车辆列表：
+  // (1) 先根据机器人位置剔除 global_vehicle_poses_ 中距离超过阈值的车辆
+  // (2) 再从 near_vehicles 中加入新的车辆，如果与现有车辆距离太近则不加入
+  const double erase_vehicle_distance_threshold_sq = erase_vehicle_distance_threshold_ * erase_vehicle_distance_threshold_;
+  {
+    std::lock_guard<std::mutex> veh_lock(global_vehicle_poses_mutex_);
+
+    // (1) 移除距离机器人超过阈值的已有车辆
+    auto it = global_vehicle_poses_.begin();
+    while (it != global_vehicle_poses_.end()) {
+      const double dx = it->pose.position.x - robot_pose_map.pose.position.x;
+      const double dy = it->pose.position.y - robot_pose_map.pose.position.y;
+      const double dist_sq = dx * dx + dy * dy;
+
+      if (dist_sq > erase_vehicle_distance_threshold_sq) {
+        it = global_vehicle_poses_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    // (2) 对每一个候选车辆，若与现有车辆“距离相近”则认为是同一辆车，不重复加入
+    for (const auto &candidate : near_vehicles) {
+      bool exists_similar = false;
+      for (const auto &existing : global_vehicle_poses_) {
+        const double dx = existing.pose.position.x - candidate.pose.position.x;
+        const double dy = existing.pose.position.y - candidate.pose.position.y;
+        const double dist_sq = dx * dx + dy * dy;
+        if (dist_sq <= same_vehicle_threshold_sq_) {
+          exists_similar = true;
+          break;
+        }
+      }
+
+      if (!exists_similar) {
+        global_vehicle_poses_.emplace_back(candidate);
+      }
+    }
+  }
+}
  
  // void TebLocalPlannerROS::rotation_sigh_callback(const std_msgs::msg::Bool &msg)
  // {

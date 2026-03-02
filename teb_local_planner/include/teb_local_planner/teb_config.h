@@ -163,6 +163,9 @@ public:
     double edge_weight_optimaltime; //!< weight_optimaltime parameter for edge-following mode
     double edge_min_obstacle_dist; //!< min_obstacle_dist parameter for edge-following mode
     double keep_wall_line_time; //!< time to keep the wall line when not detect usefull wall line
+    double new_vehicle_distance_threshold;
+    double erase_vehicle_distance_threshold;
+    double close_vehicle_distance_threshold;
     std::string edge_footprint_vertices; //!< footprint vertices parameter for edge-following mode
   } wall_line; //!< Obstacle related parameters
 
@@ -363,6 +366,9 @@ public:
     wall_line.edge_weight_optimaltime = 10.0;
     wall_line.edge_min_obstacle_dist = 0.05;
     wall_line.keep_wall_line_time = 5.0;
+    wall_line.new_vehicle_distance_threshold = 5.0;
+    wall_line.erase_vehicle_distance_threshold = 10.0;
+    wall_line.close_vehicle_distance_threshold = 1.5;
     wall_line.edge_footprint_vertices = "[[1.25, 0.5], [1.25, -0.5], [-0.65, -0.5], [-0.65, 0.5]]";
 
     // Optimization

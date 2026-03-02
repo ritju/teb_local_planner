@@ -78,10 +78,11 @@
  //#include <dynamic_reconfigure/server.h>
  #include "std_msgs/msg/bool.hpp"
  #include "std_msgs/msg/float32.hpp"
- #include "std_msgs/msg/float64.hpp"
- #include "laserline/line_path_compare.hpp"
- #include "capella_ros_msg/msg/lane_center_paths.hpp"
- #include <limits>
+#include "std_msgs/msg/float64.hpp"
+#include "laserline/line_path_compare.hpp"
+#include "capella_ros_msg/msg/lane_center_paths.hpp"
+#include "geometry_msgs/msg/pose_array.hpp"
+#include <limits>
  namespace teb_local_planner
  {
  using TFBufferPtr = std::shared_ptr<tf2_ros::Buffer>;
@@ -250,6 +251,12 @@
      const double parallel_tolerance,
      const double distance_tolerance,
      const geometry_msgs::msg::PoseStamped& robot_pose);
+
+  /**
+   * @brief Callback for surrounding vehicle poses
+   * @param msg PoseArray of vehicles around the robot (positions already in map frame)
+   */
+  void vehiclePosesCallback(const geometry_msgs::msg::PoseArray::ConstSharedPtr msg);
    
    
    /**
@@ -435,6 +442,11 @@
    std::mutex via_point_mutex_; //!< Mutex that locks the via_points container (multi-threaded)
    std::mutex update_wall_line_mutex_; //!< Mutex that locks the wall_line container (multi-threaded)
    std::mutex update_curb_line_mutex_; //!< Mutex that locks the wall_line container (multi-threaded)
+
+  // Vehicle poses around the robot (in map frame)
+  rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr vehicle_poses_sub_; //!< Subscriber for /vehicle_poses_around
+  std::vector<geometry_msgs::msg::PoseStamped> global_vehicle_poses_; //!< Filtered vehicle poses near the robot
+  std::mutex global_vehicle_poses_mutex_; //!< Mutex that locks the global_vehicle_poses_ container (multi-threaded)
  
    PoseSE2 robot_pose_; //!< Store current robot pose
    PoseSE2 robot_goal_; //!< Store current robot goal
@@ -481,6 +493,14 @@
    double edge_min_obstacle_dist_;
    std::string edge_footprint_vertices_;
    bool is_edge_following_mode_;
+   double speed_limit_linear_x_{std::numeric_limits<double>::infinity()};
+   bool has_speed_limit_{false};
+   double safe_linear_speed_limit_;
+   double keep_wall_line_time_;
+   double close_vehicle_distance_threshold_;
+   double new_vehicle_distance_threshold_;  //!< Distance threshold for adding/removing vehicles from global_vehicle_poses_
+   double erase_vehicle_distance_threshold_;  //!< Distance threshold for adding/removing vehicles from global_vehicle_poses_
+   static constexpr double same_vehicle_threshold_sq_ = 0.5;
  
    // In-place rotation
    double control_duration_;  // Control loop duration (1.0 / controller_frequency)
@@ -528,10 +548,7 @@
    void speedLimitCallback(const std_msgs::msg::Float64::ConstSharedPtr msg);
    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr speed_limit_sub_;
    std::mutex speed_limit_mutex_;
-   double speed_limit_linear_x_{std::numeric_limits<double>::infinity()};
-   bool has_speed_limit_{false};
-   double safe_linear_speed_limit_ = 2.0;
-   double keep_wall_line_time_ = 5.0;
+   
      
  protected:
    // Dynamic parameters handler

@@ -147,6 +147,9 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "edge_min_obstacle_dist", rclcpp::ParameterValue(wall_line.edge_min_obstacle_dist));
   declare_parameter_if_not_declared(nh, name + "." + "keep_wall_line_time", rclcpp::ParameterValue(wall_line.keep_wall_line_time));
   declare_parameter_if_not_declared(nh, name + "." + "edge_footprint_vertices", rclcpp::ParameterValue(wall_line.edge_footprint_vertices));
+  declare_parameter_if_not_declared(nh, name + "." + "new_vehicle_distance_threshold", rclcpp::ParameterValue(wall_line.new_vehicle_distance_threshold));
+  declare_parameter_if_not_declared(nh, name + "." + "erase_vehicle_distance_threshold", rclcpp::ParameterValue(wall_line.erase_vehicle_distance_threshold));
+  declare_parameter_if_not_declared(nh, name + "." + "close_vehicle_distance_threshold", rclcpp::ParameterValue(wall_line.close_vehicle_distance_threshold));
 
   // Rotation
   declare_parameter_if_not_declared(nh, name + "." + "rotation_linear_vel_threshold", rclcpp::ParameterValue(rotation.linear_vel_threshold));
@@ -304,6 +307,9 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "edge_min_obstacle_dist", wall_line.edge_min_obstacle_dist, wall_line.edge_min_obstacle_dist);
   nh->get_parameter_or(name + "." + "keep_wall_line_time", wall_line.keep_wall_line_time, wall_line.keep_wall_line_time);
   nh->get_parameter_or(name + "." + "edge_footprint_vertices", wall_line.edge_footprint_vertices, wall_line.edge_footprint_vertices);
+  nh->get_parameter_or(name + "." + "new_vehicle_distance_threshold", wall_line.new_vehicle_distance_threshold, wall_line.new_vehicle_distance_threshold);
+  nh->get_parameter_or(name + "." + "erase_vehicle_distance_threshold", wall_line.erase_vehicle_distance_threshold, wall_line.erase_vehicle_distance_threshold);
+  nh->get_parameter_or(name + "." + "close_vehicle_distance_threshold", wall_line.close_vehicle_distance_threshold, wall_line.close_vehicle_distance_threshold);
 
 
   // Homotopy Class Planner
@@ -647,6 +653,12 @@ rcl_interfaces::msg::SetParametersResult
         wall_line.edge_min_obstacle_dist = parameter.as_double();
       } else if (name == node_name + ".keep_wall_line_time") {
         wall_line.keep_wall_line_time = parameter.as_double();
+      } else if (name == node_name + ".new_vehicle_distance_threshold") {
+        wall_line.new_vehicle_distance_threshold = parameter.as_double();
+      } else if (name == node_name + ".erase_vehicle_distance_threshold") {
+        wall_line.erase_vehicle_distance_threshold = parameter.as_double();
+      } else if (name == node_name + ".close_vehicle_distance_threshold") {
+        wall_line.close_vehicle_distance_threshold = parameter.as_double();
       }
       // Homotopy Class Planner
       else if (name == node_name + ".selection_cost_hysteresis") {
