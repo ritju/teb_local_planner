@@ -94,7 +94,8 @@
                                             keep_wall_line_time_(5.0),
                                             close_vehicle_distance_threshold_(1.5),
                                             new_vehicle_distance_threshold_(5.0),
-                                            erase_vehicle_distance_threshold_(10.0)
+                                            erase_vehicle_distance_threshold_(10.0),
+                                            has_speed_limit_(false)
  {
    // Initialize edge mode parameters from config defaults (will be overridden by parameters if available)
    edge_weight_optimaltime_ = cfg_->wall_line.edge_weight_optimaltime;
@@ -605,12 +606,16 @@
       // Ensure non-negative limit and cap by robot's nominal base maximum
       const double limit = std::max(0.0, speed_limit_linear_x_);
       if (std::isfinite(limit) && speed_limit_linear_x_ > 0) {
+        RCLCPP_INFO(logger_, "Performing change speed limit !");
         cfg_->robot.max_vel_x = std::min(limit, safe_linear_speed_limit_);
+        RCLCPP_INFO(logger_, "change cfg_->robot.max_vel_x: %f", cfg_->robot.max_vel_x);
         cfg_->robot.max_vel_x_backwards = std::min(limit, safe_linear_speed_limit_);
       }
       else
       {
+        RCLCPP_INFO(logger_, "Performing recover speed limit !");
         cfg_->robot.max_vel_x = cfg_->robot.base_max_vel_x;
+        RCLCPP_INFO(logger_, "recover cfg_->robot.max_vel_x: %f", cfg_->robot.max_vel_x);
         cfg_->robot.max_vel_x_backwards = cfg_->robot.base_max_vel_x_backwards;
       }
     }
@@ -1178,10 +1183,12 @@
    bool has_near_vehicles = false;
    {
      std::lock_guard<std::mutex> veh_lock(global_vehicle_poses_mutex_);
+     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "global_vehicle_poses_ size: %ld", global_vehicle_poses_.size());
      for (const auto& vehicle : global_vehicle_poses_)
      {
       if (distance_points2d(robot_pose.pose.position, vehicle.pose.position) < close_vehicle_distance_threshold_)
       {
+        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Nearby vehicle detected at distance: %f, exiting edge-following mode", distance_points2d(robot_pose.pose.position, vehicle.pose.position));
         has_near_vehicles = true;
         break;
       }
@@ -1400,10 +1407,12 @@
    bool has_near_vehicles = false;
    {
      std::lock_guard<std::mutex> veh_lock(global_vehicle_poses_mutex_);
+     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "global_vehicle_poses_ size: %ld", global_vehicle_poses_.size());
      for (const auto& vehicle : global_vehicle_poses_)
      {
       if (distance_points2d(robot_pose.pose.position, vehicle.pose.position) < close_vehicle_distance_threshold_)
       {
+        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Nearby vehicle detected at distance: %f, exiting edge-following mode", distance_points2d(robot_pose.pose.position, vehicle.pose.position));
         has_near_vehicles = true;
         break;
       }
@@ -1411,9 +1420,9 @@
    }
    if (has_near_vehicles)
    {
-     if(wall_line_points_.size() > 0) wall_line_points_.clear();
-     switchParameterMode(false);
-     return;
+    if(wall_line_points_.size() > 0) wall_line_points_.clear();
+    switchParameterMode(false);
+    return;
    }
     
    if (input_path.poses.size() >= 2) {
@@ -2343,50 +2352,23 @@ void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstS
    try {
      if (enable_edge_mode) {
        // Switch to edge-following mode
-       // Read latest edge mode parameters from config (they may have been updated dynamically)
-       double current_edge_weight_optimaltime = cfg_->wall_line.edge_weight_optimaltime;
-       double current_edge_min_obstacle_dist = cfg_->wall_line.edge_min_obstacle_dist;
-       double current_edge_acc_lim_theta = cfg_->robot.acc_lim_theta;
-       double current_edge_max_vel_theta = cfg_->robot.max_vel_theta;
-       std::string current_edge_footprint_vertices = cfg_->wall_line.edge_footprint_vertices;
-       
-       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Switching to edge-following mode parameters");
-       
-       // Set weight_optimaltime
-       node->set_parameter(rclcpp::Parameter(name_ + "." + "weight_optimaltime", current_edge_weight_optimaltime));
-       
-       // Set min_obstacle_dist
-       node->set_parameter(rclcpp::Parameter(name_ + "." + "min_obstacle_dist", current_edge_min_obstacle_dist));
-       
+       RCLCPP_INFO(logger_, "Switching to edge-following mode parameters");
+       cfg_->optim.weight_viapoint = cfg_->wall_line.edge_weight_optimaltime;
+       cfg_->obstacles.min_obstacle_dist = cfg_->wall_line.edge_min_obstacle_dist;
+       cfg_->robot.acc_lim_theta = cfg_->wall_line.edge_acc_lim_theta;
+       cfg_->robot.max_vel_theta = cfg_->wall_line.edge_max_vel_theta;
        // Set footprint vertices
-       node->set_parameter(rclcpp::Parameter(name_ + "." + "footprint_model.vertices", current_edge_footprint_vertices));
- 
-       // Set acc_lim_theta
-       node->set_parameter(rclcpp::Parameter(name_ + "." + "acc_lim_theta", current_edge_acc_lim_theta));
-       
-       // Set max_vel_theta
-       node->set_parameter(rclcpp::Parameter(name_ + "." + "max_vel_theta", current_edge_max_vel_theta));
-       
+       node->set_parameter(rclcpp::Parameter(name_ + "." + "footprint_model.vertices", cfg_->wall_line.edge_footprint_vertices));
        is_edge_following_mode_ = true;
      } else {
        // Switch to normal mode
-       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Switching to normal mode parameters");
-       
-       // Set weight_optimaltime
-       node->set_parameter(rclcpp::Parameter(name_ + "." + "weight_optimaltime", normal_weight_optimaltime_));
-       
-       // Set min_obstacle_dist
-       node->set_parameter(rclcpp::Parameter(name_ + "." + "min_obstacle_dist", normal_min_obstacle_dist_));
-       
+       RCLCPP_INFO(logger_, "Switching to normal mode parameters");
+       cfg_->optim.weight_viapoint = normal_weight_optimaltime_;
+       cfg_->obstacles.min_obstacle_dist = normal_min_obstacle_dist_;
+       cfg_->robot.acc_lim_theta = cfg_max_angular_acc_;
+       cfg_->robot.max_vel_theta = cfg_max_angular_vel_;
        // Set footprint vertices
        node->set_parameter(rclcpp::Parameter(name_ + "." + "footprint_model.vertices", normal_footprint_vertices_));
- 
-       // Set acc_lim_theta
-       node->set_parameter(rclcpp::Parameter(name_ + "." + "acc_lim_theta", cfg_max_angular_acc_));
-       
-       // Set max_vel_theta
-       node->set_parameter(rclcpp::Parameter(name_ + "." + "max_vel_theta", cfg_max_angular_vel_));
-       
        is_edge_following_mode_ = false;
  
      }
@@ -2484,6 +2466,10 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
     const double dist_sq = dx * dx + dy * dy;
 
     if (dist_sq <= new_vehicle_distance_threshold_sq) {
+      RCLCPP_INFO_THROTTLE(
+        logger_, *(clock_), 2000,
+        "vehiclePosesCallback: Found nearby vehicle at (%.2f, %.2f), distance to robot: %.2f m",
+        vehicle_pose.pose.position.x, vehicle_pose.pose.position.y, std::sqrt(dist_sq));
       near_vehicles.emplace_back(vehicle_pose);
     }
   }
@@ -2503,6 +2489,10 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
       const double dist_sq = dx * dx + dy * dy;
 
       if (dist_sq > erase_vehicle_distance_threshold_sq) {
+        RCLCPP_INFO_THROTTLE(
+          logger_, *(clock_), 2000,
+          "vehiclePosesCallback: Removing vehicle at (%.2f, %.2f) from global list, distance to robot: %.2f m",
+          it->pose.position.x, it->pose.position.y, std::sqrt(dist_sq));
         it = global_vehicle_poses_.erase(it);
       } else {
         ++it;
@@ -2517,6 +2507,12 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
         const double dy = existing.pose.position.y - candidate.pose.position.y;
         const double dist_sq = dx * dx + dy * dy;
         if (dist_sq <= same_vehicle_threshold_sq_) {
+          RCLCPP_INFO_THROTTLE(
+            logger_, *(clock_), 2000,
+            "vehiclePosesCallback: Candidate vehicle at (%.2f, %.2f) is similar to existing vehicle at (%.2f, %.2f), distance: %.2f m. Not adding to global list.",
+            candidate.pose.position.x, candidate.pose.position.y,
+            existing.pose.position.x, existing.pose.position.y,
+            std::sqrt(dist_sq));
           exists_similar = true;
           break;
         }

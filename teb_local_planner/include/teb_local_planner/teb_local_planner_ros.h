@@ -494,7 +494,7 @@
    std::string edge_footprint_vertices_;
    bool is_edge_following_mode_;
    double speed_limit_linear_x_{std::numeric_limits<double>::infinity()};
-   bool has_speed_limit_{false};
+   bool has_speed_limit_;
    double safe_linear_speed_limit_;
    double keep_wall_line_time_;
    double close_vehicle_distance_threshold_;
