@@ -669,7 +669,7 @@
      try
      {
        unsigned char corner_check_cost = costmap_model_->scorePose(corner_check_pose2d, dwb_critics::getOrientedFootprint(corner_check_pose2d, footprint_spec_));
-       if (corner_check_cost == nav2_costmap_2d::LETHAL_OBSTACLE)
+       if (corner_check_cost == nav2_costmap_2d::LETHAL_OBSTACLE || corner_check_cost == nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
        {
          corner_has_obstacle = true;
        }
