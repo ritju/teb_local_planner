@@ -403,7 +403,14 @@
     * @param enable_edge_mode If true, switch to edge-following mode; otherwise, switch to normal mode
     */
    void switchParameterMode(bool enable_edge_mode);
- 
+
+   /**
+    * @brief Set static_layer.enabled parameter via service call
+    * @param enabled The desired state of static_layer.enabled
+    * @param is_delayed True if called from delayed timer callback, false for immediate call
+    */
+   void setStaticLayerEnabled(bool enabled, bool is_delayed = false);
+
  private:
    // Definition of member variables
    rclcpp_lifecycle::LifecycleNode::WeakPtr nh_;
@@ -491,8 +498,13 @@
    // Parameters for edge-following mode
    double edge_weight_optimaltime_;
    double edge_min_obstacle_dist_;
+   double min_wall_line_length_;
    std::string edge_footprint_vertices_;
    bool is_edge_following_mode_;
+   rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedPtr static_layer_client_; //!< Persistent client for static_layer parameter updates
+   std::atomic<bool> desired_static_layer_state_{true}; //!< Desired state of static_layer.enabled
+   std::atomic<bool> current_static_layer_state_{true}; //!< Current confirmed state of static_layer.enabled
+   std::mutex static_layer_mutex_; //!< Mutex for protecting static_layer state updates
    double speed_limit_linear_x_{std::numeric_limits<double>::infinity()};
    bool has_speed_limit_;
    double safe_linear_speed_limit_;

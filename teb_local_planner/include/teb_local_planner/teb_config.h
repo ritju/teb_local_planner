@@ -166,6 +166,10 @@ public:
     double new_vehicle_distance_threshold;
     double erase_vehicle_distance_threshold;
     double close_vehicle_distance_threshold;
+    double min_wall_line_length;
+    double min_path_line_length;
+    double transform_path_line_length;
+    double static_layer_enable_delay;
     std::string edge_footprint_vertices; //!< footprint vertices parameter for edge-following mode
   } wall_line; //!< Obstacle related parameters
 
@@ -369,7 +373,11 @@ public:
     wall_line.new_vehicle_distance_threshold = 5.0;
     wall_line.erase_vehicle_distance_threshold = 10.0;
     wall_line.close_vehicle_distance_threshold = 1.5;
+    wall_line.min_wall_line_length = 1.0;
+    wall_line.min_path_line_length = 2.0;
+    wall_line.transform_path_line_length = 2.0;
     wall_line.edge_footprint_vertices = "[[1.25, 0.5], [1.25, -0.5], [-0.65, -0.5], [-0.65, 0.5]]";
+    wall_line.static_layer_enable_delay = 5.0;
 
     // Optimization
 
