@@ -1320,7 +1320,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
       const double dist_robot_to_protrusion =
         (max_penetration_point - robot_pose_.position()).norm();
       const double base_d = cfg_->wall_line.wall_line_obstacle_protrusion_base_distance;
-      const double scale_k = cfg_->wall_line.wall_line_obstacle_filter_distance_scale;
+      const double scale_k = cfg_->wall_line.wall_line_obstacle_filter_distance;
       double eff_protrusion_threshold = cfg_->wall_line.wall_line_obstacle_filter_distance;
       if (dist_robot_to_protrusion > base_d) {
         eff_protrusion_threshold = std::min(
@@ -1344,7 +1344,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
       if (along_wall > along_wall_min && along_wall < eff_wall_length)
       {
         const double base_d_exit = cfg_->wall_line.wall_line_obstacle_protrusion_base_distance;
-        const double scale_k_exit = cfg_->wall_line.wall_line_obstacle_filter_distance_scale;
+        const double scale_k_exit = cfg_->wall_line.wall_line_protrusion_exit_depth_min;
         auto eff_protrusion_for_vertex_dist = [&](double dist_robot_vertex) -> double {
           double e = cfg_->wall_line.wall_line_protrusion_exit_depth_min;
           if (dist_robot_vertex > base_d_exit) {
