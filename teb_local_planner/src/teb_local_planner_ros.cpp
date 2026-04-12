@@ -69,7 +69,8 @@
  #include <tf2_ros/buffer_interface.h>
  #include "dwb_core/exceptions.hpp"
  #include "nav2_util/robot_utils.hpp"
- #include <cmath>
+ #include <algorithm>
+#include <cmath>
  
  using nav2_util::declare_parameter_if_not_declared;
  
@@ -85,7 +86,7 @@
                                             custom_via_points_active_(false), no_infeasible_plans_(0),
                                             last_preferred_rotdir_(RotType::none), initialized_(false),
                                             launch_max_vel_x_(0), launch_max_global_plan_lookahead_dist_(0),weight_via_point_(1.0),
-                                            cfg_max_angular_vel_(0.6), cfg_max_angular_acc_(0.6), wall_line_update_time_(0),
+                                            cfg_max_angular_vel_(0.6), cfg_max_vel_x_(0.5), cfg_max_angular_acc_(0.6), wall_line_update_time_(0),
                                             curb_line_update_time_(0), min_obstacle_dist_(0.5), wall_line_ptr_(nullptr), curb_line_subscriber_(nullptr),
                                             normal_weight_optimaltime_(2.0), normal_min_obstacle_dist_(0.2),
                                             normal_footprint_vertices_("[[1.25, 0.55], [1.25, -0.55], [-0.65, -0.55], [-0.65, 0.55]]"),
@@ -96,7 +97,6 @@
                                             control_duration_(0.2), 
                                             safe_linear_speed_limit_(2.0),
                                             keep_wall_line_time_(5.0),
-                                            close_vehicle_distance_threshold_(1.5),
                                             new_vehicle_distance_threshold_(5.0),
                                             erase_vehicle_distance_threshold_(10.0),
                                             has_speed_limit_(false)
@@ -132,6 +132,7 @@
     weight_wall_line_dist_ = cfg_->optim.weight_wall_line_dist;
     weight_via_point_ = cfg_->optim.weight_viapoint;
     cfg_max_angular_vel_ = cfg_->robot.max_vel_theta;
+    cfg_max_vel_x_ = cfg_->robot.max_vel_x;
     cfg_max_angular_acc_= cfg_->robot.acc_lim_theta;
     min_obstacle_dist_ = cfg_->obstacles.min_obstacle_dist;
     
@@ -260,6 +261,21 @@
                 speed_limit_qos,
                 std::bind(&TebLocalPlannerROS::speedLimitCallback, this, std::placeholders::_1));
     }
+    {
+      rclcpp::QoS vehicle_scan_qos(rclcpp::KeepLast(5));
+      vehicle_scan_qos.best_effort();
+      vehicle_scan_cloud_sub_ = node->create_subscription<sensor_msgs::msg::PointCloud2>(
+        cfg_->obstacles.vehicle_scan_topic,
+        vehicle_scan_qos,
+        std::bind(&TebLocalPlannerROS::vehicleScanCloudCallback, this, std::placeholders::_1));
+    }
+    {
+      // volatile + reliable：与 RViz / 默认 echo 的 QoS 易匹配；transient_local 易导致订阅端收不到
+      rclcpp::QoS grid_qos(rclcpp::KeepLast(1));
+      grid_qos.reliable();
+      vehicle_scan_grid_pub_ = node->create_publisher<nav_msgs::msg::OccupancyGrid>(
+        cfg_->obstacles.vehicle_scan_grid_topic, grid_qos);
+    }
     // setup callback for line center points
     if (cfg_->optim.weight_wall_line_dist > 0.0)
     {
@@ -297,6 +313,107 @@
     // Create persistent client for static_layer parameter updates
     static_layer_client_ = node->create_client<rcl_interfaces::srv::SetParameters>("/local_costmap/local_costmap/set_parameters");
     RCLCPP_INFO(logger_, "static_layer client created.");
+
+    // Create persistent clients for footprint parameter updates
+    local_footprint_client_ = node->create_client<rcl_interfaces::srv::SetParameters>("/local_costmap/local_costmap/set_parameters");
+    global_footprint_client_ = node->create_client<rcl_interfaces::srv::SetParameters>("/global_costmap/global_costmap/set_parameters");
+    RCLCPP_INFO(logger_, "Footprint clients created for local and global costmaps.");
+
+    // Get current footprint values from local and global costmaps for restoration via service calls
+    // Use background threads to avoid blocking initialization
+    std::thread([this, node]() {
+      auto local_get_params_client = node->create_client<rcl_interfaces::srv::GetParameters>("/local_costmap/local_costmap/get_parameters");
+      
+      // Wait for service to be available (retry for up to 30 seconds)
+      int retry_count = 0;
+      while (!local_get_params_client->wait_for_service(std::chrono::seconds(2)) && retry_count < 15) {
+        RCLCPP_DEBUG(logger_, "Waiting for local costmap get_parameters service... (%d/15)", retry_count + 1);
+        retry_count++;
+      }
+      
+      if (retry_count >= 15) {
+        RCLCPP_WARN(logger_, "Local costmap get_parameters service not available after 30 seconds.");
+        return;
+      }
+      
+      auto get_request = std::make_shared<rcl_interfaces::srv::GetParameters::Request>();
+      get_request->names.push_back("footprint");
+      auto future = local_get_params_client->async_send_request(get_request);
+      
+      if (future.wait_for(std::chrono::seconds(5)) == std::future_status::ready) {
+        auto response = future.get();
+        if (!response->values.empty()) {
+          if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_STRING) {
+            local_costmap_footprint_ = response->values[0].string_value;
+            RCLCPP_INFO(logger_, "Local costmap footprint stored: %s", local_costmap_footprint_.c_str());
+          } else if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY) {
+            const auto& local_footprint_array = response->values[0].double_array_value;
+            local_costmap_footprint_ = "[";
+            for (size_t i = 0; i < local_footprint_array.size(); i += 2) {
+              if (i + 1 < local_footprint_array.size()) {
+                local_costmap_footprint_ += "[" + std::to_string(local_footprint_array[i]) + ", " + std::to_string(local_footprint_array[i+1]) + "]";
+                if (i + 2 < local_footprint_array.size()) local_costmap_footprint_ += ", ";
+              }
+            }
+            local_costmap_footprint_ += "]";
+            RCLCPP_INFO(logger_, "Local costmap footprint stored: %s", local_costmap_footprint_.c_str());
+          } else {
+            RCLCPP_WARN(logger_, "Local costmap footprint has unknown type: %d", response->values[0].type);
+          }
+        } else {
+          RCLCPP_WARN(logger_, "Local costmap footprint not found in response.");
+        }
+      } else {
+        RCLCPP_WARN(logger_, "Local costmap get_parameters service call timeout.");
+      }
+    }).detach();
+
+    std::thread([this, node]() {
+      auto global_get_params_client = node->create_client<rcl_interfaces::srv::GetParameters>("/global_costmap/global_costmap/get_parameters");
+      
+      // Wait for service to be available (retry for up to 30 seconds)
+      int retry_count = 0;
+      while (!global_get_params_client->wait_for_service(std::chrono::seconds(2)) && retry_count < 15) {
+        RCLCPP_DEBUG(logger_, "Waiting for global costmap get_parameters service... (%d/15)", retry_count + 1);
+        retry_count++;
+      }
+      
+      if (retry_count >= 15) {
+        RCLCPP_WARN(logger_, "Global costmap get_parameters service not available after 30 seconds.");
+        return;
+      }
+      
+      auto get_request = std::make_shared<rcl_interfaces::srv::GetParameters::Request>();
+      get_request->names.push_back("footprint");
+      auto future = global_get_params_client->async_send_request(get_request);
+      
+      if (future.wait_for(std::chrono::seconds(5)) == std::future_status::ready) {
+        auto response = future.get();
+        if (!response->values.empty()) {
+          if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_STRING) {
+            global_costmap_footprint_ = response->values[0].string_value;
+            RCLCPP_INFO(logger_, "Global costmap footprint stored: %s", global_costmap_footprint_.c_str());
+          } else if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY) {
+            const auto& global_footprint_array = response->values[0].double_array_value;
+            global_costmap_footprint_ = "[";
+            for (size_t i = 0; i < global_footprint_array.size(); i += 2) {
+              if (i + 1 < global_footprint_array.size()) {
+                global_costmap_footprint_ += "[" + std::to_string(global_footprint_array[i]) + ", " + std::to_string(global_footprint_array[i+1]) + "]";
+                if (i + 2 < global_footprint_array.size()) global_costmap_footprint_ += ", ";
+              }
+            }
+            global_costmap_footprint_ += "]";
+            RCLCPP_INFO(logger_, "Global costmap footprint stored: %s", global_costmap_footprint_.c_str());
+          } else {
+            RCLCPP_WARN(logger_, "Global costmap footprint has unknown type: %d", response->values[0].type);
+          }
+        } else {
+          RCLCPP_WARN(logger_, "Global costmap footprint not found in response.");
+        }
+      } else {
+        RCLCPP_WARN(logger_, "Global costmap get_parameters service call timeout.");
+      }
+    }).detach();
    }
    else
    {
@@ -867,10 +984,11 @@
    obstacles_.clear();
    
    // Update obstacle container with costmap information or polygons provided by a costmap_converter plugin
-   if (costmap_converter_)
+   if (costmap_converter_) {
      updateObstacleContainerWithCostmapConverter();
-   else
+   } else {
      updateObstacleContainerWithCostmap();
+   }
    
    // also consider custom obstacles (must be called after other updates, since the container is not cleared)
    updateObstacleContainerWithCustomObstacles();
@@ -918,11 +1036,11 @@
    // Check feasibility (but within the first few states only)
    if(cfg_->robot.is_footprint_dynamic)
    {
-     // Update footprint of the robot and minimum and maximum distance from the center of the robot to its footprint vertices.
-     std::vector<geometry_msgs::msg::Point> updated_footprint_spec_ = costmap_ros_->getRobotFootprint();
-     if (updated_footprint_spec_ != footprint_spec_) {
-       updated_footprint_spec_ = footprint_spec_;
-       nav2_costmap_2d::calculateMinAndMaxDistances(updated_footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius);
+     // Get current footprint from local costmap (edge mode may modify costmap via set_parameters, which may be different from TEB cache)
+     const std::vector<geometry_msgs::msg::Point> costmap_footprint = costmap_ros_->getRobotFootprint();
+     if (costmap_footprint != footprint_spec_) {
+       footprint_spec_ = costmap_footprint;
+       nav2_costmap_2d::calculateMinAndMaxDistances(footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius);
      }
    }
  
@@ -1026,50 +1144,360 @@
    }
  }
  
- void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
- {
-   if (!costmap_converter_)
-     return;
-     
-   //Get obstacles from costmap converter
-   costmap_converter::ObstacleArrayConstPtr obstacles = costmap_converter_->getObstacles();
-   if (!obstacles)
-     return;
- 
-   for (std::size_t i=0; i<obstacles->obstacles.size(); ++i)
-   {
-     const costmap_converter_msgs::msg::ObstacleMsg* obstacle = &obstacles->obstacles.at(i);
-     const geometry_msgs::msg::Polygon* polygon = &obstacle->polygon;
- 
-     if (polygon->points.size()==1 && obstacle->radius > 0) // Circle
-     {
-       obstacles_.push_back(ObstaclePtr(new CircularObstacle(polygon->points[0].x, polygon->points[0].y, obstacle->radius)));
-     }
-     else if (polygon->points.size()==1) // Point
-     {
-       obstacles_.push_back(ObstaclePtr(new PointObstacle(polygon->points[0].x, polygon->points[0].y)));
-     }
-     else if (polygon->points.size()==2) // Line
-     {
-       obstacles_.push_back(ObstaclePtr(new LineObstacle(polygon->points[0].x, polygon->points[0].y,
-                                                         polygon->points[1].x, polygon->points[1].y )));
-     }
-     else if (polygon->points.size()>2) // Real polygon
-     {
-         PolygonObstacle* polyobst = new PolygonObstacle;
-         for (std::size_t j=0; j<polygon->points.size(); ++j)
-         {
-             polyobst->pushBackVertex(polygon->points[j].x, polygon->points[j].y);
-         }
-         polyobst->finalizePolygon();
-         obstacles_.push_back(ObstaclePtr(polyobst));
-     }
- 
-     // Set velocity, if obstacle is moving
-     if(!obstacles_.empty())
-       obstacles_.back()->setCentroidVelocity(obstacles->obstacles[i].velocities, obstacles->obstacles[i].orientation);
-   }
- }
+void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
+{
+  if (!costmap_converter_)
+    return;
+    
+  //Get obstacles from costmap converter（可能为空；车身栅格仍应刷新并发布）
+  costmap_converter::ObstacleArrayConstPtr obstacles = costmap_converter_->getObstacles();
+  std::string obstacles_frame = cfg_->map_frame;
+  if (obstacles && !obstacles->header.frame_id.empty()) {
+    obstacles_frame = obstacles->header.frame_id;
+  }
+  if (cfg_->obstacles.enable_vehicle_scan_grid) {
+    updateVehicleScanOccupancyGrid(obstacles, obstacles_frame);
+  }
+  if (!obstacles) {
+    if (cfg_->obstacles.enable_vehicle_scan_grid) {
+      appendVehicleScanInflatedHullObstacles();
+    }
+    if (cfg_->obstacles.enable_vehicle_scan_grid && cfg_->obstacles.publish_vehicle_scan_grid) {
+      publishVehicleScanOccupancyGrid();
+    }
+    return;
+  }
+
+  // --- Wall line locking, extension, safety offset, and obstacle filtering ---
+  bool use_wall_line_filter = false;
+  Eigen::Vector2d eff_wall_start, eff_wall_end, eff_wall_dir, eff_wall_normal;
+  double eff_wall_length = 0.0;
+
+  if (is_edge_following_mode_ && wall_line_points_.size() >= 2)
+  {
+    Eigen::Vector2d cur_start = wall_line_points_[0];
+    Eigen::Vector2d cur_end = wall_line_points_[1];
+    Eigen::Vector2d cur_dir = cur_end - cur_start;
+    double cur_len = cur_dir.norm();
+
+    if (cur_len > 1e-6)
+    {
+      cur_dir /= cur_len;
+      double cur_angle = std::atan2(cur_dir.y(), cur_dir.x());
+
+      // --- Wall line locking: compare current vs locked ---
+      if (wall_line_locked_)
+      {
+        Eigen::Vector2d locked_dir = locked_wall_end_ - locked_wall_start_;
+        double locked_len = locked_dir.norm();
+        double locked_angle = (locked_len > 1e-6)
+          ? std::atan2(locked_dir.y() / locked_len, locked_dir.x() / locked_len) : 0.0;
+
+        Eigen::Vector2d locked_mid = (locked_wall_start_ + locked_wall_end_) * 0.5;
+        Eigen::Vector2d cur_mid = (cur_start + cur_end) * 0.5;
+        double dist_change = (cur_mid - locked_mid).norm();
+        double angle_diff = cur_angle - locked_angle;
+        while (angle_diff > M_PI) angle_diff -= 2.0 * M_PI;
+        while (angle_diff < -M_PI) angle_diff += 2.0 * M_PI;
+
+        double angle_threshold_rad = cfg_->wall_line.wall_line_lock_angle_threshold * M_PI / 180.0;
+        if (dist_change > cfg_->wall_line.wall_line_lock_distance_threshold ||
+            std::abs(angle_diff) > angle_threshold_rad)
+        {
+          wall_line_locked_ = false;
+          wall_line_stable_count_ = 0;
+          RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+            "Wall line unlocked: dist_change=%.3f, angle_change=%.3f", dist_change, std::abs(angle_diff));
+        }
+      }
+
+      if (!wall_line_locked_)
+      {
+        ++wall_line_stable_count_;
+        if (wall_line_stable_count_ >= cfg_->wall_line.wall_line_lock_min_stable_count)
+        {
+          locked_wall_start_ = cur_start;
+          locked_wall_end_ = cur_end;
+          wall_line_locked_ = true;
+          RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+            "Wall line locked after %d stable frames", wall_line_stable_count_);
+        }
+      }
+
+      // Use locked wall line if available, otherwise current
+      Eigen::Vector2d base_start = wall_line_locked_ ? locked_wall_start_ : cur_start;
+      Eigen::Vector2d base_end = wall_line_locked_ ? locked_wall_end_ : cur_end;
+      Eigen::Vector2d base_dir = base_end - base_start;
+      double base_len = base_dir.norm();
+      if (base_len > 1e-6)
+      {
+        base_dir /= base_len;
+
+        // --- Extend wall line on both ends ---
+        double ext = cfg_->wall_line.wall_line_extension_distance;
+        eff_wall_start = base_start - base_dir * ext;
+        eff_wall_end = base_end + base_dir * ext;
+
+        // --- Safety offset: shift toward robot side for conservative distance ---
+        eff_wall_normal = Eigen::Vector2d(-base_dir.y(), base_dir.x());
+        Eigen::Vector2d robot_vec = robot_pose_.position() - base_start;
+        if (robot_vec.dot(eff_wall_normal) > 0)
+          eff_wall_normal = -eff_wall_normal;  // ensure normal points toward wall
+
+        double offset = cfg_->wall_line.wall_line_safety_offset;
+        eff_wall_start -= eff_wall_normal * offset;
+        eff_wall_end -= eff_wall_normal * offset;
+
+        eff_wall_dir = eff_wall_end - eff_wall_start;
+        eff_wall_length = eff_wall_dir.norm();
+        if (eff_wall_length > 1e-6)
+        {
+          eff_wall_dir /= eff_wall_length;
+          use_wall_line_filter = true;
+        }
+      }
+    }
+  }
+  else
+  {
+    if (wall_line_locked_)
+    {
+      wall_line_locked_ = false;
+      wall_line_stable_count_ = 0;
+    }
+  }
+
+  geometry_msgs::msg::TransformStamped tf_base_from_obstacles;
+  bool have_tf_obstacles_to_base = false;
+
+  if (use_wall_line_filter && tf_ && costmap_ros_) {
+    try {
+      tf_base_from_obstacles = tf_->lookupTransform(
+        costmap_ros_->getBaseFrameID(), obstacles_frame, tf2::TimePointZero);
+      have_tf_obstacles_to_base = true;
+    } catch (const tf2::TransformException& ex) {
+      RCLCPP_DEBUG_THROTTLE(
+        logger_, *(clock_), 2000,
+        "protrusion exit: TF %s->%s failed: %s",
+        obstacles_frame.c_str(), costmap_ros_->getBaseFrameID().c_str(), ex.what());
+    }
+  }
+
+  // --- Add obstacles, filtering wall-side ones in edge-following mode ---
+  for (std::size_t i=0; i<obstacles->obstacles.size(); ++i)
+  {
+    const costmap_converter_msgs::msg::ObstacleMsg* obstacle = &obstacles->obstacles.at(i);
+    const geometry_msgs::msg::Polygon* polygon = &obstacle->polygon;
+
+    if (use_wall_line_filter && !polygon->points.empty())
+    {
+      double cx = 0.0, cy = 0.0;
+      for (const auto& pt : polygon->points)
+      {
+        cx += pt.x;
+        cy += pt.y;
+      }
+      cx /= static_cast<double>(polygon->points.size());
+      cy /= static_cast<double>(polygon->points.size());
+
+      Eigen::Vector2d to_centroid = Eigen::Vector2d(cx, cy) - eff_wall_start;
+      double centroid_signed_dist = to_centroid.dot(eff_wall_normal);
+      double along_wall = to_centroid.dot(eff_wall_dir);
+
+      double max_robot_penetration = 0.0;
+      Eigen::Vector2d max_penetration_point(cx, cy);
+      for (const auto& pt : polygon->points)
+      {
+        Eigen::Vector2d to_vertex = Eigen::Vector2d(pt.x, pt.y) - eff_wall_start;
+        double vertex_signed_dist = to_vertex.dot(eff_wall_normal);
+        if (vertex_signed_dist < 0.0 && -vertex_signed_dist > max_robot_penetration)
+        {
+          max_robot_penetration = -vertex_signed_dist;
+          max_penetration_point = Eigen::Vector2d(pt.x, pt.y);
+        }
+      }
+
+      const double dist_robot_to_protrusion =
+        (max_penetration_point - robot_pose_.position()).norm();
+      const double base_d = cfg_->wall_line.wall_line_obstacle_protrusion_base_distance;
+      const double scale_k = cfg_->wall_line.wall_line_obstacle_filter_distance_scale;
+      double eff_protrusion_threshold = cfg_->wall_line.wall_line_obstacle_filter_distance;
+      if (dist_robot_to_protrusion > base_d) {
+        eff_protrusion_threshold = std::min(
+          eff_protrusion_threshold + scale_k * (dist_robot_to_protrusion - base_d),
+          cfg_->wall_line.wall_line_obstacle_filter_distance_max);
+      }
+
+      // Wall-side small protrusion → noise only: skip obstacle (no other continue in this block)
+      // 负数说明在墙的另一侧，不考虑；正数说明在墙的同一侧，考虑。
+      if (centroid_signed_dist >= -cfg_->wall_line.wall_line_obstacle_filter_distance && max_robot_penetration < eff_protrusion_threshold)
+      {
+        continue;
+      }
+
+      const double robot_along_wall =
+        (robot_pose_.position() - eff_wall_start).dot(eff_wall_dir);
+      const double along_wall_min = std::max(
+        0.0,
+        robot_along_wall - cfg_->wall_line.wall_line_obstacle_along_wall_rear_margin);
+
+      if (along_wall > along_wall_min && along_wall < eff_wall_length)
+      {
+        const double base_d_exit = cfg_->wall_line.wall_line_obstacle_protrusion_base_distance;
+        const double scale_k_exit = cfg_->wall_line.wall_line_obstacle_filter_distance_scale;
+        auto eff_protrusion_for_vertex_dist = [&](double dist_robot_vertex) -> double {
+          double e = cfg_->wall_line.wall_line_protrusion_exit_depth_min;
+          if (dist_robot_vertex > base_d_exit) {
+            e = std::min(
+              e + scale_k_exit * (dist_robot_vertex - base_d_exit),
+              cfg_->wall_line.wall_line_obstacle_filter_distance_max);
+          }
+          return e;
+        };
+
+        bool exit_trigger = false;
+        Eigen::Vector2d exit_best_point = max_penetration_point;
+        double exit_best_pen = max_robot_penetration;
+
+        if (have_tf_obstacles_to_base) {
+          const double fwd_max = cfg_->wall_line.wall_line_protrusion_exit_forward_max;
+          const double lat_max = cfg_->wall_line.wall_line_protrusion_exit_lateral_max;
+          const double depth_max = cfg_->wall_line.wall_line_protrusion_exit_depth_max;
+
+          for (const auto& pt : polygon->points)
+          {
+            geometry_msgs::msg::PointStamped pin;
+            pin.header.frame_id = obstacles_frame;
+            pin.point.x = pt.x;
+            pin.point.y = pt.y;
+            pin.point.z = pt.z;
+            geometry_msgs::msg::PointStamped p_base;
+            tf2::doTransform(pin, p_base, tf_base_from_obstacles);
+
+            if (p_base.point.x <= -cfg_->wall_line.wall_line_obstacle_along_wall_rear_margin || 
+                p_base.point.x > fwd_max ||
+                std::fabs(p_base.point.y) > lat_max)
+            {
+              continue;
+            }
+
+            Eigen::Vector2d to_vertex = Eigen::Vector2d(pt.x, pt.y) - eff_wall_start;
+            double v_sd = to_vertex.dot(eff_wall_normal);
+            if (v_sd >= 0.0)
+            {
+              continue;
+            }
+            const double pen = -v_sd;
+            const double d_rv =
+              (Eigen::Vector2d(pt.x, pt.y) - robot_pose_.position()).norm();
+            const double eff_v = eff_protrusion_for_vertex_dist(d_rv);
+            if (pen <= eff_v || pen > depth_max)
+            {
+              continue;
+            }
+            if (!exit_trigger || pen > exit_best_pen)
+            {
+              exit_trigger = true;
+              exit_best_pen = pen;
+              exit_best_point = Eigen::Vector2d(pt.x, pt.y);
+            }
+          }
+        }
+
+        if (exit_trigger)
+        {
+          rclcpp::Time now = clock_->now();
+          protrusion_detection_timestamps_.push_back(now);
+
+          rclcpp::Duration window_duration = rclcpp::Duration::from_seconds(
+            cfg_->wall_line.obstacle_protrusion_confirm_window);
+          while (!protrusion_detection_timestamps_.empty() &&
+                 (now - protrusion_detection_timestamps_.front()) > window_duration)
+          {
+            protrusion_detection_timestamps_.erase(protrusion_detection_timestamps_.begin());
+          }
+
+          if (static_cast<int>(protrusion_detection_timestamps_.size()) >=
+              cfg_->wall_line.obstacle_protrusion_min_confirm_frames)
+          {
+            bool is_duplicate = false;
+            for (const auto& existing : protruding_obstacles_)
+            {
+              if ((existing.position - exit_best_point).norm() < 0.5)
+              {
+                is_duplicate = true;
+                break;
+              }
+            }
+
+            if (!is_duplicate)
+            {
+              while (static_cast<int>(protruding_obstacles_.size()) >=
+                     cfg_->wall_line.obstacle_protrusion_max_stored)
+              {
+                protruding_obstacles_.erase(protruding_obstacles_.begin());
+              }
+
+              ProtrudingObstacle protruding_obst;
+              protruding_obst.position = exit_best_point;
+              protruding_obst.influence_radius = exit_best_pen;
+              protruding_obst.detection_time = now;
+              protruding_obstacles_.push_back(protruding_obst);
+              RCLCPP_INFO(logger_, "Protruding obstacle confirmed at (%.2f, %.2f), penetration=%.2f.",
+                exit_best_point.x(), exit_best_point.y(), exit_best_pen);
+            }
+            protrusion_detection_timestamps_.clear();
+          }
+        }
+      }
+    }
+
+    if (polygon->points.size()==1 && obstacle->radius > 0) // Circle
+    {
+      obstacles_.push_back(ObstaclePtr(new CircularObstacle(polygon->points[0].x, polygon->points[0].y, obstacle->radius)));
+    }
+    else if (polygon->points.size()==1) // Point
+    {
+      obstacles_.push_back(ObstaclePtr(new PointObstacle(polygon->points[0].x, polygon->points[0].y)));
+    }
+    else if (polygon->points.size()==2) // Line
+    {
+      obstacles_.push_back(ObstaclePtr(new LineObstacle(polygon->points[0].x, polygon->points[0].y,
+                                                        polygon->points[1].x, polygon->points[1].y )));
+    }
+    else if (polygon->points.size()>2) // Real polygon
+    {
+        PolygonObstacle* polyobst = new PolygonObstacle;
+        for (std::size_t j=0; j<polygon->points.size(); ++j)
+        {
+            polyobst->pushBackVertex(polygon->points[j].x, polygon->points[j].y);
+        }
+        polyobst->finalizePolygon();
+        obstacles_.push_back(ObstaclePtr(polyobst));
+    }
+
+    // Set velocity, if obstacle is moving
+    if(!obstacles_.empty())
+      obstacles_.back()->setCentroidVelocity(obstacles->obstacles[i].velocities, obstacles->obstacles[i].orientation);
+  }
+
+  if (cfg_->obstacles.enable_vehicle_scan_grid) {
+    appendVehicleScanInflatedHullObstacles();
+  }
+
+  // --- Add the effective wall line as a clean LineObstacle ---
+  if (use_wall_line_filter)
+  {
+    obstacles_.push_back(ObstaclePtr(new LineObstacle(
+      eff_wall_start.x(), eff_wall_start.y(),
+      eff_wall_end.x(), eff_wall_end.y())));
+  }
+
+  // OccupancyGrid 仅在 costmap_converter 流程末尾发布（不在纯 costmap 点障碍路径后发布）
+  if (cfg_->obstacles.enable_vehicle_scan_grid && cfg_->obstacles.publish_vehicle_scan_grid) {
+    publishVehicleScanOccupancyGrid();
+  }
+}
  
  
  void TebLocalPlannerROS::updateObstacleContainerWithCustomObstacles()
@@ -1182,7 +1610,42 @@
    } 
  }
  
- void TebLocalPlannerROS::updateWallLineVec(
+bool TebLocalPlannerROS::isVehicleInEdgeFollowingExitCorridor(
+  const geometry_msgs::msg::PoseStamped& robot_pose,
+  const Eigen::Vector2d& wall_w0,
+  const Eigen::Vector2d& wall_w1,
+  const geometry_msgs::msg::Pose& vehicle_pose) const
+{
+  const auto& wl = cfg_->wall_line;
+  Eigen::Vector2d R(robot_pose.pose.position.x, robot_pose.pose.position.y);
+  Eigen::Vector2d V(vehicle_pose.position.x, vehicle_pose.position.y);
+
+  Eigen::Vector2d seg = wall_w1 - wall_w0;
+  const double L = seg.norm();
+  if (L < 1e-6) {
+    return false;
+  }
+  const Eigen::Vector2d u = seg / L;
+  Eigen::Vector2d n(-u.y(), u.x());
+  if (n.dot(R - wall_w0) < 0.0) {
+    n = -n;
+  }
+
+  const double yaw = tf2::getYaw(robot_pose.pose.orientation);
+  const Eigen::Vector2d fwd(std::cos(yaw), std::sin(yaw));
+
+  const Eigen::Vector2d d = V - R;
+  const double longitudinal = d.dot(fwd);
+  if (longitudinal < -wl.vehicle_exit_corridor_rear_m || longitudinal > wl.vehicle_exit_corridor_front_m) {
+    return false;
+  }
+
+  const double lateral = (V - wall_w0).dot(n);
+  return lateral >= -wl.vehicle_exit_corridor_wall_inner_m &&
+         lateral <= wl.vehicle_exit_corridor_wall_robot_side_m;
+}
+
+void TebLocalPlannerROS::updateWallLineVec(
    const std::vector<nav_msgs::msg::Path>& wall_line, 
    nav_msgs::msg::Path& input_path,
    const double parallel_tolerance,
@@ -1197,19 +1660,37 @@
      return;
    }
 
-   // 如果存在附近车辆，则确保退出边沿跟随模式（多线程安全检查）
+   // 贴边时：车辆在「航向前后 × 墙法向内外」走廊内则退出（有墙段用走廊；否则退回圆形距离阈值）
    bool has_near_vehicles = false;
    {
      std::lock_guard<std::mutex> veh_lock(global_vehicle_poses_mutex_);
      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "global_vehicle_poses_ size: %ld", global_vehicle_poses_.size());
-     for (const auto& vehicle : global_vehicle_poses_)
-     {
-      if (distance_points2d(robot_pose.pose.position, vehicle.pose.position) < close_vehicle_distance_threshold_)
-      {
-        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Nearby vehicle detected at distance: %f, exiting edge-following mode", distance_points2d(robot_pose.pose.position, vehicle.pose.position));
-        has_near_vehicles = true;
-        break;
-      }
+     const bool have_wall_segment = (wall_line_points_.size() >= 2);
+     Eigen::Vector2d w0, w1;
+     if (have_wall_segment) {
+       w0 = wall_line_points_[0];
+       w1 = wall_line_points_[1];
+     }
+     for (const auto& vehicle : global_vehicle_poses_) {
+       bool in_exit_region = false;
+       if (have_wall_segment) {
+         in_exit_region = isVehicleInEdgeFollowingExitCorridor(robot_pose, w0, w1, vehicle.pose);
+       } else {
+         in_exit_region = distance_points2d(robot_pose.pose.position, vehicle.pose.position) <
+           cfg_->wall_line.close_vehicle_distance_threshold;
+       }
+       if (in_exit_region) {
+         if (have_wall_segment) {
+           RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+             "Vehicle inside wall-relative exit corridor, exiting edge-following mode");
+         } else {
+           RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+             "Nearby vehicle at distance %f (no wall segment yet), exiting edge-following mode",
+             distance_points2d(robot_pose.pose.position, vehicle.pose.position));
+         }
+         has_near_vehicles = true;
+         break;
+       }
      }
    }
    if (has_near_vehicles)
@@ -1217,6 +1698,49 @@
     if(wall_line_points_.size() > 0) wall_line_points_.clear();
     switchParameterMode(false);
     return;
+   }
+
+   // Check for protruding obstacles that prohibit entering edge-following mode
+   bool has_protruding_obstacle_nearby = false;
+   Eigen::Vector2d robot_pos(robot_pose.pose.position.x, robot_pose.pose.position.y);
+   
+   // Clean up expired obstacles and check for nearby ones
+   rclcpp::Time current_time = clock_->now();
+   auto it = protruding_obstacles_.begin();
+   while (it != protruding_obstacles_.end())
+   {
+     double dist = (robot_pos - it->position).norm();
+     double time_elapsed = (current_time - it->detection_time).seconds();
+     
+     // Check if obstacle is expired by timeout
+     if (time_elapsed > cfg_->wall_line.obstacle_protrusion_timeout)
+     {
+       RCLCPP_INFO(logger_, "Protruding obstacle at (%.2f, %.2f) expired (timeout)", it->position.x(), it->position.y());
+       it = protruding_obstacles_.erase(it);
+       continue;
+     }
+     
+     // Check if robot is within re-enter distance + influence radius
+     if (dist < cfg_->wall_line.obstacle_protrusion_reenter_distance)
+     {
+       has_protruding_obstacle_nearby = true;
+       ++it;
+     }
+     else
+     {
+       // Robot is far away, remove this obstacle record
+       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Protruding obstacle at (%.2f, %.2f) removed (dist=%.2f > %.2f)", 
+         it->position.x(), it->position.y(), dist, cfg_->wall_line.obstacle_protrusion_reenter_distance);
+       it = protruding_obstacles_.erase(it);
+     }
+   }
+   
+   if (has_protruding_obstacle_nearby)
+   {
+     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Protruding obstacle nearby, prohibiting edge-following mode entry");
+     if(wall_line_points_.size() > 0) wall_line_points_.clear();
+     switchParameterMode(false);
+     return;
    }
 
     // 提取机器人当前朝向（从四元数转换为偏航角）
@@ -1397,19 +1921,37 @@
     return;
    }
 
-   // 如果存在附近车辆，则确保退出边沿跟随模式（多线程安全检查）
+   // 贴边时：车辆在「航向前后 × 墙线法向内外」走廊内则退出（与 updateWallLineVec 逻辑一致）
    bool has_near_vehicles = false;
    {
      std::lock_guard<std::mutex> veh_lock(global_vehicle_poses_mutex_);
      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "global_vehicle_poses_ size: %ld", global_vehicle_poses_.size());
-     for (const auto& vehicle : global_vehicle_poses_)
-     {
-      if (distance_points2d(robot_pose.pose.position, vehicle.pose.position) < close_vehicle_distance_threshold_)
-      {
-        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Nearby vehicle detected at distance: %f, exiting edge-following mode", distance_points2d(robot_pose.pose.position, vehicle.pose.position));
-        has_near_vehicles = true;
-        break;
-      }
+     const bool have_wall_segment = (wall_line_points_.size() >= 2);
+     Eigen::Vector2d w0, w1;
+     if (have_wall_segment) {
+       w0 = wall_line_points_[0];
+       w1 = wall_line_points_[1];
+     }
+     for (const auto& vehicle : global_vehicle_poses_) {
+       bool in_exit_region = false;
+       if (have_wall_segment) {
+         in_exit_region = isVehicleInEdgeFollowingExitCorridor(robot_pose, w0, w1, vehicle.pose);
+       } else {
+         in_exit_region = distance_points2d(robot_pose.pose.position, vehicle.pose.position) <
+           cfg_->wall_line.close_vehicle_distance_threshold;
+       }
+       if (in_exit_region) {
+         if (have_wall_segment) {
+           RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+             "Vehicle inside curb/wall-relative exit corridor, exiting edge-following mode");
+         } else {
+           RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+             "Nearby vehicle at distance %f (no wall segment yet), exiting edge-following mode",
+             distance_points2d(robot_pose.pose.position, vehicle.pose.position));
+         }
+         has_near_vehicles = true;
+         break;
+       }
      }
    }
    if (has_near_vehicles)
@@ -1418,7 +1960,56 @@
     switchParameterMode(false);
     return;
    }
-    
+
+   // Check for protruding obstacles that prohibit entering edge-following mode
+   bool has_protruding_obstacle_nearby = false;
+   Eigen::Vector2d robot_pos(robot_pose.pose.position.x, robot_pose.pose.position.y);
+   
+   // Clean up expired obstacles and check for nearby ones
+   rclcpp::Time current_time = clock_->now();
+   auto it = protruding_obstacles_.begin();
+   while (it != protruding_obstacles_.end())
+   {
+     double dist = (robot_pos - it->position).norm();
+     double time_elapsed = (current_time - it->detection_time).seconds();
+     
+     // Check if obstacle is expired by timeout
+     if (time_elapsed > cfg_->wall_line.obstacle_protrusion_timeout)
+     {
+       RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000,
+         "Protruding obstacle at (%.2f, %.2f) expired (timeout)", it->position.x(), it->position.y());
+       it = protruding_obstacles_.erase(it);
+       continue;
+     }
+     
+     // Check if robot is within re-enter distance + influence radius
+     double reenter_threshold = cfg_->wall_line.obstacle_protrusion_reenter_distance + it->influence_radius;
+     if (dist < reenter_threshold)
+     {
+       has_protruding_obstacle_nearby = true;
+       RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000,
+         "Protruding obstacle at (%.2f, %.2f) is nearby (dist=%.2f)", it->position.x(), it->position.y(), dist);
+       ++it;
+     }
+     else
+     {
+       // Robot is far away, remove this obstacle record
+       RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000,
+         "Protruding obstacle at (%.2f, %.2f) removed (dist=%.2f > %.2f)", 
+         it->position.x(), it->position.y(), dist, reenter_threshold);
+       it = protruding_obstacles_.erase(it);
+     }
+   }
+   
+   if (has_protruding_obstacle_nearby)
+   {
+     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, 
+       "Protruding obstacle nearby, prohibiting edge-following mode entry");
+     if(wall_line_points_.size() > 0) wall_line_points_.clear();
+     switchParameterMode(false);
+     return;
+   }
+
     // 提取机器人当前朝向（从四元数转换为偏航角）
     double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
     
@@ -1974,7 +2565,7 @@
            }
            if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
            {
-             max_plan_length = std::min(max_plan_length + 1.0, costmap_->getSizeInMetersX());
+             max_plan_length = std::min(max_plan_length + 3.0, costmap_->getSizeInMetersX());
            }
            cfg_->optim.weight_viapoint = 1.0;
          }
@@ -2309,6 +2900,11 @@ void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstS
 
    auto node = nh_.lock();
 
+   // Always enforce max_vel_x in edge mode, since speed limit logic may overwrite it each cycle
+   if (enable_edge_mode) {
+     cfg_->robot.max_vel_x = cfg_->wall_line.edge_max_vel_x;
+   }
+
    // Avoid redundant parameter updates - MUST be first!
    if (enable_edge_mode == is_edge_following_mode_) {
      return;
@@ -2322,6 +2918,7 @@ void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstS
        cfg_->obstacles.min_obstacle_dist = cfg_->wall_line.edge_min_obstacle_dist;
        cfg_->robot.acc_lim_theta = cfg_->wall_line.edge_acc_lim_theta;
        cfg_->robot.max_vel_theta = cfg_->wall_line.edge_max_vel_theta;
+
        // Set footprint vertices
        node->set_parameter(rclcpp::Parameter(name_ + "." + "footprint_model.vertices", cfg_->wall_line.edge_footprint_vertices));
        is_edge_following_mode_ = true;
@@ -2337,43 +2934,135 @@ void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstS
        is_edge_following_mode_ = false;
      }
 
-    // Update /local_costmap/local_costmap static_layer.enabled via SetParameters service
-    // When switching to normal mode, delay enabling static_layer until after min_obstacle_dist is set
-    bool desired_state = !enable_edge_mode;  // false for edge-following, true for normal mode
-    RCLCPP_INFO(logger_, "static_enable: %d", desired_state ? 1 : 0);
+    if (cfg_->wall_line.switch_static_layer) {
+      bool desired_state = !enable_edge_mode;
+      desired_static_layer_state_ = desired_state;
 
-    // Update desired state
-    desired_static_layer_state_ = desired_state;
+      if (desired_state == current_static_layer_state_.load()) {
+        RCLCPP_INFO(logger_, "static_layer.enabled already at desired state %d, skipping service call.", desired_state ? 1 : 0);
+      } else if (desired_state) {
+        std::thread([this]() {
+          auto start = std::chrono::steady_clock::now();
+          auto delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::duration<double>(cfg_->wall_line.static_layer_enable_delay));
 
-    // Check if state change is needed
-    if (desired_state == current_static_layer_state_.load()) {
-      RCLCPP_DEBUG(logger_, "static_layer.enabled already at desired state %d, skipping service call.", desired_state ? 1 : 0);
-    } else if (desired_state) {
-      // Delay enabling static_layer after switching to normal mode
-      // Use a detached thread instead of timer to avoid continuous resource usage
+          while (std::chrono::steady_clock::now() - start < delay_ms) {
+            if (!desired_static_layer_state_.load()) {
+              RCLCPP_DEBUG(logger_, "Delayed static_layer enable cancelled: desired state changed");
+              return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          }
+
+          if (desired_static_layer_state_.load()) {
+            setStaticLayerEnabled(true, true);
+          }
+        }).detach();
+      } else {
+        setStaticLayerEnabled(false, false);
+      }
+    }
+    
+    if (cfg_->wall_line.switch_local_footprint) {
+      bool desired_footprint_state = enable_edge_mode;
+      desired_local_footprint_state_ = desired_footprint_state;
+
+      if (desired_footprint_state == current_local_footprint_state_.load()) {
+        RCLCPP_INFO(logger_, "Local footprint already at desired state %d, skipping service call.", desired_footprint_state ? 1 : 0);
+      } else if (!desired_footprint_state) {
+        std::thread([this]() {
+          auto start = std::chrono::steady_clock::now();
+          auto delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::duration<double>(cfg_->wall_line.static_layer_enable_delay));
+
+          while (std::chrono::steady_clock::now() - start < delay_ms) {
+            if (desired_local_footprint_state_.load()) {
+              RCLCPP_INFO(logger_, "Delayed local footprint enable cancelled: desired state changed");
+              return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          }
+
+          if (!desired_local_footprint_state_.load()) {
+            setLocalFootprintEnabled(false, true);
+          }
+        }).detach();
+      } else {
+        setLocalFootprintEnabled(true, false);
+      }
+    }
+
+    if (cfg_->wall_line.switch_global_footprint) {
+      bool desired_footprint_state = enable_edge_mode;
+      desired_global_footprint_state_ = desired_footprint_state;
+
+      if (desired_footprint_state == current_global_footprint_state_.load()) {
+        RCLCPP_INFO(logger_, "Global footprint already at desired state %d, skipping service call.", desired_footprint_state ? 1 : 0);
+      } else if (!desired_footprint_state) {
+        std::thread([this]() {
+          auto start = std::chrono::steady_clock::now();
+          auto delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::duration<double>(cfg_->wall_line.static_layer_enable_delay));
+
+          while (std::chrono::steady_clock::now() - start < delay_ms) {
+            if (desired_global_footprint_state_.load()) {
+              RCLCPP_INFO(logger_, "Delayed global footprint enable cancelled: desired state changed");
+              return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          }
+
+          if (!desired_global_footprint_state_.load()) {
+            setGlobalFootprintEnabled(false, true);
+          }
+        }).detach();
+      } else {
+        setGlobalFootprintEnabled(true, false);
+      }
+    }
+    // Delayed max_vel_x restoration when switching to normal mode
+    if (!enable_edge_mode) {
+      desired_normal_vel_x_restore_ = true;
       std::thread([this]() {
-        // Wait for delay period, checking desired state periodically
         auto start = std::chrono::steady_clock::now();
         auto delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::duration<double>(cfg_->wall_line.static_layer_enable_delay));
 
         while (std::chrono::steady_clock::now() - start < delay_ms) {
-          // Check if desired state changed during delay
-          if (!desired_static_layer_state_.load()) {
-            RCLCPP_DEBUG(logger_, "Delayed static_layer enable cancelled: desired state changed");
+          if (!desired_normal_vel_x_restore_.load()) {
+            RCLCPP_DEBUG(logger_, "Delayed max_vel_x restore cancelled: switched back to edge mode");
             return;
           }
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
 
-        // Final check before executing
-        if (desired_static_layer_state_.load()) {
-          setStaticLayerEnabled(true, true);
+        if (desired_normal_vel_x_restore_.load()) {
+          {
+            std::lock_guard<std::mutex> l(speed_limit_mutex_);
+            if (has_speed_limit_) {
+              // Ensure non-negative limit and cap by robot's nominal base maximum
+              const double limit = std::max(0.0, speed_limit_linear_x_);
+              if (std::isfinite(limit) && speed_limit_linear_x_ > 0) {
+                if (limit < safe_linear_speed_limit_ && cfg_->robot.max_vel_x != limit) {
+                  cfg_->robot.max_vel_x = std::min(limit, safe_linear_speed_limit_);
+                  RCLCPP_INFO(logger_, "Performing change speed limit in switch to normal mode!, max linear speed is: %f", cfg_->robot.max_vel_x);
+                } else if (limit >= safe_linear_speed_limit_ && cfg_->robot.max_vel_x != safe_linear_speed_limit_) {
+                  cfg_->robot.max_vel_x = safe_linear_speed_limit_;
+                  RCLCPP_INFO(logger_, "Receive speed limit is greater than safe linear speed limit in switch to normal mode!, set limit speed to safe linear speed limit: %f !", safe_linear_speed_limit_);
+                }
+              } else if (!std::isfinite(limit) || limit <= 0) {
+                cfg_->robot.max_vel_x = cfg_max_vel_x_;
+                RCLCPP_INFO_THROTTLE(logger_, *(clock_), 5000, "Speed limit is not finite or less than 0 in switch to normal mode!, current speed limit is: %f !", cfg_->robot.max_vel_x);
+              }
+            } else {
+              cfg_->robot.max_vel_x = cfg_max_vel_x_;
+              RCLCPP_INFO(logger_, "max_vel_x is not set in switch to normal mode!, set limit speed to normal max_vel_x: %f !", cfg_max_vel_x_);
+            }
+           }
         }
       }).detach();
     } else {
-      // Disable static_layer immediately when switching to edge-following mode
-      setStaticLayerEnabled(false, false);
+      desired_normal_vel_x_restore_ = false;
     }
    } catch (const std::exception& ex) {
      RCLCPP_WARN(logger_, "Failed to switch parameter mode: %s", ex.what());
@@ -2433,6 +3122,128 @@ void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstS
        }
      } catch (const std::exception& e) {
        RCLCPP_ERROR(logger_, "Failed to call set_parameters service for local_costmap: %s", e.what());
+     }
+   }).detach();
+ }
+
+ void TebLocalPlannerROS::setLocalFootprintEnabled(bool enable, bool is_delayed)
+ {
+   if (!local_footprint_client_) {
+     RCLCPP_ERROR(logger_, "local_footprint_client_ not initialized. Cannot set footprint.");
+     return;
+   }
+
+   // Check if the requested state matches the desired state
+   // This prevents outdated timer callbacks from overriding newer state changes
+   // enable=true means edge footprint, enable=false means normal footprint
+   if (enable == current_local_footprint_state_.load()) {
+     RCLCPP_INFO(logger_, "Skipping setLocalFootprintEnabled(%s): desired state is now %s",
+                  enable ? "edge" : "normal", current_local_footprint_state_.load() ? "edge" : "normal");
+     return;
+   }
+
+   // Check service availability
+   if (!local_footprint_client_->wait_for_service(std::chrono::seconds(2))) {
+     RCLCPP_ERROR(logger_, "Service /local_costmap/local_costmap/set_parameters not available.");
+     return;
+   }
+
+   // Determine footprint to set
+   std::string footprint_vertices = enable ? cfg_->wall_line.edge_footprint_vertices : local_costmap_footprint_;
+
+   // Create request
+   auto request = std::make_shared<rcl_interfaces::srv::SetParameters::Request>();
+   rcl_interfaces::msg::Parameter param_msg = rclcpp::Parameter("footprint", footprint_vertices).to_parameter_msg();
+   request->parameters.push_back(param_msg);
+
+   RCLCPP_INFO(logger_, "Calling /local_costmap/local_costmap/set_parameters to set footprint -> %s%s",
+               footprint_vertices.c_str(), is_delayed ? " (delayed)" : "");
+
+   // Use a separate thread to avoid blocking the executor
+   std::thread([this, request, footprint_vertices, enable]() {
+     auto future = local_footprint_client_->async_send_request(request);
+     try {
+       auto response = future.get();
+       bool all_successful = true;
+       std::string failed_reason;
+       for (const auto& result : response->results) {
+         if (!result.successful) {
+           all_successful = false;
+           failed_reason = result.reason;
+           break;
+         }
+       }
+       if (all_successful) {
+         RCLCPP_INFO(logger_, "Set /local_costmap/local_costmap footprint -> %s, result: successful",
+                     footprint_vertices.c_str());
+         current_local_footprint_state_.store(enable);
+       } else {
+         RCLCPP_ERROR(logger_, "Set /local_costmap/local_costmap footprint -> %s, result: failed. Reason: %s",
+                      footprint_vertices.c_str(), failed_reason.empty() ? "unknown" : failed_reason.c_str());
+       }
+     } catch (const std::exception& e) {
+       RCLCPP_ERROR(logger_, "Failed to call set_parameters service for local_costmap: %s", e.what());
+     }
+   }).detach();
+ }
+
+ void TebLocalPlannerROS::setGlobalFootprintEnabled(bool enable, bool is_delayed)
+ {
+   if (!global_footprint_client_) {
+     RCLCPP_ERROR(logger_, "global_footprint_client_ not initialized. Cannot set footprint.");
+     return;
+   }
+
+   // Check if the requested state matches the desired state
+   // This prevents outdated timer callbacks from overriding newer state changes
+   // enable=true means edge footprint, enable=false means normal footprint
+   if (enable == current_global_footprint_state_.load()) {
+     RCLCPP_INFO(logger_, "Skipping setGlobalFootprintEnabled(%s): desired state is now %s",
+                  enable ? "edge" : "normal", current_global_footprint_state_.load() ? "edge" : "normal");
+     return;
+   }
+
+   // Check service availability
+   if (!global_footprint_client_->wait_for_service(std::chrono::seconds(2))) {
+     RCLCPP_ERROR(logger_, "Service /global_costmap/global_costmap/set_parameters not available.");
+     return;
+   }
+
+   // Determine footprint to set
+   std::string footprint_vertices = enable ? cfg_->wall_line.edge_footprint_vertices : global_costmap_footprint_;
+
+   // Create request
+   auto request = std::make_shared<rcl_interfaces::srv::SetParameters::Request>();
+   rcl_interfaces::msg::Parameter param_msg = rclcpp::Parameter("footprint", footprint_vertices).to_parameter_msg();
+   request->parameters.push_back(param_msg);
+
+   RCLCPP_INFO(logger_, "Calling /global_costmap/global_costmap/set_parameters to set footprint -> %s%s",
+               footprint_vertices.c_str(), is_delayed ? " (delayed)" : "");
+
+   // Use a separate thread to avoid blocking the executor
+   std::thread([this, request, footprint_vertices, enable]() {
+     auto future = global_footprint_client_->async_send_request(request);
+     try {
+       auto response = future.get();
+       bool all_successful = true;
+       std::string failed_reason;
+       for (const auto& result : response->results) {
+         if (!result.successful) {
+           all_successful = false;
+           failed_reason = result.reason;
+           break;
+         }
+       }
+       if (all_successful) {
+         RCLCPP_INFO(logger_, "Set /global_costmap/global_costmap footprint -> %s, result: successful",
+                     footprint_vertices.c_str());
+         current_global_footprint_state_.store(enable);
+       } else {
+         RCLCPP_ERROR(logger_, "Set /global_costmap/global_costmap footprint -> %s, result: failed. Reason: %s",
+                      footprint_vertices.c_str(), failed_reason.empty() ? "unknown" : failed_reason.c_str());
+       }
+     } catch (const std::exception& e) {
+       RCLCPP_ERROR(logger_, "Failed to call set_parameters service for global_costmap: %s", e.what());
      }
    }).detach();
  }
@@ -2605,6 +3416,10 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
    // Reset static_layer state to default (enabled)
    current_static_layer_state_.store(true);
    desired_static_layer_state_.store(true);
+   current_global_footprint_state_.store(false);
+   desired_global_footprint_state_.store(false);
+   current_local_footprint_state_.store(false);
+   desired_local_footprint_state_.store(false);
 
    return;
  }
@@ -2680,6 +3495,30 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
   if (std::abs(angular_distance) <= cfg_->rotation.angle_threshold)
   {
     return false;
+  }
+  
+  // Check collision at sampled waypoints along the transformed plan
+  geometry_msgs::msg::TwistStamped zero_cmd_vel;
+  zero_cmd_vel.twist.angular.z = 0.0;
+  double check_total_distance = 0.0;
+  double since_last_sample = 0.0;
+  const double sampling_interval = 0.5;
+  for (size_t i = 1; i < transformed_plan.size(); ++i)
+  {
+    double dx = transformed_plan[i].pose.position.x - transformed_plan[i-1].pose.position.x;
+    double dy = transformed_plan[i].pose.position.y - transformed_plan[i-1].pose.position.y;
+    double seg_len = std::sqrt(dx * dx + dy * dy);
+    check_total_distance += seg_len;
+    since_last_sample += seg_len;
+    
+    if (since_last_sample >= sampling_interval)
+    {
+      since_last_sample = 0.0;
+      if (!isRotationCollisionFree(zero_cmd_vel, 0.0, transformed_plan[i]))
+      {
+        return false;
+      }
+    }
   }
   
   return true;
@@ -2777,7 +3616,7 @@ bool TebLocalPlannerROS::isRotationCollisionFree(
       return false;
     }
     
-    if (footprint_cost >= static_cast<double>(LETHAL_OBSTACLE))
+    if (footprint_cost >= static_cast<double>(MAX_NON_OBSTACLE))
     {
       return false;
     }
@@ -2833,7 +3672,7 @@ bool TebLocalPlannerROS::isRotationCollisionFree(
       return false;  // Potential collision detected
     }
     
-    if (footprint_cost >= static_cast<double>(LETHAL_OBSTACLE))
+    if (footprint_cost >= static_cast<double>(MAX_NON_OBSTACLE))
     {
       return false;  // Collision detected
     }

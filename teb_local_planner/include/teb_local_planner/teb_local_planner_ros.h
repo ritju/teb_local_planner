@@ -56,6 +56,8 @@
  #include <nav_msgs/msg/path.hpp>
  #include <nav_msgs/msg/odometry.hpp>
  #include <geometry_msgs/msg/pose_stamped.hpp>
+ #include <sensor_msgs/msg/point_cloud2.hpp>
+ #include <nav_msgs/msg/occupancy_grid.hpp>
  #include <visualization_msgs/msg/marker_array.hpp>
  #include <visualization_msgs/msg/marker.hpp>
  #include <costmap_converter_msgs/msg/obstacle_msg.hpp>
@@ -87,6 +89,16 @@
  {
  using TFBufferPtr = std::shared_ptr<tf2_ros::Buffer>;
  using CostmapROSPtr = std::shared_ptr<nav2_costmap_2d::Costmap2DROS>;
+
+ /**
+  * @brief Structure to represent a protruding obstacle that caused exit from edge-following mode
+  */
+ struct ProtrudingObstacle
+ {
+   Eigen::Vector2d position;      //!< Position of the protruding obstacle (global frame)
+   double influence_radius;        //!< Influence radius = bounding circle radius of the obstacle
+   rclcpp::Time detection_time;    //!< Time when the obstacle was first detected
+ };
  
  /**
    * @class TebLocalPlannerROS
@@ -257,6 +269,20 @@
    * @param msg PoseArray of vehicles around the robot (positions already in map frame)
    */
   void vehiclePosesCallback(const geometry_msgs::msg::PoseArray::ConstSharedPtr msg);
+
+  void vehicleScanCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg);
+
+  /**
+   * @brief 维护车身激光 + converter 多边形滚动栅格（map 对齐）；OccupancyGrid 在 updateObstacleContainerWithCostmapConverter 末尾发布
+   * @param obstacles 可为空指针：仅做点云、窗口重映射与衰减，不融合 converter 多边形
+   */
+  void updateVehicleScanOccupancyGrid(
+    const costmap_converter::ObstacleArrayConstPtr& obstacles,
+    const std::string& obstacles_frame_id);
+
+  void appendVehicleScanInflatedHullObstacles();
+
+  void publishVehicleScanOccupancyGrid();
    
    
    /**
@@ -411,6 +437,20 @@
     */
    void setStaticLayerEnabled(bool enabled, bool is_delayed = false);
 
+   /**
+    * @brief Set footprint parameter for local costmap via service call
+    * @param enable If true, set edge footprint; if false, restore normal footprint
+    * @param is_delayed True if called from delayed timer callback, false for immediate call
+    */
+   void setLocalFootprintEnabled(bool enable, bool is_delayed = false);
+
+   /**
+    * @brief Set footprint parameter for global costmap via service call
+    * @param enable If true, set edge footprint; if false, restore normal footprint
+    * @param is_delayed True if called from delayed timer callback, false for immediate call
+    */
+   void setGlobalFootprintEnabled(bool enable, bool is_delayed = false);
+
  private:
    // Definition of member variables
    rclcpp_lifecycle::LifecycleNode::WeakPtr nh_;
@@ -452,6 +492,20 @@
 
   // Vehicle poses around the robot (in map frame)
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr vehicle_poses_sub_; //!< Subscriber for /vehicle_poses_around
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr vehicle_scan_cloud_sub_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr vehicle_scan_grid_pub_;
+  std::mutex vehicle_scan_cloud_mutex_;
+  sensor_msgs::msg::PointCloud2::SharedPtr latest_vehicle_cloud_;
+  //!< 滚动栅格：255 自由，0 车相关占据；全局格索引 (ix,iy) 对齐 map
+  std::vector<uint8_t> vehicle_scan_grid_;
+  std::vector<uint8_t> vehicle_scan_stale_;
+  std::vector<uint8_t> vehicle_scan_touched_;
+  int vehicle_scan_origin_ix_{0};
+  int vehicle_scan_origin_iy_{0};
+  int vehicle_scan_nx_{0};
+  int vehicle_scan_ny_{0};
+  bool vehicle_scan_grid_ready_{false};
+
   std::vector<geometry_msgs::msg::PoseStamped> global_vehicle_poses_; //!< Filtered vehicle poses near the robot
   std::mutex global_vehicle_poses_mutex_; //!< Mutex that locks the global_vehicle_poses_ container (multi-threaded)
  
@@ -487,7 +541,7 @@
    nav_msgs::msg::Path curb_line_path_;
    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr transformed_path;
    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_plan_pub_;
-   double cfg_max_angular_vel_, cfg_max_angular_acc_;
+   double cfg_max_angular_vel_, cfg_max_angular_acc_, cfg_max_vel_x_;
    rclcpp::Time wall_line_update_time_;
    rclcpp::Time curb_line_update_time_;
    // Parameters for normal mode (saved during initialization)
@@ -501,15 +555,45 @@
    double min_wall_line_length_;
    std::string edge_footprint_vertices_;
    bool is_edge_following_mode_;
+
+   // Wall line locking state
+   bool wall_line_locked_{false};
+   Eigen::Vector2d locked_wall_start_;
+   Eigen::Vector2d locked_wall_end_;
+   int wall_line_stable_count_{0};
+
+   // Protruding obstacles that caused exit from edge-following mode
+   std::vector<ProtrudingObstacle> protruding_obstacles_;
+   std::vector<rclcpp::Time> protrusion_detection_timestamps_;  //!< Sliding window timestamps for protrusion confirmation
+
    rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedPtr static_layer_client_; //!< Persistent client for static_layer parameter updates
    std::atomic<bool> desired_static_layer_state_{true}; //!< Desired state of static_layer.enabled
    std::atomic<bool> current_static_layer_state_{true}; //!< Current confirmed state of static_layer.enabled
    std::mutex static_layer_mutex_; //!< Mutex for protecting static_layer state updates
+   
+   // Footprint parameters for local and global costmaps
+   std::string local_costmap_footprint_; //!< Stored local costmap footprint for restoration
+   std::string global_costmap_footprint_; //!< Stored global costmap footprint for restoration
+   rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedPtr local_footprint_client_; //!< Client for local costmap footprint parameter updates
+   rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedPtr global_footprint_client_; //!< Client for global costmap footprint parameter updates
+   std::atomic<bool> desired_local_footprint_state_{true}; //!< Desired state: true=normal footprint, false=edge footprint
+   std::atomic<bool> desired_global_footprint_state_{true}; //!< Desired state: true=normal footprint, false=edge footprint
+   std::atomic<bool> current_local_footprint_state_{true}; //!< Current confirmed state of local footprint
+   std::atomic<bool> current_global_footprint_state_{true}; //!< Current confirmed state of global footprint
+   std::atomic<bool> desired_normal_vel_x_restore_{true}; //!< Whether a delayed max_vel_x restore to normal is pending
    double speed_limit_linear_x_{std::numeric_limits<double>::infinity()};
    bool has_speed_limit_;
    double safe_linear_speed_limit_;
    double keep_wall_line_time_;
-   double close_vehicle_distance_threshold_;
+   /**
+    * @brief 贴边退出：车辆是否在「机器人航向前后条带 ∩ 墙法向内外条带」内（墙段与机器人、车辆均为 map 系）
+    */
+   bool isVehicleInEdgeFollowingExitCorridor(
+     const geometry_msgs::msg::PoseStamped& robot_pose,
+     const Eigen::Vector2d& wall_w0,
+     const Eigen::Vector2d& wall_w1,
+     const geometry_msgs::msg::Pose& vehicle_pose) const;
+
    double new_vehicle_distance_threshold_;  //!< Distance threshold for adding/removing vehicles from global_vehicle_poses_
    double erase_vehicle_distance_threshold_;  //!< Distance threshold for adding/removing vehicles from global_vehicle_poses_
    static constexpr double same_vehicle_threshold_sq_ = 0.5;

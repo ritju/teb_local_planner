@@ -106,6 +106,16 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "obstacle_proximity_ratio_max_vel",  rclcpp::ParameterValue(obstacles.obstacle_proximity_ratio_max_vel));
   declare_parameter_if_not_declared(nh, name + "." + "obstacle_proximity_lower_bound", rclcpp::ParameterValue(obstacles.obstacle_proximity_lower_bound));
   declare_parameter_if_not_declared(nh, name + "." + "obstacle_proximity_upper_bound", rclcpp::ParameterValue(obstacles.obstacle_proximity_upper_bound));
+  declare_parameter_if_not_declared(nh, name + "." + "enable_vehicle_scan_grid", rclcpp::ParameterValue(obstacles.enable_vehicle_scan_grid));
+  declare_parameter_if_not_declared(nh, name + "." + "vehicle_scan_topic", rclcpp::ParameterValue(obstacles.vehicle_scan_topic));
+  declare_parameter_if_not_declared(nh, name + "." + "vehicle_scan_grid_resolution", rclcpp::ParameterValue(obstacles.vehicle_scan_grid_resolution));
+  declare_parameter_if_not_declared(nh, name + "." + "vehicle_scan_grid_width", rclcpp::ParameterValue(obstacles.vehicle_scan_grid_width));
+  declare_parameter_if_not_declared(nh, name + "." + "vehicle_scan_grid_height", rclcpp::ParameterValue(obstacles.vehicle_scan_grid_height));
+  declare_parameter_if_not_declared(nh, name + "." + "vehicle_scan_polygon_fill_threshold", rclcpp::ParameterValue(obstacles.vehicle_scan_polygon_fill_threshold));
+  declare_parameter_if_not_declared(nh, name + "." + "vehicle_scan_max_stale_cycles", rclcpp::ParameterValue(obstacles.vehicle_scan_max_stale_cycles));
+  declare_parameter_if_not_declared(nh, name + "." + "vehicle_scan_hull_inflation", rclcpp::ParameterValue(obstacles.vehicle_scan_hull_inflation));
+  declare_parameter_if_not_declared(nh, name + "." + "publish_vehicle_scan_grid", rclcpp::ParameterValue(obstacles.publish_vehicle_scan_grid));
+  declare_parameter_if_not_declared(nh, name + "." + "vehicle_scan_grid_topic", rclcpp::ParameterValue(obstacles.vehicle_scan_grid_topic));
 
   // Optimization
   declare_parameter_if_not_declared(nh, name + "." + "no_inner_iterations", rclcpp::ParameterValue(optim.no_inner_iterations));
@@ -147,6 +157,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "distance_tolerance", rclcpp::ParameterValue(wall_line.distance_tolerance));
   declare_parameter_if_not_declared(nh, name + "." + "edge_acc_lim_theta", rclcpp::ParameterValue(wall_line.edge_acc_lim_theta));
   declare_parameter_if_not_declared(nh, name + "." + "edge_max_vel_theta", rclcpp::ParameterValue(wall_line.edge_max_vel_theta));
+  declare_parameter_if_not_declared(nh, name + "." + "edge_max_vel_x", rclcpp::ParameterValue(wall_line.edge_max_vel_x));
   declare_parameter_if_not_declared(nh, name + "." + "edge_weight_optimaltime", rclcpp::ParameterValue(wall_line.edge_weight_optimaltime));
   declare_parameter_if_not_declared(nh, name + "." + "edge_min_obstacle_dist", rclcpp::ParameterValue(wall_line.edge_min_obstacle_dist));
   declare_parameter_if_not_declared(nh, name + "." + "keep_wall_line_time", rclcpp::ParameterValue(wall_line.keep_wall_line_time));
@@ -154,6 +165,32 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "new_vehicle_distance_threshold", rclcpp::ParameterValue(wall_line.new_vehicle_distance_threshold));
   declare_parameter_if_not_declared(nh, name + "." + "erase_vehicle_distance_threshold", rclcpp::ParameterValue(wall_line.erase_vehicle_distance_threshold));
   declare_parameter_if_not_declared(nh, name + "." + "close_vehicle_distance_threshold", rclcpp::ParameterValue(wall_line.close_vehicle_distance_threshold));
+  declare_parameter_if_not_declared(nh, name + "." + "vehicle_exit_corridor_rear_m", rclcpp::ParameterValue(wall_line.vehicle_exit_corridor_rear_m));
+  declare_parameter_if_not_declared(nh, name + "." + "vehicle_exit_corridor_front_m", rclcpp::ParameterValue(wall_line.vehicle_exit_corridor_front_m));
+  declare_parameter_if_not_declared(nh, name + "." + "vehicle_exit_corridor_wall_inner_m", rclcpp::ParameterValue(wall_line.vehicle_exit_corridor_wall_inner_m));
+  declare_parameter_if_not_declared(nh, name + "." + "vehicle_exit_corridor_wall_robot_side_m", rclcpp::ParameterValue(wall_line.vehicle_exit_corridor_wall_robot_side_m));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_safety_offset", rclcpp::ParameterValue(wall_line.wall_line_safety_offset));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_extension_distance", rclcpp::ParameterValue(wall_line.wall_line_extension_distance));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_lock_distance_threshold", rclcpp::ParameterValue(wall_line.wall_line_lock_distance_threshold));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_lock_angle_threshold", rclcpp::ParameterValue(wall_line.wall_line_lock_angle_threshold));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_lock_min_stable_count", rclcpp::ParameterValue(wall_line.wall_line_lock_min_stable_count));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_obstacle_filter_distance", rclcpp::ParameterValue(wall_line.wall_line_obstacle_filter_distance));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_obstacle_protrusion_base_distance", rclcpp::ParameterValue(wall_line.wall_line_obstacle_protrusion_base_distance));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_obstacle_filter_distance_scale", rclcpp::ParameterValue(wall_line.wall_line_obstacle_filter_distance_scale));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_obstacle_filter_distance_max", rclcpp::ParameterValue(wall_line.wall_line_obstacle_filter_distance_max));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_obstacle_along_wall_rear_margin", rclcpp::ParameterValue(wall_line.wall_line_obstacle_along_wall_rear_margin));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_protrusion_exit_forward_max", rclcpp::ParameterValue(wall_line.wall_line_protrusion_exit_forward_max));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_protrusion_exit_lateral_max", rclcpp::ParameterValue(wall_line.wall_line_protrusion_exit_lateral_max));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_protrusion_exit_depth_min", rclcpp::ParameterValue(wall_line.wall_line_protrusion_exit_depth_min));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_protrusion_exit_depth_max", rclcpp::ParameterValue(wall_line.wall_line_protrusion_exit_depth_max));
+  declare_parameter_if_not_declared(nh, name + "." + "obstacle_protrusion_reenter_distance", rclcpp::ParameterValue(wall_line.obstacle_protrusion_reenter_distance));
+  declare_parameter_if_not_declared(nh, name + "." + "obstacle_protrusion_timeout", rclcpp::ParameterValue(wall_line.obstacle_protrusion_timeout));
+  declare_parameter_if_not_declared(nh, name + "." + "obstacle_protrusion_min_confirm_frames", rclcpp::ParameterValue(wall_line.obstacle_protrusion_min_confirm_frames));
+  declare_parameter_if_not_declared(nh, name + "." + "obstacle_protrusion_confirm_window", rclcpp::ParameterValue(wall_line.obstacle_protrusion_confirm_window));
+  declare_parameter_if_not_declared(nh, name + "." + "obstacle_protrusion_max_stored", rclcpp::ParameterValue(wall_line.obstacle_protrusion_max_stored));
+  declare_parameter_if_not_declared(nh, name + "." + "switch_static_layer", rclcpp::ParameterValue(wall_line.switch_static_layer));
+  declare_parameter_if_not_declared(nh, name + "." + "switch_local_footprint", rclcpp::ParameterValue(wall_line.switch_local_footprint));
+  declare_parameter_if_not_declared(nh, name + "." + "switch_global_footprint", rclcpp::ParameterValue(wall_line.switch_global_footprint));
 
   // Rotation
   declare_parameter_if_not_declared(nh, name + "." + "rotation_linear_vel_threshold", rclcpp::ParameterValue(rotation.linear_vel_threshold));
@@ -269,6 +306,16 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "obstacle_proximity_ratio_max_vel", obstacles.obstacle_proximity_ratio_max_vel, obstacles.obstacle_proximity_ratio_max_vel);
   nh->get_parameter_or(name + "." + "obstacle_proximity_lower_bound", obstacles.obstacle_proximity_lower_bound, obstacles.obstacle_proximity_lower_bound);
   nh->get_parameter_or(name + "." + "obstacle_proximity_upper_bound", obstacles.obstacle_proximity_upper_bound, obstacles.obstacle_proximity_upper_bound);
+  nh->get_parameter_or(name + "." + "enable_vehicle_scan_grid", obstacles.enable_vehicle_scan_grid, obstacles.enable_vehicle_scan_grid);
+  nh->get_parameter_or(name + "." + "vehicle_scan_topic", obstacles.vehicle_scan_topic, obstacles.vehicle_scan_topic);
+  nh->get_parameter_or(name + "." + "vehicle_scan_grid_resolution", obstacles.vehicle_scan_grid_resolution, obstacles.vehicle_scan_grid_resolution);
+  nh->get_parameter_or(name + "." + "vehicle_scan_grid_width", obstacles.vehicle_scan_grid_width, obstacles.vehicle_scan_grid_width);
+  nh->get_parameter_or(name + "." + "vehicle_scan_grid_height", obstacles.vehicle_scan_grid_height, obstacles.vehicle_scan_grid_height);
+  nh->get_parameter_or(name + "." + "vehicle_scan_polygon_fill_threshold", obstacles.vehicle_scan_polygon_fill_threshold, obstacles.vehicle_scan_polygon_fill_threshold);
+  nh->get_parameter_or(name + "." + "vehicle_scan_max_stale_cycles", obstacles.vehicle_scan_max_stale_cycles, obstacles.vehicle_scan_max_stale_cycles);
+  nh->get_parameter_or(name + "." + "vehicle_scan_hull_inflation", obstacles.vehicle_scan_hull_inflation, obstacles.vehicle_scan_hull_inflation);
+  nh->get_parameter_or(name + "." + "publish_vehicle_scan_grid", obstacles.publish_vehicle_scan_grid, obstacles.publish_vehicle_scan_grid);
+  nh->get_parameter_or(name + "." + "vehicle_scan_grid_topic", obstacles.vehicle_scan_grid_topic, obstacles.vehicle_scan_grid_topic);
   
   // Optimization
   nh->get_parameter_or(name + "." + "no_inner_iterations", optim.no_inner_iterations, optim.no_inner_iterations);
@@ -310,6 +357,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "transform_path_line_length", wall_line.transform_path_line_length, wall_line.transform_path_line_length);
   nh->get_parameter_or(name + "." + "edge_acc_lim_theta", wall_line.edge_acc_lim_theta, wall_line.edge_acc_lim_theta);
   nh->get_parameter_or(name + "." + "edge_max_vel_theta", wall_line.edge_max_vel_theta, wall_line.edge_max_vel_theta);
+  nh->get_parameter_or(name + "." + "edge_max_vel_x", wall_line.edge_max_vel_x, wall_line.edge_max_vel_x);
   nh->get_parameter_or(name + "." + "edge_weight_optimaltime", wall_line.edge_weight_optimaltime, wall_line.edge_weight_optimaltime);
   nh->get_parameter_or(name + "." + "edge_min_obstacle_dist", wall_line.edge_min_obstacle_dist, wall_line.edge_min_obstacle_dist);
   nh->get_parameter_or(name + "." + "keep_wall_line_time", wall_line.keep_wall_line_time, wall_line.keep_wall_line_time);
@@ -317,6 +365,32 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "new_vehicle_distance_threshold", wall_line.new_vehicle_distance_threshold, wall_line.new_vehicle_distance_threshold);
   nh->get_parameter_or(name + "." + "erase_vehicle_distance_threshold", wall_line.erase_vehicle_distance_threshold, wall_line.erase_vehicle_distance_threshold);
   nh->get_parameter_or(name + "." + "close_vehicle_distance_threshold", wall_line.close_vehicle_distance_threshold, wall_line.close_vehicle_distance_threshold);
+  nh->get_parameter_or(name + "." + "vehicle_exit_corridor_rear_m", wall_line.vehicle_exit_corridor_rear_m, wall_line.vehicle_exit_corridor_rear_m);
+  nh->get_parameter_or(name + "." + "vehicle_exit_corridor_front_m", wall_line.vehicle_exit_corridor_front_m, wall_line.vehicle_exit_corridor_front_m);
+  nh->get_parameter_or(name + "." + "vehicle_exit_corridor_wall_inner_m", wall_line.vehicle_exit_corridor_wall_inner_m, wall_line.vehicle_exit_corridor_wall_inner_m);
+  nh->get_parameter_or(name + "." + "vehicle_exit_corridor_wall_robot_side_m", wall_line.vehicle_exit_corridor_wall_robot_side_m, wall_line.vehicle_exit_corridor_wall_robot_side_m);
+  nh->get_parameter_or(name + "." + "wall_line_safety_offset", wall_line.wall_line_safety_offset, wall_line.wall_line_safety_offset);
+  nh->get_parameter_or(name + "." + "wall_line_extension_distance", wall_line.wall_line_extension_distance, wall_line.wall_line_extension_distance);
+  nh->get_parameter_or(name + "." + "wall_line_lock_distance_threshold", wall_line.wall_line_lock_distance_threshold, wall_line.wall_line_lock_distance_threshold);
+  nh->get_parameter_or(name + "." + "wall_line_lock_angle_threshold", wall_line.wall_line_lock_angle_threshold, wall_line.wall_line_lock_angle_threshold);
+  nh->get_parameter_or(name + "." + "wall_line_lock_min_stable_count", wall_line.wall_line_lock_min_stable_count, wall_line.wall_line_lock_min_stable_count);
+  nh->get_parameter_or(name + "." + "wall_line_obstacle_filter_distance", wall_line.wall_line_obstacle_filter_distance, wall_line.wall_line_obstacle_filter_distance);
+  nh->get_parameter_or(name + "." + "wall_line_obstacle_protrusion_base_distance", wall_line.wall_line_obstacle_protrusion_base_distance, wall_line.wall_line_obstacle_protrusion_base_distance);
+  nh->get_parameter_or(name + "." + "wall_line_obstacle_filter_distance_scale", wall_line.wall_line_obstacle_filter_distance_scale, wall_line.wall_line_obstacle_filter_distance_scale);
+  nh->get_parameter_or(name + "." + "wall_line_obstacle_filter_distance_max", wall_line.wall_line_obstacle_filter_distance_max, wall_line.wall_line_obstacle_filter_distance_max);
+  nh->get_parameter_or(name + "." + "wall_line_obstacle_along_wall_rear_margin", wall_line.wall_line_obstacle_along_wall_rear_margin, wall_line.wall_line_obstacle_along_wall_rear_margin);
+  nh->get_parameter_or(name + "." + "wall_line_protrusion_exit_forward_max", wall_line.wall_line_protrusion_exit_forward_max, wall_line.wall_line_protrusion_exit_forward_max);
+  nh->get_parameter_or(name + "." + "wall_line_protrusion_exit_lateral_max", wall_line.wall_line_protrusion_exit_lateral_max, wall_line.wall_line_protrusion_exit_lateral_max);
+  nh->get_parameter_or(name + "." + "wall_line_protrusion_exit_depth_min", wall_line.wall_line_protrusion_exit_depth_min, wall_line.wall_line_protrusion_exit_depth_min);
+  nh->get_parameter_or(name + "." + "wall_line_protrusion_exit_depth_max", wall_line.wall_line_protrusion_exit_depth_max, wall_line.wall_line_protrusion_exit_depth_max);
+  nh->get_parameter_or(name + "." + "obstacle_protrusion_reenter_distance", wall_line.obstacle_protrusion_reenter_distance, wall_line.obstacle_protrusion_reenter_distance);
+  nh->get_parameter_or(name + "." + "obstacle_protrusion_timeout", wall_line.obstacle_protrusion_timeout, wall_line.obstacle_protrusion_timeout);
+  nh->get_parameter_or(name + "." + "obstacle_protrusion_min_confirm_frames", wall_line.obstacle_protrusion_min_confirm_frames, wall_line.obstacle_protrusion_min_confirm_frames);
+  nh->get_parameter_or(name + "." + "obstacle_protrusion_confirm_window", wall_line.obstacle_protrusion_confirm_window, wall_line.obstacle_protrusion_confirm_window);
+  nh->get_parameter_or(name + "." + "obstacle_protrusion_max_stored", wall_line.obstacle_protrusion_max_stored, wall_line.obstacle_protrusion_max_stored);
+  nh->get_parameter_or(name + "." + "switch_static_layer", wall_line.switch_static_layer, wall_line.switch_static_layer);
+  nh->get_parameter_or(name + "." + "switch_local_footprint", wall_line.switch_local_footprint, wall_line.switch_local_footprint);
+  nh->get_parameter_or(name + "." + "switch_global_footprint", wall_line.switch_global_footprint, wall_line.switch_global_footprint);
 
 
   // Homotopy Class Planner
@@ -596,6 +670,26 @@ rcl_interfaces::msg::SetParametersResult
         obstacles.obstacle_proximity_lower_bound = parameter.as_double();
       } else if (name == node_name + ".obstacle_proximity_upper_bound") {
         obstacles.obstacle_proximity_upper_bound = parameter.as_double();
+      } else if (name == node_name + ".enable_vehicle_scan_grid") {
+        obstacles.enable_vehicle_scan_grid = parameter.as_bool();
+      } else if (name == node_name + ".vehicle_scan_topic") {
+        obstacles.vehicle_scan_topic = parameter.as_string();
+      } else if (name == node_name + ".vehicle_scan_grid_resolution") {
+        obstacles.vehicle_scan_grid_resolution = parameter.as_double();
+      } else if (name == node_name + ".vehicle_scan_grid_width") {
+        obstacles.vehicle_scan_grid_width = parameter.as_double();
+      } else if (name == node_name + ".vehicle_scan_grid_height") {
+        obstacles.vehicle_scan_grid_height = parameter.as_double();
+      } else if (name == node_name + ".vehicle_scan_polygon_fill_threshold") {
+        obstacles.vehicle_scan_polygon_fill_threshold = parameter.as_int();
+      } else if (name == node_name + ".vehicle_scan_max_stale_cycles") {
+        obstacles.vehicle_scan_max_stale_cycles = parameter.as_int();
+      } else if (name == node_name + ".vehicle_scan_hull_inflation") {
+        obstacles.vehicle_scan_hull_inflation = parameter.as_double();
+      } else if (name == node_name + ".publish_vehicle_scan_grid") {
+        obstacles.publish_vehicle_scan_grid = parameter.as_bool();
+      } else if (name == node_name + ".vehicle_scan_grid_topic") {
+        obstacles.vehicle_scan_grid_topic = parameter.as_string();
       }
       // Optimization
       else if (name == node_name + ".penalty_epsilon") {
@@ -662,6 +756,8 @@ rcl_interfaces::msg::SetParametersResult
         wall_line.edge_acc_lim_theta = parameter.as_double();
       } else if (name == node_name + ".edge_max_vel_theta") {
         wall_line.edge_max_vel_theta = parameter.as_double();
+      } else if (name == node_name + ".edge_max_vel_x") {
+        wall_line.edge_max_vel_x = parameter.as_double();
       } else if (name == node_name + ".edge_weight_optimaltime") {
         wall_line.edge_weight_optimaltime = parameter.as_double();
       } else if (name == node_name + ".edge_min_obstacle_dist") {
@@ -674,6 +770,58 @@ rcl_interfaces::msg::SetParametersResult
         wall_line.erase_vehicle_distance_threshold = parameter.as_double();
       } else if (name == node_name + ".close_vehicle_distance_threshold") {
         wall_line.close_vehicle_distance_threshold = parameter.as_double();
+      } else if (name == node_name + ".vehicle_exit_corridor_rear_m") {
+        wall_line.vehicle_exit_corridor_rear_m = parameter.as_double();
+      } else if (name == node_name + ".vehicle_exit_corridor_front_m") {
+        wall_line.vehicle_exit_corridor_front_m = parameter.as_double();
+      } else if (name == node_name + ".vehicle_exit_corridor_wall_inner_m") {
+        wall_line.vehicle_exit_corridor_wall_inner_m = parameter.as_double();
+      } else if (name == node_name + ".vehicle_exit_corridor_wall_robot_side_m") {
+        wall_line.vehicle_exit_corridor_wall_robot_side_m = parameter.as_double();
+      } else if (name == node_name + ".wall_line_safety_offset") {
+        wall_line.wall_line_safety_offset = parameter.as_double();
+      } else if (name == node_name + ".wall_line_extension_distance") {
+        wall_line.wall_line_extension_distance = parameter.as_double();
+      } else if (name == node_name + ".wall_line_lock_distance_threshold") {
+        wall_line.wall_line_lock_distance_threshold = parameter.as_double();
+      } else if (name == node_name + ".wall_line_lock_angle_threshold") {
+        wall_line.wall_line_lock_angle_threshold = parameter.as_double();
+      } else if (name == node_name + ".wall_line_lock_min_stable_count") {
+        wall_line.wall_line_lock_min_stable_count = parameter.as_int();
+      } else if (name == node_name + ".wall_line_obstacle_filter_distance") {
+        wall_line.wall_line_obstacle_filter_distance = parameter.as_double();
+      } else if (name == node_name + ".wall_line_obstacle_protrusion_base_distance") {
+        wall_line.wall_line_obstacle_protrusion_base_distance = parameter.as_double();
+      } else if (name == node_name + ".wall_line_obstacle_filter_distance_scale") {
+        wall_line.wall_line_obstacle_filter_distance_scale = parameter.as_double();
+      } else if (name == node_name + ".wall_line_obstacle_filter_distance_max") {
+        wall_line.wall_line_obstacle_filter_distance_max = parameter.as_double();
+      } else if (name == node_name + ".wall_line_obstacle_along_wall_rear_margin") {
+        wall_line.wall_line_obstacle_along_wall_rear_margin = parameter.as_double();
+      } else if (name == node_name + ".wall_line_protrusion_exit_forward_max") {
+        wall_line.wall_line_protrusion_exit_forward_max = parameter.as_double();
+      } else if (name == node_name + ".wall_line_protrusion_exit_lateral_max") {
+        wall_line.wall_line_protrusion_exit_lateral_max = parameter.as_double();
+      } else if (name == node_name + ".wall_line_protrusion_exit_depth_min") {
+        wall_line.wall_line_protrusion_exit_depth_min = parameter.as_double();
+      } else if (name == node_name + ".wall_line_protrusion_exit_depth_max") {
+        wall_line.wall_line_protrusion_exit_depth_max = parameter.as_double();
+      } else if (name == node_name + ".obstacle_protrusion_reenter_distance") {
+        wall_line.obstacle_protrusion_reenter_distance = parameter.as_double();
+      } else if (name == node_name + ".obstacle_protrusion_timeout") {
+        wall_line.obstacle_protrusion_timeout = parameter.as_double();
+      } else if (name == node_name + ".obstacle_protrusion_min_confirm_frames") {
+        wall_line.obstacle_protrusion_min_confirm_frames = parameter.as_int();
+      } else if (name == node_name + ".obstacle_protrusion_confirm_window") {
+        wall_line.obstacle_protrusion_confirm_window = parameter.as_double();
+      } else if (name == node_name + ".obstacle_protrusion_max_stored") {
+        wall_line.obstacle_protrusion_max_stored = parameter.as_int();
+      } else if (name == node_name + ".switch_static_layer") {
+        wall_line.switch_static_layer = parameter.as_bool();
+      } else if (name == node_name + ".switch_local_footprint") {
+        wall_line.switch_local_footprint = parameter.as_bool();
+      } else if (name == node_name + ".switch_global_footprint") {
+        wall_line.switch_global_footprint = parameter.as_bool();
       }
       // Homotopy Class Planner
       else if (name == node_name + ".selection_cost_hysteresis") {

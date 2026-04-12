@@ -88,11 +88,15 @@ add_library(teb_local_planner SHARED
    src/teb_config.cpp
    src/homotopy_class_planner.cpp
    src/teb_local_planner_ros.cpp
+   src/vehicle_scan_grid.cpp
    src/graph_search.cpp
 )
 
 set(ament_dependencies
     costmap_converter
+    costmap_converter_msgs
+    sensor_msgs
+    tf2_sensor_msgs
     dwb_critics
     nav_2d_utils
     nav2_core

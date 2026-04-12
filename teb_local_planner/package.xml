@@ -26,6 +26,10 @@
   <depend>costmap_converter_msgs</depend> -->
 
   <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf2_sensor_msgs</depend>
+  <depend>costmap_converter_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>libg2o</depend>
   <depend>dwb_critics</depend>
   <depend>nav2_core</depend>

@@ -150,6 +150,17 @@ public:
     double obstacle_proximity_ratio_max_vel; //!< Ratio of the maximum velocities used as an upper bound when reducing the speed due to the proximity to a static obstacles
     double obstacle_proximity_lower_bound; //!< Distance to a static obstacle for which the velocity should be lower
     double obstacle_proximity_upper_bound; //!< Distance to a static obstacle for which the velocity should be higher
+    //!< 车身激光 + converter 多边形维护的滚动栅格，输出凸包膨胀障碍（map 系对齐）
+    bool enable_vehicle_scan_grid; //!< 是否启用车身激光 + converter 多边形滚动栅格
+    std::string vehicle_scan_topic; //!< 车身点云话题
+    double vehicle_scan_grid_resolution; //!< 滚动栅格分辨率
+    double vehicle_scan_grid_width; //!< 滚动栅格宽度
+    double vehicle_scan_grid_height; //!< 滚动栅格高度
+    int vehicle_scan_polygon_fill_threshold; //!< 多边形内已为 0 的格数超过此绝对值则整多边形填 0
+    int vehicle_scan_max_stale_cycles; //!< 连续未刷新的占据格恢复为自由（周期数）
+    double vehicle_scan_hull_inflation; //!< 凸包沿顶点外法向膨胀（m） 
+    bool publish_vehicle_scan_grid; //!< 是否发布滚动栅格
+    std::string vehicle_scan_grid_topic; //!< 滚动栅格话题
   } obstacles; //!< Obstacle related parameters
   //! WallLine related parameters
   struct WallLine
@@ -160,17 +171,45 @@ public:
     double distance_tolerance;
     double edge_acc_lim_theta;
     double edge_max_vel_theta;
+    double edge_max_vel_x;
     double edge_weight_optimaltime; //!< weight_optimaltime parameter for edge-following mode
     double edge_min_obstacle_dist; //!< min_obstacle_dist parameter for edge-following mode
     double keep_wall_line_time; //!< time to keep the wall line when not detect usefull wall line
     double new_vehicle_distance_threshold;
     double erase_vehicle_distance_threshold;
     double close_vehicle_distance_threshold;
+    //!< 贴边时车辆检测：机器人航向后方/前方距离 [m]，与墙法向内侧/机器人侧带宽 [m] 构成的平行条带（与航向组合为实际检测区）
+    double vehicle_exit_corridor_rear_m;
+    double vehicle_exit_corridor_front_m;
+    double vehicle_exit_corridor_wall_inner_m;   //!< 墙线沿法向“内侧”扩展（与指向机器人的法向相反一侧）[m]
+    double vehicle_exit_corridor_wall_robot_side_m; //!< 墙线沿法向朝机器人侧扩展 [m]
     double min_wall_line_length;
     double min_path_line_length;
     double transform_path_line_length;
     double static_layer_enable_delay;
     std::string edge_footprint_vertices; //!< footprint vertices parameter for edge-following mode
+    double wall_line_safety_offset; //!< Offset the wall line toward the wall side for safety margin [m]
+    double wall_line_extension_distance; //!< Extend the wall line segment on both ends [m]
+    double wall_line_lock_distance_threshold; //!< Distance change threshold to unlock locked wall line [m]
+    double wall_line_lock_angle_threshold; //!< Angle change threshold to unlock locked wall line [deg]
+    int wall_line_lock_min_stable_count; //!< Minimum consecutive stable frames before locking
+    double wall_line_obstacle_filter_distance; //!< Base nominal: below effective value filters wall noise; above starts exit confirmation [m]
+    double wall_line_obstacle_protrusion_base_distance; //!< If dist(robot, protrusion point) <= this, use nominal threshold [m]
+    double wall_line_obstacle_filter_distance_scale; //!< Beyond base: add this * (d - base) to nominal threshold [m/m]
+    double wall_line_obstacle_filter_distance_max; //!< Upper cap for distance-scaled threshold (filter + exit) [m]
+    double wall_line_obstacle_along_wall_rear_margin; //!< Along-wall min = max(0, robot_along_wall - this); large value ~ old "> 0" [m]
+    double wall_line_protrusion_exit_forward_max; //!< Exit check: max forward extent of base_link corridor (x > 0) [m]
+    double wall_line_protrusion_exit_lateral_max; //!< Exit check: half-width |y| in base_link corridor [m]
+    double wall_line_protrusion_exit_depth_min; //!< Exit check: base eff threshold vs robot-vertex dist (pen>eff counts); larger => stricter, less likely to exit edge mode [m]
+    double wall_line_protrusion_exit_depth_max; //!< Exit check: max wall-normal protrusion toward robot counted [m], interval (eff, this]
+    double obstacle_protrusion_reenter_distance; //!< Minimum distance from protruding obstacle to re-enter edge-following mode [m]
+    double obstacle_protrusion_timeout; //!< Time after which a protruding obstacle record expires [s]
+    int obstacle_protrusion_min_confirm_frames; //!< Minimum detection frames within confirm_window to trigger exit
+    double obstacle_protrusion_confirm_window; //!< Sliding time window for protrusion detection confirmation [s]
+    int obstacle_protrusion_max_stored; //!< Maximum number of protruding obstacles to store
+    bool switch_static_layer; //!< Whether to toggle local costmap static_layer.enabled when switching parameter mode
+    bool switch_local_footprint; //!< Whether to toggle local costmap footprint when switching parameter mode
+    bool switch_global_footprint; //!< Whether to toggle global costmap footprint when switching parameter mode
   } wall_line; //!< Obstacle related parameters
 
 
@@ -361,23 +400,61 @@ public:
     obstacles.obstacle_proximity_lower_bound = 0;
     obstacles.obstacle_proximity_upper_bound = 0.5;
 
+    obstacles.enable_vehicle_scan_grid = false;
+    obstacles.vehicle_scan_topic = "/vehicle_scan_points";
+    obstacles.vehicle_scan_grid_resolution = 0.2;
+    obstacles.vehicle_scan_grid_width = 10.0;
+    obstacles.vehicle_scan_grid_height = 10.0;
+    obstacles.vehicle_scan_polygon_fill_threshold = 10;
+    obstacles.vehicle_scan_max_stale_cycles = 10;
+    obstacles.vehicle_scan_hull_inflation = 1.5;
+    obstacles.publish_vehicle_scan_grid = false;
+    obstacles.vehicle_scan_grid_topic = "/teb_vehicle_scan_grid";
+
     wall_line.min_wall_dist = 0.4;
     wall_line.min_wall_direction = 0.0;
     wall_line.parallel_tolerance = 0.98;
     wall_line.distance_tolerance = 0.8;
     wall_line.edge_acc_lim_theta = 0.2;
     wall_line.edge_max_vel_theta = 0.3;
+    wall_line.edge_max_vel_x = 0.5;
     wall_line.edge_weight_optimaltime = 10.0;
     wall_line.edge_min_obstacle_dist = 0.05;
     wall_line.keep_wall_line_time = 5.0;
     wall_line.new_vehicle_distance_threshold = 5.0;
     wall_line.erase_vehicle_distance_threshold = 10.0;
     wall_line.close_vehicle_distance_threshold = 1.5;
+    wall_line.vehicle_exit_corridor_rear_m = 2.0;
+    wall_line.vehicle_exit_corridor_front_m = 6.0;
+    wall_line.vehicle_exit_corridor_wall_inner_m = 0.5;
+    wall_line.vehicle_exit_corridor_wall_robot_side_m = 2.0;
     wall_line.min_wall_line_length = 1.0;
     wall_line.min_path_line_length = 2.0;
     wall_line.transform_path_line_length = 2.0;
     wall_line.edge_footprint_vertices = "[[1.25, 0.5], [1.25, -0.5], [-0.65, -0.5], [-0.65, 0.5]]";
     wall_line.static_layer_enable_delay = 5.0;
+    wall_line.wall_line_safety_offset = 0.03;
+    wall_line.wall_line_extension_distance = 1.0;
+    wall_line.wall_line_lock_distance_threshold = 0.08;
+    wall_line.wall_line_lock_angle_threshold = 3.0;
+    wall_line.wall_line_lock_min_stable_count = 5;
+    wall_line.wall_line_obstacle_filter_distance = 0.5;
+    wall_line.wall_line_obstacle_protrusion_base_distance = 1000.0;
+    wall_line.wall_line_obstacle_filter_distance_scale = 0.0;
+    wall_line.wall_line_obstacle_filter_distance_max = 0.5;
+    wall_line.wall_line_obstacle_along_wall_rear_margin = 2.0;
+    wall_line.wall_line_protrusion_exit_forward_max = 6.0;
+    wall_line.wall_line_protrusion_exit_lateral_max = 1.0;
+    wall_line.wall_line_protrusion_exit_depth_min = 0.3;
+    wall_line.wall_line_protrusion_exit_depth_max = 2.0;
+    wall_line.obstacle_protrusion_reenter_distance = 2.0;
+    wall_line.obstacle_protrusion_timeout = 30.0;
+    wall_line.obstacle_protrusion_min_confirm_frames = 3;
+    wall_line.obstacle_protrusion_confirm_window = 2.0;
+    wall_line.obstacle_protrusion_max_stored = 20;
+    wall_line.switch_static_layer = true;
+    wall_line.switch_local_footprint = true;
+    wall_line.switch_global_footprint = true;
 
     // Optimization
 

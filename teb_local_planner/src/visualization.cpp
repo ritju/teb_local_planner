@@ -132,7 +132,7 @@ void TebVisualization::publishRobotFootprintModel(const PoseSE2& current_pose, c
     marker_it->ns = ns;
     marker_it->id = idx;
     marker_it->lifetime = rclcpp::Duration(2, 0);
-    // teb_marker_pub_->publish(*marker_it);
+    teb_marker_pub_->publish(*marker_it);
   }
   
 }
@@ -276,11 +276,11 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
       end.z = 0;
       marker.points.push_back(end);
   
-      marker.scale.x = 0.1;
-      marker.scale.y = 0.1;
+      marker.scale.x = 0.02;
+      marker.scale.y = 0.02;
       marker.color.a = 1.0;
-      marker.color.r = 0.0;
-      marker.color.g = 1.0;
+      marker.color.r = 1.0;
+      marker.color.g = 0.0;
       marker.color.b = 0.0;
       
       markers.push_back(marker);
@@ -378,7 +378,7 @@ void TebVisualization::publishViaPoints(const std::vector< Eigen::Vector2d, Eige
   marker.color.g = 0.0;
   marker.color.b = 1.0;
 
-  // teb_marker_pub_->publish( marker );
+  teb_marker_pub_->publish( marker );
 }
 
 void TebVisualization::publishTebContainer(const TebOptPlannerContainer& teb_planner, const std::string& ns)
@@ -430,7 +430,7 @@ if ( printErrorWhenNotInitialized() )
   marker.color.g = 1.0;
   marker.color.b = 0.0;
 
-  // teb_marker_pub_->publish( marker );
+  teb_marker_pub_->publish( marker );
 }
 
 void TebVisualization::publishFeedbackMessage(const std::vector< std::shared_ptr<TebOptimalPlanner> >& teb_planners,
