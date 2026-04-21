@@ -155,6 +155,9 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "min_wall_direction", rclcpp::ParameterValue(wall_line.min_wall_direction));
   declare_parameter_if_not_declared(nh, name + "." + "parallel_tolerance", rclcpp::ParameterValue(wall_line.parallel_tolerance));
   declare_parameter_if_not_declared(nh, name + "." + "distance_tolerance", rclcpp::ParameterValue(wall_line.distance_tolerance));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_dist_robot_weight_radius", rclcpp::ParameterValue(wall_line.wall_line_dist_robot_weight_radius));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_dist_weight_scale_at_robot", rclcpp::ParameterValue(wall_line.wall_line_dist_weight_scale_at_robot));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_line_dist_weight_scale_far", rclcpp::ParameterValue(wall_line.wall_line_dist_weight_scale_far));
   declare_parameter_if_not_declared(nh, name + "." + "edge_acc_lim_theta", rclcpp::ParameterValue(wall_line.edge_acc_lim_theta));
   declare_parameter_if_not_declared(nh, name + "." + "edge_max_vel_theta", rclcpp::ParameterValue(wall_line.edge_max_vel_theta));
   declare_parameter_if_not_declared(nh, name + "." + "edge_max_vel_x", rclcpp::ParameterValue(wall_line.edge_max_vel_x));
@@ -357,6 +360,9 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "min_wall_direction", wall_line.min_wall_direction, wall_line.min_wall_direction);
   nh->get_parameter_or(name + "." + "parallel_tolerance", wall_line.parallel_tolerance, wall_line.parallel_tolerance);
   nh->get_parameter_or(name + "." + "distance_tolerance", wall_line.distance_tolerance, wall_line.distance_tolerance);
+  nh->get_parameter_or(name + "." + "wall_line_dist_robot_weight_radius", wall_line.wall_line_dist_robot_weight_radius, wall_line.wall_line_dist_robot_weight_radius);
+  nh->get_parameter_or(name + "." + "wall_line_dist_weight_scale_at_robot", wall_line.wall_line_dist_weight_scale_at_robot, wall_line.wall_line_dist_weight_scale_at_robot);
+  nh->get_parameter_or(name + "." + "wall_line_dist_weight_scale_far", wall_line.wall_line_dist_weight_scale_far, wall_line.wall_line_dist_weight_scale_far);
   nh->get_parameter_or(name + "." + "min_wall_line_length", wall_line.min_wall_line_length, wall_line.min_wall_line_length);
   nh->get_parameter_or(name + "." + "min_path_line_length", wall_line.min_path_line_length, wall_line.min_path_line_length);
   nh->get_parameter_or(name + "." + "transform_path_line_length", wall_line.transform_path_line_length, wall_line.transform_path_line_length);
@@ -762,6 +768,12 @@ rcl_interfaces::msg::SetParametersResult
         wall_line.parallel_tolerance = parameter.as_double();
       } else if (name == node_name + ".distance_tolerance") {
         wall_line.distance_tolerance = parameter.as_double();
+      } else if (name == node_name + ".wall_line_dist_robot_weight_radius") {
+        wall_line.wall_line_dist_robot_weight_radius = parameter.as_double();
+      } else if (name == node_name + ".wall_line_dist_weight_scale_at_robot") {
+        wall_line.wall_line_dist_weight_scale_at_robot = parameter.as_double();
+      } else if (name == node_name + ".wall_line_dist_weight_scale_far") {
+        wall_line.wall_line_dist_weight_scale_far = parameter.as_double();
       } else if (name == node_name + ".edge_acc_lim_theta") {
         wall_line.edge_acc_lim_theta = parameter.as_double();
       } else if (name == node_name + ".edge_max_vel_theta") {

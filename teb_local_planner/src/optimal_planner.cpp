@@ -926,9 +926,12 @@ void TebOptimalPlanner::AddEdgesDistanceToWall()
   if (cfg_->optim.weight_wall_line_dist==0)
     return; // if weight equals zero skip adding edges!
   Eigen::Matrix<double,1,1> information;
-  information.fill(cfg_->optim.weight_wall_line_dist);
+  const Eigen::Vector2d p0 = teb_.PoseVertex(0)->position();
   for (int i=0; i < teb_.sizePoses()-1; ++i)
   {
+    const double dist_from_robot = (teb_.PoseVertex(i)->position() - p0).norm();
+    const double k = EdgeDistanceToWall::distanceWeightScale(*cfg_, dist_from_robot);
+    information.fill(cfg_->optim.weight_wall_line_dist * k);
     EdgeDistanceToWall* wall_line_dist_edge = new EdgeDistanceToWall;
     wall_line_dist_edge->setVertex(0,teb_.PoseVertex(i));
     wall_line_dist_edge->setInformation(information);

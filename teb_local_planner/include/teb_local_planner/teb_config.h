@@ -169,6 +169,10 @@ public:
     double min_wall_direction; //!< buffer zone around obstacles with non-zero penalty costs (should be larger than min_obstacle_dist in order to take effect)
     double parallel_tolerance;
     double distance_tolerance;
+    //!< 贴墙距离项：路径点距轨迹起点（机器人）欧氏距离在 [0,R] 内时，信息权重系数由 min 线性过渡到 max；R<=0 表示关闭（恒为 max）
+    double wall_line_dist_robot_weight_radius;
+    double wall_line_dist_weight_scale_at_robot; //!< 距离起点 0m 时的系数（通常较小，减轻起点附近贴边/倒退）
+    double wall_line_dist_weight_scale_far;      //!< 距离 >= R 时的系数（通常为 1.0）
     double edge_acc_lim_theta;
     double edge_max_vel_theta;
     double edge_max_vel_x;
@@ -465,6 +469,9 @@ public:
     wall_line.switch_static_layer = true;
     wall_line.switch_local_footprint = true;
     wall_line.switch_global_footprint = true;
+    wall_line.wall_line_dist_robot_weight_radius = 0.0;
+    wall_line.wall_line_dist_weight_scale_at_robot = 0.15;
+    wall_line.wall_line_dist_weight_scale_far = 1.0;
 
     // Optimization
 

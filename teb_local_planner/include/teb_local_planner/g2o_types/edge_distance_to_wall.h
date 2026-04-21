@@ -56,19 +56,30 @@ namespace teb_local_planner
   
 
 /**
- * @class EdgeParallelToWall
- * @brief Edge defining the cost function for pushing a configuration parallel to wall
- * 
- * The edge depends on a single vertex \f$ \mathbf{s}_i \f$ and minimizes: \n
- * \f$ \min  dist2point \cdot weight \f$. \n
- * \e dist2point denotes the distance to the via point. \n
- * \e weight can be set using setInformation(). \n
- * @see TebOptimalPlanner::AddEdgesViaPoints
- * @remarks Do not forget to call setTebConfig() and setViaPoint()
- */     
+ * @class EdgeDistanceToWall
+ * @brief 约束路径点到墙线的垂直距离；信息矩阵权重可按路径点与机器人（轨迹首点）距离线性缩放，见 distanceWeightScale().
+ */
 class EdgeDistanceToWall : public BaseTebUnaryEdge<1, const std::vector<Eigen::Vector2d>*, VertexPose>
 {
 public:
+  /**
+   * @brief 贴墙距离项权重系数：在距离首点 [0,R] 内从 k_min 线性增至 k_max，d>=R 为 k_max；R<=0 时恒为 k_max（关闭渐变）
+   */
+  static double distanceWeightScale(const TebConfig& cfg, double distance_from_robot_pose_m)
+  {
+    const double R = cfg.wall_line.wall_line_dist_robot_weight_radius;
+    const double k_min = cfg.wall_line.wall_line_dist_weight_scale_at_robot;
+    const double k_max = cfg.wall_line.wall_line_dist_weight_scale_far;
+    if (R <= 1e-9)
+      return k_max;
+    double t = distance_from_robot_pose_m / R;
+    if (t < 0.0)
+      t = 0.0;
+    else if (t > 1.0)
+      t = 1.0;
+    return k_min + (k_max - k_min) * t;
+  }
+
   /**
    * @brief Construct edge.
    */    
