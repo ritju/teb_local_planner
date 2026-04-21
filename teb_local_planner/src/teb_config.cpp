@@ -161,6 +161,11 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "edge_weight_optimaltime", rclcpp::ParameterValue(wall_line.edge_weight_optimaltime));
   declare_parameter_if_not_declared(nh, name + "." + "edge_min_obstacle_dist", rclcpp::ParameterValue(wall_line.edge_min_obstacle_dist));
   declare_parameter_if_not_declared(nh, name + "." + "keep_wall_line_time", rclcpp::ParameterValue(wall_line.keep_wall_line_time));
+  declare_parameter_if_not_declared(nh, name + "." + "edge_reference_paths_topic", rclcpp::ParameterValue(wall_line.edge_reference_paths_topic));
+  declare_parameter_if_not_declared(nh, name + "." + "fusion_primary_lock_duration", rclcpp::ParameterValue(wall_line.fusion_primary_lock_duration));
+  declare_parameter_if_not_declared(nh, name + "." + "reference_match_max_angle_deg", rclcpp::ParameterValue(wall_line.reference_match_max_angle_deg));
+  declare_parameter_if_not_declared(nh, name + "." + "reference_match_max_distance_m", rclcpp::ParameterValue(wall_line.reference_match_max_distance_m));
+  declare_parameter_if_not_declared(nh, name + "." + "reference_no_valid_path_timeout", rclcpp::ParameterValue(wall_line.reference_no_valid_path_timeout));
   declare_parameter_if_not_declared(nh, name + "." + "edge_footprint_vertices", rclcpp::ParameterValue(wall_line.edge_footprint_vertices));
   declare_parameter_if_not_declared(nh, name + "." + "new_vehicle_distance_threshold", rclcpp::ParameterValue(wall_line.new_vehicle_distance_threshold));
   declare_parameter_if_not_declared(nh, name + "." + "erase_vehicle_distance_threshold", rclcpp::ParameterValue(wall_line.erase_vehicle_distance_threshold));
@@ -361,6 +366,11 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "edge_weight_optimaltime", wall_line.edge_weight_optimaltime, wall_line.edge_weight_optimaltime);
   nh->get_parameter_or(name + "." + "edge_min_obstacle_dist", wall_line.edge_min_obstacle_dist, wall_line.edge_min_obstacle_dist);
   nh->get_parameter_or(name + "." + "keep_wall_line_time", wall_line.keep_wall_line_time, wall_line.keep_wall_line_time);
+  nh->get_parameter_or(name + "." + "edge_reference_paths_topic", wall_line.edge_reference_paths_topic, wall_line.edge_reference_paths_topic);
+  nh->get_parameter_or(name + "." + "fusion_primary_lock_duration", wall_line.fusion_primary_lock_duration, wall_line.fusion_primary_lock_duration);
+  nh->get_parameter_or(name + "." + "reference_match_max_angle_deg", wall_line.reference_match_max_angle_deg, wall_line.reference_match_max_angle_deg);
+  nh->get_parameter_or(name + "." + "reference_match_max_distance_m", wall_line.reference_match_max_distance_m, wall_line.reference_match_max_distance_m);
+  nh->get_parameter_or(name + "." + "reference_no_valid_path_timeout", wall_line.reference_no_valid_path_timeout, wall_line.reference_no_valid_path_timeout);
   nh->get_parameter_or(name + "." + "edge_footprint_vertices", wall_line.edge_footprint_vertices, wall_line.edge_footprint_vertices);
   nh->get_parameter_or(name + "." + "new_vehicle_distance_threshold", wall_line.new_vehicle_distance_threshold, wall_line.new_vehicle_distance_threshold);
   nh->get_parameter_or(name + "." + "erase_vehicle_distance_threshold", wall_line.erase_vehicle_distance_threshold, wall_line.erase_vehicle_distance_threshold);
@@ -764,6 +774,16 @@ rcl_interfaces::msg::SetParametersResult
         wall_line.edge_min_obstacle_dist = parameter.as_double();
       } else if (name == node_name + ".keep_wall_line_time") {
         wall_line.keep_wall_line_time = parameter.as_double();
+      } else if (name == node_name + ".edge_reference_paths_topic") {
+        wall_line.edge_reference_paths_topic = parameter.as_string();
+      } else if (name == node_name + ".fusion_primary_lock_duration") {
+        wall_line.fusion_primary_lock_duration = parameter.as_double();
+      } else if (name == node_name + ".reference_match_max_angle_deg") {
+        wall_line.reference_match_max_angle_deg = parameter.as_double();
+      } else if (name == node_name + ".reference_match_max_distance_m") {
+        wall_line.reference_match_max_distance_m = parameter.as_double();
+      } else if (name == node_name + ".reference_no_valid_path_timeout") {
+        wall_line.reference_no_valid_path_timeout = parameter.as_double();
       } else if (name == node_name + ".new_vehicle_distance_threshold") {
         wall_line.new_vehicle_distance_threshold = parameter.as_double();
       } else if (name == node_name + ".erase_vehicle_distance_threshold") {

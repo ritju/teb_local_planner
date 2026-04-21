@@ -175,6 +175,11 @@ public:
     double edge_weight_optimaltime; //!< weight_optimaltime parameter for edge-following mode
     double edge_min_obstacle_dist; //!< min_obstacle_dist parameter for edge-following mode
     double keep_wall_line_time; //!< time to keep the wall line when not detect usefull wall line
+    std::string edge_reference_paths_topic; //!< LaneCenterPaths subscription (Reference / fusion modes)
+    double fusion_primary_lock_duration; //!< When WALL/CURB matches Reference, lock primary for this duration [s]
+    double reference_match_max_angle_deg; //!< Primary vs Reference "close": max direction angle diff [deg]
+    double reference_match_max_distance_m; //!< Primary vs Reference "close": max midpoint distance [m]
+    double reference_no_valid_path_timeout; //!< No valid Reference path: keep last segment until this timeout since last success [s]
     double new_vehicle_distance_threshold;
     double erase_vehicle_distance_threshold;
     double close_vehicle_distance_threshold;
@@ -421,6 +426,11 @@ public:
     wall_line.edge_weight_optimaltime = 10.0;
     wall_line.edge_min_obstacle_dist = 0.05;
     wall_line.keep_wall_line_time = 5.0;
+    wall_line.edge_reference_paths_topic = "/edge_reference_paths";
+    wall_line.fusion_primary_lock_duration = 5.0;
+    wall_line.reference_match_max_angle_deg = 10.0;
+    wall_line.reference_match_max_distance_m = 0.5;
+    wall_line.reference_no_valid_path_timeout = 5.0;
     wall_line.new_vehicle_distance_threshold = 5.0;
     wall_line.erase_vehicle_distance_threshold = 10.0;
     wall_line.close_vehicle_distance_threshold = 1.5;

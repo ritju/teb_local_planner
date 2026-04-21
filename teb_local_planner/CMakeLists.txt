@@ -43,7 +43,6 @@ find_package(rclcpp_components REQUIRED)
 find_package(dwb_core REQUIRED)
 find_package(capella_ros_msg REQUIRED)
 
-
 message(STATUS "System: ${CMAKE_SYSTEM}")
 ## System dependencies are found with CMake's conventions
 SET(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${PROJECT_SOURCE_DIR}/cmake_modules)
@@ -125,8 +124,11 @@ set(ament_dependencies
 ament_target_dependencies(teb_local_planner
    ${ament_dependencies}
 )
+# Plugin .so is dlopen'd; link C++ typesupport explicitly so LaneCenterPaths
+# rosidl_typesupport_cpp symbols are in DT_NEEDED (not undefined at runtime).
 target_link_libraries(teb_local_planner
    ${EXTERNAL_LIBS}
+   capella_ros_msg::capella_ros_msg__rosidl_typesupport_cpp
 )
 
 target_compile_definitions(teb_local_planner PUBLIC "PLUGINLIB__DISABLE_BOOST_FUNCTIONS")

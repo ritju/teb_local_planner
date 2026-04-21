@@ -71,6 +71,7 @@
  #include "nav2_util/robot_utils.hpp"
  #include <algorithm>
 #include <cmath>
+#include <cctype>
  
  using nav2_util::declare_parameter_if_not_declared;
  
@@ -78,6 +79,53 @@
  {
  
    const char* use_curb_or_wall = std::getenv("USE_CURB_OR_WALL");
+
+namespace {
+std::string normalizeEdgeModeEnv(const char* environment_string)
+{
+  if (environment_string == nullptr) {
+    return "";
+  }
+  std::string normalized_characters;
+  for (const char* character_pointer = environment_string; *character_pointer != '\0';
+       ++character_pointer) {
+    if (*character_pointer != ' ' && *character_pointer != '\t') {
+      normalized_characters.push_back(static_cast<char>(
+        std::tolower(static_cast<unsigned char>(*character_pointer))));
+    }
+  }
+  return normalized_characters;
+}
+
+bool segmentsCloseForFusion(
+  const Eigen::Vector2d& fusion_primary_segment_start,
+  const Eigen::Vector2d& fusion_primary_segment_end,
+  const Eigen::Vector2d& reference_segment_start,
+  const Eigen::Vector2d& reference_segment_end,
+  const double maximum_angle_degrees,
+  const double maximum_midpoint_separation_meters)
+{
+  const Eigen::Vector2d primary_direction = fusion_primary_segment_end - fusion_primary_segment_start;
+  const Eigen::Vector2d reference_direction = reference_segment_end - reference_segment_start;
+  const double primary_segment_length = primary_direction.norm();
+  const double reference_segment_length = reference_direction.norm();
+  if (primary_segment_length < 1e-6 || reference_segment_length < 1e-6) {
+    return false;
+  }
+  const double cosine_alignment =
+    std::fabs(primary_direction.dot(reference_direction) / (primary_segment_length * reference_segment_length));
+  const double angle_degrees =
+    std::acos(std::min(1.0, cosine_alignment)) * 180.0 / M_PI;
+  if (angle_degrees > maximum_angle_degrees) {
+    return false;
+  }
+  const Eigen::Vector2d primary_segment_midpoint =
+    (fusion_primary_segment_start + fusion_primary_segment_end) * 0.5;
+  const Eigen::Vector2d reference_segment_midpoint =
+    (reference_segment_start + reference_segment_end) * 0.5;
+  return (reference_segment_midpoint - primary_segment_midpoint).norm() <= maximum_midpoint_separation_meters;
+}
+}  // namespace
    
  
  TebLocalPlannerROS::TebLocalPlannerROS() 
@@ -276,28 +324,39 @@
       vehicle_scan_grid_pub_ = node->create_publisher<nav_msgs::msg::OccupancyGrid>(
         cfg_->obstacles.vehicle_scan_grid_topic, grid_qos);
     }
-    // setup callback for line center points
-    if (cfg_->optim.weight_wall_line_dist > 0.0)
-    {
-      if (use_curb_or_wall != nullptr && std::strcmp(use_curb_or_wall, "WALL") == 0)
-      {
+    // setup callback for line center points (WALL / CURB / Reference / fusion modes via USE_CURB_OR_WALL)
+    if (cfg_->optim.weight_wall_line_dist > 0.0 && use_curb_or_wall != nullptr) {
+      const std::string normalized_wall_or_curb_edge_mode_string =
+        normalizeEdgeModeEnv(use_curb_or_wall);
+      if (normalized_wall_or_curb_edge_mode_string.find("wall") != std::string::npos) {
         wall_line_ptr_ = std::make_shared<line_path_compare::LinePathCompare>(node);
       }
-      else if (use_curb_or_wall != nullptr && std::strcmp(use_curb_or_wall, "CURB") == 0)
-      {
+      if (normalized_wall_or_curb_edge_mode_string == "curb" ||
+          (normalized_wall_or_curb_edge_mode_string.find("curb") != std::string::npos &&
+            normalized_wall_or_curb_edge_mode_string.find("reference") != std::string::npos)) {
         curb_line_subscriber_ = node->create_subscription<nav_msgs::msg::Path>(
-                "camera1/extracted_line_path", 
-                rclcpp::QoS{5}.best_effort(),
-                std::bind(&TebLocalPlannerROS::curb_line_callback, this, std::placeholders::_1));
+          "camera1/extracted_line_path",
+          rclcpp::QoS{5}.best_effort(),
+          std::bind(&TebLocalPlannerROS::curb_line_callback, this, std::placeholders::_1));
       }
-    
+      if (normalized_wall_or_curb_edge_mode_string.find("reference") != std::string::npos) {
+        rclcpp::QoS reference_paths_subscription_qos(rclcpp::KeepLast(10));
+        reference_paths_subscription_qos.transient_local();
+        reference_paths_subscription_qos.reliable();
+        edge_reference_paths_sub_ = node->create_subscription<capella_ros_msg::msg::LaneCenterPaths>(
+          cfg_->wall_line.edge_reference_paths_topic,
+          reference_paths_subscription_qos,
+          std::bind(&TebLocalPlannerROS::edgeReferencePathsCallback, this, std::placeholders::_1));
+        RCLCPP_INFO(logger_, "Edge mode: subscribed LaneCenterPaths on %s (transient_local)",
+          cfg_->wall_line.edge_reference_paths_topic.c_str());
+      }
+    }
+
     wall_line_marker_publisher_ = node->create_publisher<visualization_msgs::msg::Marker>("teb_selected_wall_line", 1);
     edge_distance_publisher_  = node->create_publisher<std_msgs::msg::Float32>("edge_distance", 1);
-    // initialize failure detector
-    //rclcpp::Node::SharedPtr nh_move_base("~");
-    double controller_frequency = 5;
-    node->get_parameter("controller_frequency", controller_frequency);
-    failure_detector_.setBufferLength(std::round(cfg_->recovery.oscillation_filter_duration*controller_frequency));
+    // initialize failure detector (reuse controller_frequency from control_duration_ above)
+    failure_detector_.setBufferLength(
+      std::round(cfg_->recovery.oscillation_filter_duration * controller_frequency));
 
     // set initialized flag
     initialized_ = true;
@@ -419,9 +478,9 @@
    {
      RCLCPP_INFO(logger_, "teb_local_planner has already been initialized, doing nothing.");
    }
- }}
- 
- void TebLocalPlannerROS::configure(
+}
+
+void TebLocalPlannerROS::configure(
      const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent,
      std::string name,
      std::shared_ptr<tf2_ros::Buffer> tf,
@@ -842,59 +901,8 @@
    }
  
    jump_prune_transformed_plan:
-   if (use_curb_or_wall != nullptr && std::strcmp(use_curb_or_wall, "WALL") == 0 && transformed_plan.size() > 1)
-   {
-     double transform_accumulated_distance = 0.0;
-     unsigned int transform_index = 0;
-     for (unsigned int i = 1; i < transformed_plan.size(); i++){
-      double dx = transformed_plan[i].pose.position.x - transformed_plan[i-1].pose.position.x;
-      double dy = transformed_plan[i].pose.position.y - transformed_plan[i-1].pose.position.y;
-      transform_accumulated_distance += std::sqrt(dx * dx + dy * dy);
-      if (transform_accumulated_distance > cfg_->wall_line.transform_path_line_length)
-      {
-        transform_index = i;
-        break;
-      }
-     }
-     nav_msgs::msg::Path input_path;
-     input_path.header = transformed_plan.at(0).header;
-     input_path.poses = std::vector<geometry_msgs::msg::PoseStamped>(transformed_plan.begin(), transformed_plan.begin() + transform_index);
-     transformed_path->publish(input_path);
-     std::vector<nav_msgs::msg::Path> path_from_wall_line;
-     path_from_wall_line = wall_line_ptr_->get_compare_result(input_path);
-     updateWallLineVec(path_from_wall_line, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance, robot_pose);
-   }
-   else if (use_curb_or_wall != nullptr && std::strcmp(use_curb_or_wall, "CURB") == 0 && transformed_plan.size() > 1)
-   {
-     // 检查curb_line_path_的时间戳，如果超过2秒则清空
-     {
-       std::lock_guard<std::mutex> l(curb_line_mutex_);
-       if (curb_line_path_.poses.size() > 0)
-       {
-         auto time_diff = clock_->now() - curb_line_update_time_;
-         if (time_diff.seconds() > keep_wall_line_time_)
-         {
-           curb_line_path_.poses.clear();
-         }
-       }
-     }
-     double transform_accumulated_distance = 0.0;
-     unsigned int transform_index = 0;
-     for (unsigned int i = 1; i < transformed_plan.size(); i++){
-      double dx = transformed_plan[i].pose.position.x - transformed_plan[i-1].pose.position.x;
-      double dy = transformed_plan[i].pose.position.y - transformed_plan[i-1].pose.position.y;
-      transform_accumulated_distance += std::sqrt(dx * dx + dy * dy);
-      if (transform_accumulated_distance > cfg_->wall_line.transform_path_line_length)
-      {
-        transform_index = i;
-        break;
-      }
-     }
-     nav_msgs::msg::Path input_path;
-     input_path.poses = std::vector<geometry_msgs::msg::PoseStamped>(transformed_plan.begin(), transformed_plan.begin() + transform_index);
-     input_path.header = transformed_plan.at(0).header;
-     transformed_path->publish(input_path);
-     updateCurbLineVec(curb_line_path_, input_path, cfg_->wall_line.parallel_tolerance, cfg_->wall_line.distance_tolerance, robot_pose);
+   if (use_curb_or_wall != nullptr && transformed_plan.size() > 1) {
+     runEdgeFollowingPathUpdate(transformed_plan, robot_pose);
    }
  
    // update via-points container
@@ -1456,10 +1464,10 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
     {
       obstacles_.push_back(ObstaclePtr(new CircularObstacle(polygon->points[0].x, polygon->points[0].y, obstacle->radius)));
     }
-    else if (polygon->points.size()==1) // Point
-    {
-      obstacles_.push_back(ObstaclePtr(new PointObstacle(polygon->points[0].x, polygon->points[0].y)));
-    }
+    // else if (polygon->points.size()==1) // Point
+    // {
+    //   obstacles_.push_back(ObstaclePtr(new PointObstacle(polygon->points[0].x, polygon->points[0].y)));
+    // }
     else if (polygon->points.size()==2) // Line
     {
       obstacles_.push_back(ObstaclePtr(new LineObstacle(polygon->points[0].x, polygon->points[0].y,
@@ -3686,7 +3694,877 @@ bool TebLocalPlannerROS::isRotationCollisionFree(
   
   return true;  // No collision detected
 }
- 
+
+void TebLocalPlannerROS::edgeReferencePathsCallback(
+  const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr lane_center_paths_message)
+{
+  std::lock_guard<std::mutex> edge_reference_paths_mutex_lock(edge_reference_paths_mutex_);
+  // 新消息整包覆盖旧缓存；不在本节点内对 paths 做超时清空（与上层单次发布语义一致）。
+  edge_reference_paths_cache_ = *lane_center_paths_message;
+  edge_reference_paths_msg_time_ = clock_->now();
+  edge_reference_have_message_ = true;
+}
+
+bool TebLocalPlannerROS::edgeFollowingEntryGuards(
+  const geometry_msgs::msg::PoseStamped& robot_pose,
+  const nav_msgs::msg::Path& input_path)
+{
+  if (input_path.poses.size() < 2) {
+    if (wall_line_points_.size() > 0) {
+      wall_line_points_.clear();
+    }
+    switchParameterMode(false);
+    return false;
+  }
+
+  bool has_near_vehicles = false;
+  {
+    std::lock_guard<std::mutex> global_vehicle_poses_mutex_lock(global_vehicle_poses_mutex_);
+    const bool have_active_edge_segment = (wall_line_points_.size() >= 2);
+    Eigen::Vector2d active_edge_segment_start;
+    Eigen::Vector2d active_edge_segment_end;
+    if (have_active_edge_segment) {
+      active_edge_segment_start = wall_line_points_[0];
+      active_edge_segment_end = wall_line_points_[1];
+    }
+    for (const auto& nearby_vehicle_pose : global_vehicle_poses_) {
+      bool vehicle_in_edge_following_exit_corridor = false;
+      if (have_active_edge_segment) {
+        vehicle_in_edge_following_exit_corridor = isVehicleInEdgeFollowingExitCorridor(
+          robot_pose, active_edge_segment_start, active_edge_segment_end, nearby_vehicle_pose.pose);
+      } else {
+        vehicle_in_edge_following_exit_corridor =
+          distance_points2d(robot_pose.pose.position, nearby_vehicle_pose.pose.position) <
+          cfg_->wall_line.close_vehicle_distance_threshold;
+      }
+      if (vehicle_in_edge_following_exit_corridor) {
+        has_near_vehicles = true;
+        break;
+      }
+    }
+  }
+  if (has_near_vehicles) {
+    if (wall_line_points_.size() > 0) {
+      wall_line_points_.clear();
+    }
+    switchParameterMode(false);
+    fusion_primary_lock_until_ = rclcpp::Time(0, 0, clock_->get_clock_type());
+    return false;
+  }
+
+  bool has_protruding_obstacle_nearby = false;
+  const Eigen::Vector2d robot_position_planar(
+    robot_pose.pose.position.x, robot_pose.pose.position.y);
+  const rclcpp::Time current_clock_time = clock_->now();
+  auto protruding_obstacle_iterator = protruding_obstacles_.begin();
+  while (protruding_obstacle_iterator != protruding_obstacles_.end()) {
+    const double distance_robot_to_obstacle =
+      (robot_position_planar - protruding_obstacle_iterator->position).norm();
+    const double seconds_since_obstacle_detection =
+      (current_clock_time - protruding_obstacle_iterator->detection_time).seconds();
+    if (seconds_since_obstacle_detection > cfg_->wall_line.obstacle_protrusion_timeout) {
+      protruding_obstacle_iterator = protruding_obstacles_.erase(protruding_obstacle_iterator);
+      continue;
+    }
+    const double obstacle_reenter_influence_threshold =
+      cfg_->wall_line.obstacle_protrusion_reenter_distance +
+      protruding_obstacle_iterator->influence_radius;
+    if (distance_robot_to_obstacle < obstacle_reenter_influence_threshold) {
+      has_protruding_obstacle_nearby = true;
+      ++protruding_obstacle_iterator;
+    } else {
+      protruding_obstacle_iterator = protruding_obstacles_.erase(protruding_obstacle_iterator);
+    }
+  }
+  if (has_protruding_obstacle_nearby) {
+    if (wall_line_points_.size() > 0) {
+      wall_line_points_.clear();
+    }
+    switchParameterMode(false);
+    fusion_primary_lock_until_ = rclcpp::Time(0, 0, clock_->get_clock_type());
+    return false;
+  }
+  return true;
+}
+
+bool TebLocalPlannerROS::trySelectWallSegmentFromCandidates(
+  const std::vector<nav_msgs::msg::Path>& wall_candidates,
+  const nav_msgs::msg::Path& input_path,
+  const geometry_msgs::msg::PoseStamped& robot_pose,
+  const double parallel_tolerance_degrees,
+  const double distance_tolerance_meters,
+  Eigen::Vector2d& selected_edge_segment_start,
+  Eigen::Vector2d& selected_edge_segment_end,
+  double& minimum_average_distance_to_plan,
+  double& robot_perpendicular_distance_to_edge_line)
+{
+  minimum_average_distance_to_plan = std::numeric_limits<double>::max();
+  robot_perpendicular_distance_to_edge_line = std::numeric_limits<double>::max();
+  const auto& input_path_start_position = input_path.poses.front().pose.position;
+  const auto& input_path_end_position = input_path.poses.back().pose.position;
+  const double input_path_delta_x = input_path_end_position.x - input_path_start_position.x;
+  const double input_path_delta_y = input_path_end_position.y - input_path_start_position.y;
+  const double input_path_segment_length = std::hypot(input_path_delta_x, input_path_delta_y);
+  if (input_path_segment_length <= cfg_->wall_line.min_path_line_length) {
+    return false;
+  }
+  const double robot_yaw_radians = tf2::getYaw(robot_pose.pose.orientation);
+  const double input_path_yaw_radians = std::atan2(input_path_delta_y, input_path_delta_x);
+  double path_heading_minus_robot_heading = input_path_yaw_radians - robot_yaw_radians;
+  while (path_heading_minus_robot_heading > M_PI) {
+    path_heading_minus_robot_heading -= 2 * M_PI;
+  }
+  while (path_heading_minus_robot_heading < -M_PI) {
+    path_heading_minus_robot_heading += 2 * M_PI;
+  }
+  if (std::fabs(path_heading_minus_robot_heading) > M_PI / 4) {
+    return false;
+  }
+  const double input_path_direction_x = input_path_delta_x / input_path_segment_length;
+  const double input_path_direction_y = input_path_delta_y / input_path_segment_length;
+
+  bool found_valid_wall_segment = false;
+  double best_minimum_average_distance = std::numeric_limits<double>::max();
+  geometry_msgs::msg::Point best_candidate_wall_start_position;
+  geometry_msgs::msg::Point best_candidate_wall_end_position;
+  double best_robot_perpendicular_distance_to_wall = std::numeric_limits<double>::max();
+
+  for (const auto& wall_candidate_path : wall_candidates) {
+    if (wall_candidate_path.poses.size() < 2) {
+      continue;
+    }
+    const auto& wall_segment_start_position = wall_candidate_path.poses.front().pose.position;
+    const auto& wall_segment_end_position = wall_candidate_path.poses.back().pose.position;
+    const double wall_segment_delta_x = wall_segment_end_position.x - wall_segment_start_position.x;
+    const double wall_segment_delta_y = wall_segment_end_position.y - wall_segment_start_position.y;
+    const double wall_segment_length = std::hypot(wall_segment_delta_x, wall_segment_delta_y);
+    if (wall_segment_length < min_wall_line_length_) {
+      continue;
+    }
+    const double wall_direction_x = wall_segment_delta_x / wall_segment_length;
+    const double wall_direction_y = wall_segment_delta_y / wall_segment_length;
+    const double direction_dot_product =
+      input_path_direction_x * wall_direction_x + input_path_direction_y * wall_direction_y;
+    const double absolute_cosine_parallelism = std::fabs(direction_dot_product);
+    const double parallelism_cosine_threshold =
+      std::cos(parallel_tolerance_degrees / 180.0 * M_PI);
+    if (absolute_cosine_parallelism < parallelism_cosine_threshold) {
+      continue;
+    }
+    const double wall_line_implicit_x_coefficient = wall_segment_delta_y;
+    const double wall_line_implicit_y_coefficient = -wall_segment_delta_x;
+    const double wall_line_implicit_constant_term =
+      wall_segment_end_position.x * wall_segment_start_position.y -
+      wall_segment_start_position.x * wall_segment_end_position.y;
+    const double line_equation_normalization = std::hypot(
+      wall_line_implicit_x_coefficient, wall_line_implicit_y_coefficient);
+    const double average_distance_path_to_wall_line =
+      std::fabs(
+        wall_line_implicit_x_coefficient * input_path_start_position.x +
+        wall_line_implicit_y_coefficient * input_path_start_position.y +
+        wall_line_implicit_constant_term) /
+      (line_equation_normalization + 1e-18);
+    const double robot_perpendicular_distance_to_wall_line =
+      std::fabs(
+        wall_line_implicit_x_coefficient * robot_pose.pose.position.x +
+        wall_line_implicit_y_coefficient * robot_pose.pose.position.y +
+        wall_line_implicit_constant_term) /
+      (line_equation_normalization + 1e-18);
+    if (average_distance_path_to_wall_line <= distance_tolerance_meters &&
+        average_distance_path_to_wall_line < best_minimum_average_distance) {
+      found_valid_wall_segment = true;
+      best_minimum_average_distance = average_distance_path_to_wall_line;
+      best_candidate_wall_start_position = wall_segment_start_position;
+      best_candidate_wall_end_position = wall_segment_end_position;
+      best_robot_perpendicular_distance_to_wall = robot_perpendicular_distance_to_wall_line;
+    }
+  }
+  if (!found_valid_wall_segment) {
+    return false;
+  }
+  selected_edge_segment_start = Eigen::Vector2d(
+    best_candidate_wall_start_position.x, best_candidate_wall_start_position.y);
+  selected_edge_segment_end = Eigen::Vector2d(
+    best_candidate_wall_end_position.x, best_candidate_wall_end_position.y);
+  minimum_average_distance_to_plan = best_minimum_average_distance;
+  robot_perpendicular_distance_to_edge_line = best_robot_perpendicular_distance_to_wall;
+  return true;
+}
+
+bool TebLocalPlannerROS::trySelectSegmentFromTwoPointPath(
+  const nav_msgs::msg::Path& two_point_line_path,
+  const nav_msgs::msg::Path& input_path,
+  const geometry_msgs::msg::PoseStamped& robot_pose,
+  const double parallel_tolerance_degrees,
+  const double distance_tolerance_meters,
+  Eigen::Vector2d& selected_edge_segment_start,
+  Eigen::Vector2d& selected_edge_segment_end,
+  double& minimum_average_distance_to_plan,
+  double& robot_perpendicular_distance_to_edge_line)
+{
+  minimum_average_distance_to_plan = std::numeric_limits<double>::max();
+  robot_perpendicular_distance_to_edge_line = std::numeric_limits<double>::max();
+  if (two_point_line_path.poses.size() < 2 || input_path.poses.size() < 2) {
+    return false;
+  }
+  const auto& input_path_start_position = input_path.poses.front().pose.position;
+  const auto& input_path_end_position = input_path.poses.back().pose.position;
+  const double input_path_delta_x = input_path_end_position.x - input_path_start_position.x;
+  const double input_path_delta_y = input_path_end_position.y - input_path_start_position.y;
+  const double input_path_segment_length = std::hypot(input_path_delta_x, input_path_delta_y);
+  if (input_path_segment_length <= cfg_->wall_line.min_path_line_length) {
+    return false;
+  }
+  const double robot_yaw_radians = tf2::getYaw(robot_pose.pose.orientation);
+  const double input_path_yaw_radians = std::atan2(input_path_delta_y, input_path_delta_x);
+  double path_heading_minus_robot_heading = input_path_yaw_radians - robot_yaw_radians;
+  while (path_heading_minus_robot_heading > M_PI) {
+    path_heading_minus_robot_heading -= 2 * M_PI;
+  }
+  while (path_heading_minus_robot_heading < -M_PI) {
+    path_heading_minus_robot_heading += 2 * M_PI;
+  }
+  if (std::fabs(path_heading_minus_robot_heading) > M_PI / 4) {
+    return false;
+  }
+  const double input_path_direction_x = input_path_delta_x / input_path_segment_length;
+  const double input_path_direction_y = input_path_delta_y / input_path_segment_length;
+
+  const auto& edge_line_start_position = two_point_line_path.poses.front().pose.position;
+  const auto& edge_line_end_position = two_point_line_path.poses.back().pose.position;
+  const double edge_line_delta_x = edge_line_end_position.x - edge_line_start_position.x;
+  const double edge_line_delta_y = edge_line_end_position.y - edge_line_start_position.y;
+  const double edge_line_segment_length = std::hypot(edge_line_delta_x, edge_line_delta_y);
+  if (edge_line_segment_length < min_wall_line_length_) {
+    return false;
+  }
+  const double edge_line_direction_x = edge_line_delta_x / edge_line_segment_length;
+  const double edge_line_direction_y = edge_line_delta_y / edge_line_segment_length;
+  const double direction_dot_product =
+    input_path_direction_x * edge_line_direction_x +
+    input_path_direction_y * edge_line_direction_y;
+  const double absolute_cosine_parallelism = std::fabs(direction_dot_product);
+  const double parallelism_cosine_threshold =
+    std::fabs(std::cos(parallel_tolerance_degrees / 180.0 * M_PI));
+  if (absolute_cosine_parallelism <= parallelism_cosine_threshold) {
+    return false;
+  }
+  const double edge_line_implicit_x_coefficient = edge_line_delta_y;
+  const double edge_line_implicit_y_coefficient = -edge_line_delta_x;
+  const double edge_line_implicit_constant_term =
+    edge_line_end_position.x * edge_line_start_position.y -
+    edge_line_start_position.x * edge_line_end_position.y;
+  const double line_equation_normalization =
+    std::hypot(edge_line_implicit_x_coefficient, edge_line_implicit_y_coefficient);
+  const double average_distance_path_to_edge_line =
+    std::fabs(
+      edge_line_implicit_x_coefficient * input_path_start_position.x +
+      edge_line_implicit_y_coefficient * input_path_start_position.y +
+      edge_line_implicit_constant_term) /
+    (line_equation_normalization + 1e-18);
+  const double robot_perpendicular_distance_to_edge_line_value =
+    std::fabs(
+      edge_line_implicit_x_coefficient * robot_pose.pose.position.x +
+      edge_line_implicit_y_coefficient * robot_pose.pose.position.y +
+      edge_line_implicit_constant_term) /
+    (line_equation_normalization + 1e-18);
+  if (average_distance_path_to_edge_line > distance_tolerance_meters) {
+    return false;
+  }
+  selected_edge_segment_start =
+    Eigen::Vector2d(edge_line_start_position.x, edge_line_start_position.y);
+  selected_edge_segment_end =
+    Eigen::Vector2d(edge_line_end_position.x, edge_line_end_position.y);
+  minimum_average_distance_to_plan = average_distance_path_to_edge_line;
+  robot_perpendicular_distance_to_edge_line = robot_perpendicular_distance_to_edge_line_value;
+  return true;
+}
+
+bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
+  const std::vector<nav_msgs::msg::Path>& reference_path_candidates,
+  const nav_msgs::msg::Path& input_path,
+  const geometry_msgs::msg::PoseStamped& robot_pose,
+  const double parallel_tolerance_degrees,
+  const double distance_tolerance_meters,
+  Eigen::Vector2d& selected_edge_segment_start,
+  Eigen::Vector2d& selected_edge_segment_end,
+  double& minimum_average_distance_to_plan,
+  double& robot_perpendicular_distance_to_edge_line)
+{
+  bool found_any_matching_reference_segment = false;
+  double best_minimum_average_distance_to_plan = std::numeric_limits<double>::max();
+  Eigen::Vector2d best_reference_segment_start;
+  Eigen::Vector2d best_reference_segment_end;
+  double best_robot_perpendicular_distance_to_edge_line = 0.0;
+
+  for (const auto& raw_reference_path : reference_path_candidates) {
+    if (raw_reference_path.poses.size() < 2) {
+      continue;
+    }
+    // TF：用 TimePointZero 取缓冲区内最新可用变换，避免 now() 略超前于已发布 TF 导致外推失败。
+    // 几何 header.stamp：有变换时用返回变换的时间戳与 TF 一致；已在 map 时用当前时钟刷新陈旧 latched stamp。
+    nav_msgs::msg::Path reference_path_in_map_frame;
+    reference_path_in_map_frame.header.frame_id = cfg_->map_frame;
+    try {
+      geometry_msgs::msg::PoseStamped reference_pose_start_in_map = raw_reference_path.poses.front();
+      geometry_msgs::msg::PoseStamped reference_pose_end_in_map = raw_reference_path.poses.back();
+      rclcpp::Time reference_geometry_stamp_in_map;
+      if (!raw_reference_path.header.frame_id.empty() &&
+          raw_reference_path.header.frame_id != cfg_->map_frame) {
+        geometry_msgs::msg::TransformStamped transform_map_from_reference_path_frame =
+          tf_->lookupTransform(
+            cfg_->map_frame,
+            raw_reference_path.header.frame_id,
+            tf2::TimePointZero,
+            tf2::durationFromSec(0.5));
+        tf2::doTransform(reference_pose_start_in_map, reference_pose_start_in_map,
+          transform_map_from_reference_path_frame);
+        tf2::doTransform(reference_pose_end_in_map, reference_pose_end_in_map,
+          transform_map_from_reference_path_frame);
+        reference_geometry_stamp_in_map =
+          rclcpp::Time(transform_map_from_reference_path_frame.header.stamp);
+      } else {
+        reference_geometry_stamp_in_map = clock_->now();
+      }
+      reference_pose_start_in_map.header.frame_id = cfg_->map_frame;
+      reference_pose_end_in_map.header.frame_id = cfg_->map_frame;
+      reference_pose_start_in_map.header.stamp = reference_geometry_stamp_in_map;
+      reference_pose_end_in_map.header.stamp = reference_geometry_stamp_in_map;
+      reference_path_in_map_frame.header.stamp = reference_geometry_stamp_in_map;
+      reference_path_in_map_frame.poses.clear();
+      reference_path_in_map_frame.poses.push_back(reference_pose_start_in_map);
+      reference_path_in_map_frame.poses.push_back(reference_pose_end_in_map);
+    } catch (const tf2::TransformException& transform_exception) {
+      RCLCPP_DEBUG_THROTTLE(
+        logger_, *(clock_), 2000, "Reference path TF skip: %s", transform_exception.what());
+      continue;
+    }
+    Eigen::Vector2d candidate_segment_start;
+    Eigen::Vector2d candidate_segment_end;
+    double candidate_minimum_average_distance = 0.0;
+    double candidate_robot_perpendicular_distance = 0.0;
+    if (trySelectSegmentFromTwoPointPath(
+          reference_path_in_map_frame,
+          input_path,
+          robot_pose,
+          parallel_tolerance_degrees,
+          distance_tolerance_meters,
+          candidate_segment_start,
+          candidate_segment_end,
+          candidate_minimum_average_distance,
+          candidate_robot_perpendicular_distance)) {
+      if (candidate_minimum_average_distance < best_minimum_average_distance_to_plan) {
+        best_minimum_average_distance_to_plan = candidate_minimum_average_distance;
+        best_reference_segment_start = candidate_segment_start;
+        best_reference_segment_end = candidate_segment_end;
+        best_robot_perpendicular_distance_to_edge_line = candidate_robot_perpendicular_distance;
+        found_any_matching_reference_segment = true;
+      }
+    }
+  }
+  if (!found_any_matching_reference_segment) {
+    return false;
+  }
+  selected_edge_segment_start = best_reference_segment_start;
+  selected_edge_segment_end = best_reference_segment_end;
+  minimum_average_distance_to_plan = best_minimum_average_distance_to_plan;
+  robot_perpendicular_distance_to_edge_line = best_robot_perpendicular_distance_to_edge_line;
+  return true;
+}
+
+void TebLocalPlannerROS::applyWallLineSegmentAndVisual(
+  const Eigen::Vector2d& wall_line_segment_start,
+  const Eigen::Vector2d& wall_line_segment_end,
+  const nav_msgs::msg::Path& input_path,
+  const double minimum_average_distance_to_plan,
+  const double robot_perpendicular_distance_to_edge_line)
+{
+  if (wall_line_points_.size() > 0) {
+    wall_line_points_.clear();
+  }
+  wall_line_points_.push_back(wall_line_segment_start);
+  wall_line_points_.push_back(wall_line_segment_end);
+  cfg_->optim.weight_wall_line_dist = weight_wall_line_dist_;
+  if (std::fabs(cfg_->wall_line.distance_tolerance - cfg_->wall_line.min_wall_dist) > 1e-5) {
+    cfg_->optim.weight_wall_line_dist = std::min(
+      weight_wall_line_dist_,
+      std::max(
+        weight_wall_line_dist_ / 2.0,
+        std::fabs(
+          (weight_wall_line_dist_ / 2.0 - weight_wall_line_dist_) /
+            (cfg_->wall_line.distance_tolerance - cfg_->wall_line.min_wall_dist) *
+            (minimum_average_distance_to_plan - cfg_->wall_line.min_wall_dist) +
+          weight_wall_line_dist_)));
+  }
+  wall_line_update_time_ = clock_->now();
+  std_msgs::msg::Float32 edge_distance_message;
+  edge_distance_message.data = static_cast<float>(robot_perpendicular_distance_to_edge_line);
+  edge_distance_publisher_->publish(edge_distance_message);
+  switchParameterMode(true);
+
+  visualization_msgs::msg::Marker wall_line_marker_message;
+  wall_line_marker_message.ns = "teb_local_planner";
+  wall_line_marker_message.id = 0;
+  wall_line_marker_message.type = visualization_msgs::msg::Marker::LINE_LIST;
+  wall_line_marker_message.action = visualization_msgs::msg::Marker::ADD;
+  wall_line_marker_message.scale.x = 0.1f;
+  wall_line_marker_message.color.r = 1.0f;
+  wall_line_marker_message.color.g = 1.0f;
+  wall_line_marker_message.color.b = 0.0f;
+  wall_line_marker_message.color.a = 1.0f;
+  geometry_msgs::msg::Point marker_line_start_point;
+  geometry_msgs::msg::Point marker_line_end_point;
+  marker_line_start_point.x = wall_line_segment_start.x();
+  marker_line_start_point.y = wall_line_segment_start.y();
+  marker_line_start_point.z = 0.0;
+  marker_line_end_point.x = wall_line_segment_end.x();
+  marker_line_end_point.y = wall_line_segment_end.y();
+  marker_line_end_point.z = 0.0;
+  wall_line_marker_message.points.push_back(marker_line_start_point);
+  wall_line_marker_message.points.push_back(marker_line_end_point);
+  wall_line_marker_message.header.stamp = clock_->now();
+  wall_line_marker_message.header.frame_id = input_path.header.frame_id;
+  wall_line_marker_publisher_->publish(wall_line_marker_message);
+}
+
+void TebLocalPlannerROS::mergeFusionPrimaryWithReference(
+  const Eigen::Vector2d& fusion_primary_segment_start,
+  const Eigen::Vector2d& fusion_primary_segment_end,
+  const bool fusion_primary_segment_valid,
+  const double fusion_primary_minimum_average_distance_to_plan,
+  const double fusion_primary_robot_perpendicular_distance_to_edge,
+  const Eigen::Vector2d& reference_segment_start,
+  const Eigen::Vector2d& reference_segment_end,
+  const bool reference_segment_valid,
+  const double reference_minimum_average_distance_to_plan,
+  const double reference_robot_perpendicular_distance_to_edge,
+  const nav_msgs::msg::Path& input_path)
+{
+  const rclcpp::Time current_clock_time = clock_->now();
+  const double fusion_primary_lock_duration_seconds =
+    cfg_->wall_line.fusion_primary_lock_duration;
+  const double reference_fusion_maximum_angle_degrees =
+    cfg_->wall_line.reference_match_max_angle_deg;
+  const double reference_fusion_maximum_midpoint_distance_meters =
+    cfg_->wall_line.reference_match_max_distance_m;
+
+  if (!fusion_primary_segment_valid) {
+    fusion_primary_lock_until_ = rclcpp::Time(0, 0, clock_->get_clock_type());
+  }
+
+  const bool primary_and_reference_segments_geometrically_close =
+    fusion_primary_segment_valid && reference_segment_valid &&
+    segmentsCloseForFusion(
+      fusion_primary_segment_start,
+      fusion_primary_segment_end,
+      reference_segment_start,
+      reference_segment_end,
+      reference_fusion_maximum_angle_degrees,
+      reference_fusion_maximum_midpoint_distance_meters);
+  if (primary_and_reference_segments_geometrically_close) {
+    fusion_primary_lock_until_ =
+      current_clock_time +
+      rclcpp::Duration::from_seconds(fusion_primary_lock_duration_seconds);
+  }
+
+  bool use_fusion_primary_wall_or_curb_segment = false;
+  if (fusion_primary_segment_valid) {
+    if (primary_and_reference_segments_geometrically_close) {
+      use_fusion_primary_wall_or_curb_segment = true;
+    } else if (
+      fusion_primary_lock_until_.nanoseconds() != 0u &&
+      current_clock_time < fusion_primary_lock_until_) {
+      use_fusion_primary_wall_or_curb_segment = true;
+    } else if (!reference_segment_valid) {
+      use_fusion_primary_wall_or_curb_segment = true;
+    }
+  }
+
+  if (use_fusion_primary_wall_or_curb_segment) {
+    applyWallLineSegmentAndVisual(
+      fusion_primary_segment_start,
+      fusion_primary_segment_end,
+      input_path,
+      fusion_primary_minimum_average_distance_to_plan,
+      fusion_primary_robot_perpendicular_distance_to_edge);
+    reference_line_hold_.clear();
+    reference_line_hold_.push_back(fusion_primary_segment_start);
+    reference_line_hold_.push_back(fusion_primary_segment_end);
+    reference_line_hold_minimum_average_distance_to_plan_ = fusion_primary_minimum_average_distance_to_plan;
+    reference_line_hold_robot_perpendicular_distance_to_edge_line_ = fusion_primary_robot_perpendicular_distance_to_edge;
+    reference_line_last_success_time_ = current_clock_time;
+    return;
+  }
+
+  if (reference_segment_valid) {
+    applyWallLineSegmentAndVisual(
+      reference_segment_start,
+      reference_segment_end,
+      input_path,
+      reference_minimum_average_distance_to_plan,
+      reference_robot_perpendicular_distance_to_edge);
+    reference_line_hold_.clear();
+    reference_line_hold_.push_back(reference_segment_start);
+    reference_line_hold_.push_back(reference_segment_end);
+    reference_line_hold_minimum_average_distance_to_plan_ = reference_minimum_average_distance_to_plan;
+    reference_line_hold_robot_perpendicular_distance_to_edge_line_ = reference_robot_perpendicular_distance_to_edge;
+    reference_line_last_success_time_ = current_clock_time;
+    return;
+  }
+
+  const double reference_no_valid_path_timeout_seconds =
+    cfg_->wall_line.reference_no_valid_path_timeout;
+  if (reference_line_hold_.size() == 2 &&
+      reference_line_last_success_time_.nanoseconds() != 0u &&
+      (current_clock_time - reference_line_last_success_time_).seconds() <
+        reference_no_valid_path_timeout_seconds) {
+    applyWallLineSegmentAndVisual(
+      reference_line_hold_[0],
+      reference_line_hold_[1],
+      input_path,
+      reference_line_hold_minimum_average_distance_to_plan_,
+      reference_line_hold_robot_perpendicular_distance_to_edge_line_);
+    return;
+  }
+
+  if (wall_line_points_.size() > 0) {
+    wall_line_points_.clear();
+  }
+  reference_line_hold_.clear();
+  switchParameterMode(false);
+}
+
+void TebLocalPlannerROS::updateReferenceLineVec(
+  const std::vector<nav_msgs::msg::Path>& reference_path_list,
+  nav_msgs::msg::Path& input_path,
+  const double parallel_tolerance_degrees,
+  const double distance_tolerance_meters,
+  const geometry_msgs::msg::PoseStamped& robot_pose)
+{
+  if (!edgeFollowingEntryGuards(robot_pose, input_path)) {
+    return;
+  }
+  Eigen::Vector2d selected_reference_segment_start;
+  Eigen::Vector2d selected_reference_segment_end;
+  double selected_minimum_average_distance_to_plan = 0.0;
+  double selected_robot_perpendicular_distance_to_edge_line = 0.0;
+  const bool reference_segment_selection_succeeded = trySelectBestReferencePathFromList(
+    reference_path_list,
+    input_path,
+    robot_pose,
+    parallel_tolerance_degrees,
+    distance_tolerance_meters,
+    selected_reference_segment_start,
+    selected_reference_segment_end,
+    selected_minimum_average_distance_to_plan,
+    selected_robot_perpendicular_distance_to_edge_line);
+  const rclcpp::Time current_clock_time = clock_->now();
+  const double reference_no_valid_path_timeout_seconds =
+    cfg_->wall_line.reference_no_valid_path_timeout;
+  if (reference_segment_selection_succeeded) {
+    applyWallLineSegmentAndVisual(
+      selected_reference_segment_start,
+      selected_reference_segment_end,
+      input_path,
+      selected_minimum_average_distance_to_plan,
+      selected_robot_perpendicular_distance_to_edge_line);
+    reference_line_hold_.clear();
+    reference_line_hold_.push_back(selected_reference_segment_start);
+    reference_line_hold_.push_back(selected_reference_segment_end);
+    reference_line_hold_minimum_average_distance_to_plan_ = selected_minimum_average_distance_to_plan;
+    reference_line_hold_robot_perpendicular_distance_to_edge_line_ = selected_robot_perpendicular_distance_to_edge_line;
+    reference_line_last_success_time_ = current_clock_time;
+    return;
+  }
+  if (reference_line_hold_.size() == 2 &&
+      reference_line_last_success_time_.nanoseconds() != 0u &&
+      (current_clock_time - reference_line_last_success_time_).seconds() <
+        reference_no_valid_path_timeout_seconds) {
+    applyWallLineSegmentAndVisual(
+      reference_line_hold_[0],
+      reference_line_hold_[1],
+      input_path,
+      reference_line_hold_minimum_average_distance_to_plan_,
+      reference_line_hold_robot_perpendicular_distance_to_edge_line_);
+    return;
+  }
+  if (wall_line_points_.size() > 0) {
+    wall_line_points_.clear();
+  }
+  reference_line_hold_.clear();
+  switchParameterMode(false);
+}
+
+void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
+  std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan,
+  const geometry_msgs::msg::PoseStamped& robot_pose)
+{
+  if (cfg_->optim.weight_wall_line_dist <= 0.0) {
+    return;
+  }
+  const std::string normalized_edge_mode_string = normalizeEdgeModeEnv(use_curb_or_wall);
+  if (normalized_edge_mode_string.empty()) {
+    return;
+  }
+
+  double accumulated_distance_meters_along_transformed_plan = 0.0;
+  unsigned int input_path_end_pose_index_in_transformed_plan = 0;
+  for (unsigned int segment_end_index = 1; segment_end_index < transformed_plan.size();
+       segment_end_index++) {
+    const double segment_delta_x =
+      transformed_plan[segment_end_index].pose.position.x -
+      transformed_plan[segment_end_index - 1].pose.position.x;
+    const double segment_delta_y =
+      transformed_plan[segment_end_index].pose.position.y -
+      transformed_plan[segment_end_index - 1].pose.position.y;
+    accumulated_distance_meters_along_transformed_plan +=
+      std::sqrt(segment_delta_x * segment_delta_x + segment_delta_y * segment_delta_y);
+    if (accumulated_distance_meters_along_transformed_plan >
+        cfg_->wall_line.transform_path_line_length) {
+      input_path_end_pose_index_in_transformed_plan = segment_end_index;
+      break;
+    }
+  }
+  nav_msgs::msg::Path input_path;
+  input_path.header = transformed_plan.at(0).header;
+  input_path.poses =
+    std::vector<geometry_msgs::msg::PoseStamped>(transformed_plan.begin(),
+      transformed_plan.begin() +
+        static_cast<std::ptrdiff_t>(input_path_end_pose_index_in_transformed_plan));
+  transformed_path->publish(input_path);
+
+  // /edge_reference_paths：上层仅在进入导航行为树前发布一次（TRANSIENT_LOCAL 覆盖旧消息），
+  // 此处不得因超时而清空缓存；几何与 TF 使用在 trySelectBestReferencePathFromList 中按当前时间刷新。
+
+  const bool edge_mode_includes_wall =
+    (normalized_edge_mode_string.find("wall") != std::string::npos);
+  const bool edge_mode_includes_curb =
+    (normalized_edge_mode_string.find("curb") != std::string::npos);
+  const bool edge_mode_includes_reference =
+    (normalized_edge_mode_string.find("reference") != std::string::npos);
+
+  if (normalized_edge_mode_string == "wall") {
+    if (!wall_line_ptr_) {
+      return;
+    }
+    const std::vector<nav_msgs::msg::Path> path_from_wall_line =
+      wall_line_ptr_->get_compare_result(input_path);
+    updateWallLineVec(
+      path_from_wall_line,
+      input_path,
+      cfg_->wall_line.parallel_tolerance,
+      cfg_->wall_line.distance_tolerance,
+      robot_pose);
+    return;
+  }
+  if (normalized_edge_mode_string == "curb") {
+    {
+      std::lock_guard<std::mutex> curb_line_mutex_lock(curb_line_mutex_);
+      if (curb_line_path_.poses.size() > 0) {
+        const auto seconds_since_curb_path_update =
+          clock_->now() - curb_line_update_time_;
+        if (seconds_since_curb_path_update.seconds() > keep_wall_line_time_) {
+          curb_line_path_.poses.clear();
+        }
+      }
+    }
+    updateCurbLineVec(
+      curb_line_path_,
+      input_path,
+      cfg_->wall_line.parallel_tolerance,
+      cfg_->wall_line.distance_tolerance,
+      robot_pose);
+    return;
+  }
+  if (normalized_edge_mode_string == "reference") {
+    std::vector<nav_msgs::msg::Path> reference_paths_snapshot;
+    {
+      std::lock_guard<std::mutex> edge_reference_paths_mutex_lock(edge_reference_paths_mutex_);
+      reference_paths_snapshot = edge_reference_paths_cache_.paths;
+    }
+    updateReferenceLineVec(
+      reference_paths_snapshot,
+      input_path,
+      cfg_->wall_line.parallel_tolerance,
+      cfg_->wall_line.distance_tolerance,
+      robot_pose);
+    return;
+  }
+  if (edge_mode_includes_wall && edge_mode_includes_reference && !edge_mode_includes_curb) {
+    if (!wall_line_ptr_) {
+      std::vector<nav_msgs::msg::Path> reference_paths_list_snapshot;
+      Eigen::Vector2d selected_reference_segment_start;
+      Eigen::Vector2d selected_reference_segment_end;
+      double reference_minimum_average_distance_to_plan = 0.0;
+      double reference_robot_perpendicular_distance_to_edge_line = 0.0;
+      if (!edgeFollowingEntryGuards(robot_pose, input_path)) {
+        return;
+      }
+      {
+        std::lock_guard<std::mutex> edge_reference_paths_mutex_lock(edge_reference_paths_mutex_);
+        reference_paths_list_snapshot = edge_reference_paths_cache_.paths;
+      }
+      const bool reference_segment_selection_succeeded = trySelectBestReferencePathFromList(
+        reference_paths_list_snapshot,
+        input_path,
+        robot_pose,
+        cfg_->wall_line.parallel_tolerance,
+        cfg_->wall_line.distance_tolerance,
+        selected_reference_segment_start,
+        selected_reference_segment_end,
+        reference_minimum_average_distance_to_plan,
+        reference_robot_perpendicular_distance_to_edge_line);
+      if (reference_segment_selection_succeeded) {
+        applyWallLineSegmentAndVisual(
+          selected_reference_segment_start,
+          selected_reference_segment_end,
+          input_path,
+          reference_minimum_average_distance_to_plan,
+          reference_robot_perpendicular_distance_to_edge_line);
+        reference_line_hold_.clear();
+        reference_line_hold_.push_back(selected_reference_segment_start);
+        reference_line_hold_.push_back(selected_reference_segment_end);
+        reference_line_hold_minimum_average_distance_to_plan_ = reference_minimum_average_distance_to_plan;
+        reference_line_hold_robot_perpendicular_distance_to_edge_line_ = reference_robot_perpendicular_distance_to_edge_line;
+        reference_line_last_success_time_ = clock_->now();
+      } else {
+        updateReferenceLineVec(
+          reference_paths_list_snapshot,
+          input_path,
+          cfg_->wall_line.parallel_tolerance,
+          cfg_->wall_line.distance_tolerance,
+          robot_pose);
+      }
+      return;
+    }
+    if (!edgeFollowingEntryGuards(robot_pose, input_path)) {
+      return;
+    }
+    const std::vector<nav_msgs::msg::Path> wall_line_candidate_paths =
+      wall_line_ptr_->get_compare_result(input_path);
+    Eigen::Vector2d fusion_primary_segment_start;
+    Eigen::Vector2d fusion_primary_segment_end;
+    double fusion_primary_minimum_average_distance_to_plan = 0.0;
+    double fusion_primary_robot_perpendicular_distance_to_edge = 0.0;
+    const bool fusion_primary_wall_segment_valid = trySelectWallSegmentFromCandidates(
+      wall_line_candidate_paths,
+      input_path,
+      robot_pose,
+      cfg_->wall_line.parallel_tolerance,
+      cfg_->wall_line.distance_tolerance,
+      fusion_primary_segment_start,
+      fusion_primary_segment_end,
+      fusion_primary_minimum_average_distance_to_plan,
+      fusion_primary_robot_perpendicular_distance_to_edge);
+    std::vector<nav_msgs::msg::Path> reference_paths_for_fusion;
+    {
+      std::lock_guard<std::mutex> edge_reference_paths_mutex_lock(edge_reference_paths_mutex_);
+      reference_paths_for_fusion = edge_reference_paths_cache_.paths;
+    }
+    Eigen::Vector2d fusion_reference_segment_start;
+    Eigen::Vector2d fusion_reference_segment_end;
+    double fusion_reference_minimum_average_distance_to_plan = 0.0;
+    double fusion_reference_robot_perpendicular_distance_to_edge = 0.0;
+    const bool fusion_reference_segment_valid = trySelectBestReferencePathFromList(
+      reference_paths_for_fusion,
+      input_path,
+      robot_pose,
+      cfg_->wall_line.parallel_tolerance,
+      cfg_->wall_line.distance_tolerance,
+      fusion_reference_segment_start,
+      fusion_reference_segment_end,
+      fusion_reference_minimum_average_distance_to_plan,
+      fusion_reference_robot_perpendicular_distance_to_edge);
+    mergeFusionPrimaryWithReference(
+      fusion_primary_segment_start,
+      fusion_primary_segment_end,
+      fusion_primary_wall_segment_valid,
+      fusion_primary_minimum_average_distance_to_plan,
+      fusion_primary_robot_perpendicular_distance_to_edge,
+      fusion_reference_segment_start,
+      fusion_reference_segment_end,
+      fusion_reference_segment_valid,
+      fusion_reference_minimum_average_distance_to_plan,
+      fusion_reference_robot_perpendicular_distance_to_edge,
+      input_path);
+    return;
+  }
+  if (edge_mode_includes_curb && edge_mode_includes_reference && !edge_mode_includes_wall) {
+    {
+      std::lock_guard<std::mutex> curb_line_mutex_lock(curb_line_mutex_);
+      if (curb_line_path_.poses.size() > 0) {
+        const auto seconds_since_curb_path_update =
+          clock_->now() - curb_line_update_time_;
+        if (seconds_since_curb_path_update.seconds() > keep_wall_line_time_) {
+          curb_line_path_.poses.clear();
+        }
+      }
+    }
+    if (!edgeFollowingEntryGuards(robot_pose, input_path)) {
+      return;
+    }
+    nav_msgs::msg::Path curb_line_path_snapshot;
+    {
+      std::lock_guard<std::mutex> curb_line_mutex_lock(curb_line_mutex_);
+      curb_line_path_snapshot = curb_line_path_;
+    }
+    Eigen::Vector2d fusion_primary_curb_segment_start;
+    Eigen::Vector2d fusion_primary_curb_segment_end;
+    double fusion_primary_curb_minimum_average_distance_to_plan = 0.0;
+    double fusion_primary_curb_robot_perpendicular_distance_to_edge = 0.0;
+    const bool fusion_primary_curb_segment_valid = trySelectSegmentFromTwoPointPath(
+      curb_line_path_snapshot,
+      input_path,
+      robot_pose,
+      cfg_->wall_line.parallel_tolerance,
+      cfg_->wall_line.distance_tolerance,
+      fusion_primary_curb_segment_start,
+      fusion_primary_curb_segment_end,
+      fusion_primary_curb_minimum_average_distance_to_plan,
+      fusion_primary_curb_robot_perpendicular_distance_to_edge);
+    std::vector<nav_msgs::msg::Path> reference_paths_for_curb_fusion;
+    {
+      std::lock_guard<std::mutex> edge_reference_paths_mutex_lock(edge_reference_paths_mutex_);
+      reference_paths_for_curb_fusion = edge_reference_paths_cache_.paths;
+    }
+    Eigen::Vector2d curb_fusion_reference_segment_start;
+    Eigen::Vector2d curb_fusion_reference_segment_end;
+    double curb_fusion_reference_minimum_average_distance_to_plan = 0.0;
+    double curb_fusion_reference_robot_perpendicular_distance_to_edge = 0.0;
+    const bool curb_fusion_reference_segment_valid = trySelectBestReferencePathFromList(
+      reference_paths_for_curb_fusion,
+      input_path,
+      robot_pose,
+      cfg_->wall_line.parallel_tolerance,
+      cfg_->wall_line.distance_tolerance,
+      curb_fusion_reference_segment_start,
+      curb_fusion_reference_segment_end,
+      curb_fusion_reference_minimum_average_distance_to_plan,
+      curb_fusion_reference_robot_perpendicular_distance_to_edge);
+    mergeFusionPrimaryWithReference(
+      fusion_primary_curb_segment_start,
+      fusion_primary_curb_segment_end,
+      fusion_primary_curb_segment_valid,
+      fusion_primary_curb_minimum_average_distance_to_plan,
+      fusion_primary_curb_robot_perpendicular_distance_to_edge,
+      curb_fusion_reference_segment_start,
+      curb_fusion_reference_segment_end,
+      curb_fusion_reference_segment_valid,
+      curb_fusion_reference_minimum_average_distance_to_plan,
+      curb_fusion_reference_robot_perpendicular_distance_to_edge,
+      input_path);
+    return;
+  }
+
+  RCLCPP_WARN_THROTTLE(
+    logger_,
+    *(clock_),
+    5000,
+    "USE_CURB_OR_WALL=\"%s\" (normalized \"%s\") is not a supported edge mode",
+    use_curb_or_wall != nullptr ? use_curb_or_wall : "(null)",
+    normalized_edge_mode_string.c_str());
+}
+
  } // end namespace teb_local_planner
  
  // register this planner as a nav2_core::Controller plugin

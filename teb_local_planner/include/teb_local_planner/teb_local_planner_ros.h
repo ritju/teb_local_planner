@@ -264,6 +264,68 @@
      const double distance_tolerance,
      const geometry_msgs::msg::PoseStamped& robot_pose);
 
+  void edgeReferencePathsCallback(const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr msg);
+  void updateReferenceLineVec(
+    const std::vector<nav_msgs::msg::Path>& reference_path_list,
+    nav_msgs::msg::Path& input_path,
+    const double parallel_tolerance_degrees,
+    const double distance_tolerance_meters,
+    const geometry_msgs::msg::PoseStamped& robot_pose);
+  void runEdgeFollowingPathUpdate(
+    std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan,
+    const geometry_msgs::msg::PoseStamped& robot_pose);
+  bool edgeFollowingEntryGuards(
+    const geometry_msgs::msg::PoseStamped& robot_pose,
+    const nav_msgs::msg::Path& input_path);
+  bool trySelectWallSegmentFromCandidates(
+    const std::vector<nav_msgs::msg::Path>& wall_candidates,
+    const nav_msgs::msg::Path& input_path,
+    const geometry_msgs::msg::PoseStamped& robot_pose,
+    double parallel_tolerance_degrees,
+    double distance_tolerance_meters,
+    Eigen::Vector2d& selected_edge_segment_start,
+    Eigen::Vector2d& selected_edge_segment_end,
+    double& minimum_average_distance_to_plan,
+    double& robot_perpendicular_distance_to_edge_line);
+  bool trySelectSegmentFromTwoPointPath(
+    const nav_msgs::msg::Path& two_point_line_path,
+    const nav_msgs::msg::Path& input_path,
+    const geometry_msgs::msg::PoseStamped& robot_pose,
+    double parallel_tolerance_degrees,
+    double distance_tolerance_meters,
+    Eigen::Vector2d& selected_edge_segment_start,
+    Eigen::Vector2d& selected_edge_segment_end,
+    double& minimum_average_distance_to_plan,
+    double& robot_perpendicular_distance_to_edge_line);
+  bool trySelectBestReferencePathFromList(
+    const std::vector<nav_msgs::msg::Path>& reference_path_candidates,
+    const nav_msgs::msg::Path& input_path,
+    const geometry_msgs::msg::PoseStamped& robot_pose,
+    double parallel_tolerance_degrees,
+    double distance_tolerance_meters,
+    Eigen::Vector2d& selected_edge_segment_start,
+    Eigen::Vector2d& selected_edge_segment_end,
+    double& minimum_average_distance_to_plan,
+    double& robot_perpendicular_distance_to_edge_line);
+  void applyWallLineSegmentAndVisual(
+    const Eigen::Vector2d& wall_line_segment_start,
+    const Eigen::Vector2d& wall_line_segment_end,
+    const nav_msgs::msg::Path& input_path,
+    double minimum_average_distance_to_plan,
+    double robot_perpendicular_distance_to_edge_line);
+  void mergeFusionPrimaryWithReference(
+    const Eigen::Vector2d& fusion_primary_segment_start,
+    const Eigen::Vector2d& fusion_primary_segment_end,
+    bool fusion_primary_segment_valid,
+    double fusion_primary_minimum_average_distance_to_plan,
+    double fusion_primary_robot_perpendicular_distance_to_edge,
+    const Eigen::Vector2d& reference_segment_start,
+    const Eigen::Vector2d& reference_segment_end,
+    bool reference_segment_valid,
+    double reference_minimum_average_distance_to_plan,
+    double reference_robot_perpendicular_distance_to_edge,
+    const nav_msgs::msg::Path& input_path);
+
   /**
    * @brief Callback for surrounding vehicle poses
    * @param msg PoseArray of vehicles around the robot (positions already in map frame)
@@ -539,6 +601,16 @@
    void curb_line_callback(const nav_msgs::msg::Path::ConstSharedPtr msg);
    std::mutex curb_line_mutex_;
    nav_msgs::msg::Path curb_line_path_;
+   rclcpp::Subscription<capella_ros_msg::msg::LaneCenterPaths>::SharedPtr edge_reference_paths_sub_;
+   std::mutex edge_reference_paths_mutex_;
+   capella_ros_msg::msg::LaneCenterPaths edge_reference_paths_cache_;
+   rclcpp::Time edge_reference_paths_msg_time_{0};
+   bool edge_reference_have_message_{false};
+   std::vector<Eigen::Vector2d> reference_line_hold_;
+   rclcpp::Time reference_line_last_success_time_{0};
+   rclcpp::Time fusion_primary_lock_until_{0};
+   double reference_line_hold_minimum_average_distance_to_plan_{0.0};
+   double reference_line_hold_robot_perpendicular_distance_to_edge_line_{0.0};
    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr transformed_path;
    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_plan_pub_;
    double cfg_max_angular_vel_, cfg_max_angular_acc_, cfg_max_vel_x_;
