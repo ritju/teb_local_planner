@@ -571,7 +571,8 @@ void TebLocalPlannerROS::configure(
    robot_vel_ = velocity;
    
    // prune global plan to cut off parts of the past (spatially before the robot)
-   pruneGlobalPlan(robot_pose, global_plan_, cfg_->trajectory.global_plan_prune_distance);
+   pruneGlobalPlan(robot_pose, global_plan_, cfg_->trajectory.global_plan_prune_distance,
+                   cfg_->trajectory.global_plan_prune_max_accum_dist);
    // pruneGlobalPlan(robot_pose, origin_plan_, 3);
    geometry_msgs::msg::PoseStamped corner_pose_global, corner_pose_robot;
    bool corner_found = false;
@@ -2329,7 +2330,8 @@ void TebLocalPlannerROS::updateWallLineVec(
      std::vector<geometry_msgs::msg::PoseStamped>::iterator erase_end = it;
      double accum_dist = 0;
      double min_dist_threshold = std::numeric_limits<double>::max();
-     while (it != global_plan.end() && accum_dist < max_prune_dist)
+     const bool limit_prune_search = (max_prune_dist > 0.0);
+     while (it != global_plan.end() && (!limit_prune_search || accum_dist < max_prune_dist))
      {
        double dx = robot.pose.position.x - it->pose.position.x;
        double dy = robot.pose.position.y - it->pose.position.y;
@@ -3504,32 +3506,49 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
   {
     return false;
   }
-  
-  // Check collision at sampled waypoints along the transformed plan
-  geometry_msgs::msg::TwistStamped zero_cmd_vel;
-  zero_cmd_vel.twist.angular.z = 0.0;
-  double check_total_distance = 0.0;
-  double since_last_sample = 0.0;
-  const double sampling_interval = 0.5;
-  for (size_t i = 1; i < transformed_plan.size(); ++i)
+
+  return checkRotateToHeadingCollisionNominal(angular_distance, robot_pose);
+}
+
+bool TebLocalPlannerROS::checkRotateToHeadingCollisionNominal(
+  const double & angular_distance_to_heading,
+  const geometry_msgs::msg::PoseStamped & pose)
+{
+  const double abs_angular_distance = std::abs(angular_distance_to_heading);
+  const double clockwise_angle = abs_angular_distance;
+  const double counterclockwise_angle = 2.0 * M_PI - abs_angular_distance;
+  const double clockwise_time = clockwise_angle / cfg_->rotation.rotate_to_heading_angular_vel;
+  const double counterclockwise_time = counterclockwise_angle / cfg_->rotation.rotate_to_heading_angular_vel;
+  const bool use_clockwise = (clockwise_time <= counterclockwise_time);
+  double angular_vel_sign = (angular_distance_to_heading > 0.0) ? 1.0 : -1.0;
+  if (!use_clockwise)
   {
-    double dx = transformed_plan[i].pose.position.x - transformed_plan[i-1].pose.position.x;
-    double dy = transformed_plan[i].pose.position.y - transformed_plan[i-1].pose.position.y;
-    double seg_len = std::sqrt(dx * dx + dy * dy);
-    check_total_distance += seg_len;
-    since_last_sample += seg_len;
-    
-    if (since_last_sample >= sampling_interval)
-    {
-      since_last_sample = 0.0;
-      if (!isRotationCollisionFree(zero_cmd_vel, 0.0, transformed_plan[i]))
-      {
-        return false;
-      }
-    }
+    angular_vel_sign = -angular_vel_sign;
   }
-  
-  return true;
+
+  geometry_msgs::msg::TwistStamped test_cmd_vel;
+  test_cmd_vel.header = pose.header;
+  test_cmd_vel.header.stamp = clock_->now();
+  test_cmd_vel.twist.linear.x = 0.0;
+  test_cmd_vel.twist.linear.y = 0.0;
+  test_cmd_vel.twist.angular.z = angular_vel_sign * cfg_->rotation.rotate_to_heading_angular_vel;
+  test_cmd_vel.twist.angular.z = test_cmd_vel.twist.angular.z > 0
+    ? std::max(test_cmd_vel.twist.angular.z, cfg_->rotation.rotate_min_angular_vel)
+    : std::min(test_cmd_vel.twist.angular.z, -cfg_->rotation.rotate_min_angular_vel);
+
+  double test_angular_distance = use_clockwise ? clockwise_angle : counterclockwise_angle;
+  if (isRotationCollisionFree(test_cmd_vel, test_angular_distance, pose))
+  {
+    return true;
+  }
+
+  angular_vel_sign = -angular_vel_sign;
+  test_cmd_vel.twist.angular.z = angular_vel_sign * cfg_->rotation.rotate_to_heading_angular_vel;
+  test_cmd_vel.twist.angular.z = test_cmd_vel.twist.angular.z > 0
+    ? std::max(test_cmd_vel.twist.angular.z, cfg_->rotation.rotate_min_angular_vel)
+    : std::min(test_cmd_vel.twist.angular.z, -cfg_->rotation.rotate_min_angular_vel);
+  test_angular_distance = use_clockwise ? counterclockwise_angle : clockwise_angle;
+  return isRotationCollisionFree(test_cmd_vel, test_angular_distance, pose);
 }
 
 bool TebLocalPlannerROS::computeRotateToHeadingCommand(
@@ -3538,6 +3557,8 @@ bool TebLocalPlannerROS::computeRotateToHeadingCommand(
   const geometry_msgs::msg::Twist & velocity,
   geometry_msgs::msg::TwistStamped & cmd_vel)
 {
+  (void)velocity;  // 与 shouldRotateInPlace / checkRotateToHeadingCollisionNominal 一致：用标称角速度，不按当前 ω 做 clamp，避免抢占后符号被夹反
+
   // Calculate rotation time for both directions
   double abs_angular_distance = std::abs(angular_distance_to_heading);
   double clockwise_angle = abs_angular_distance;
@@ -3566,16 +3587,9 @@ bool TebLocalPlannerROS::computeRotateToHeadingCommand(
   test_cmd_vel.twist.linear.x = 0.0;
   test_cmd_vel.twist.linear.y = 0.0;
   test_cmd_vel.twist.angular.z = angular_vel_sign * cfg_->rotation.rotate_to_heading_angular_vel;
-  
-  // Apply acceleration limits
-  double current_angular_vel = velocity.angular.z;
-  double min_feasible_angular_speed = current_angular_vel - cfg_->rotation.max_angular_accel * control_duration_;
-  double max_feasible_angular_speed = current_angular_vel + cfg_->rotation.max_angular_accel * control_duration_;
-  test_cmd_vel.twist.angular.z = std::clamp(
-    test_cmd_vel.twist.angular.z, min_feasible_angular_speed, max_feasible_angular_speed);
-  test_cmd_vel.twist.angular.z = test_cmd_vel.twist.angular.z > 0 ? std::max(test_cmd_vel.twist.angular.z, cfg_->rotation.rotate_min_angular_vel) : 
+  test_cmd_vel.twist.angular.z = test_cmd_vel.twist.angular.z > 0 ? std::max(test_cmd_vel.twist.angular.z, cfg_->rotation.rotate_min_angular_vel) :
                                  std::min(test_cmd_vel.twist.angular.z, -cfg_->rotation.rotate_min_angular_vel);
-  
+
   // Check collision for first direction
   double test_angular_distance = use_clockwise ? clockwise_angle : counterclockwise_angle;
   if (isRotationCollisionFree(test_cmd_vel, test_angular_distance, pose))
@@ -3587,9 +3601,9 @@ bool TebLocalPlannerROS::computeRotateToHeadingCommand(
   // If first direction has collision, try opposite direction
   angular_vel_sign = -angular_vel_sign;
   test_cmd_vel.twist.angular.z = angular_vel_sign * cfg_->rotation.rotate_to_heading_angular_vel;
-  test_cmd_vel.twist.angular.z = std::clamp(
-    test_cmd_vel.twist.angular.z, min_feasible_angular_speed, max_feasible_angular_speed);
-  
+  test_cmd_vel.twist.angular.z = test_cmd_vel.twist.angular.z > 0 ? std::max(test_cmd_vel.twist.angular.z, cfg_->rotation.rotate_min_angular_vel) :
+                                 std::min(test_cmd_vel.twist.angular.z, -cfg_->rotation.rotate_min_angular_vel);
+
   test_angular_distance = use_clockwise ? counterclockwise_angle : clockwise_angle;
   if (isRotationCollisionFree(test_cmd_vel, test_angular_distance, pose))
   {

@@ -382,10 +382,11 @@
      * @param global_pose The global pose of the robot
      * @param[in,out] global_plan The plan to be transformed
      * @param dist_behind_robot Distance behind the robot that should be kept [meters]
+     * @param max_prune_dist Max cumulative Euclidean length along the plan (from first pose) when searching for the prune pose [m]; <=0 = no limit
      * @return \c true if the plan is pruned, \c false in case of a transform exception or if no pose cannot be found inside the threshold
      */
    bool pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& global_pose,
-                        std::vector<geometry_msgs::msg::PoseStamped>& global_plan, double dist_behind_robot=1, double max_prune_dist=8);
+                        std::vector<geometry_msgs::msg::PoseStamped>& global_plan, double dist_behind_robot=1, double max_prune_dist=8.0);
    
    /**
      * @brief  Transforms the global plan of the robot from the planner frame to the local frame (modified).
@@ -676,8 +677,8 @@
    
    /**
     * @brief Check if in-place rotation should be performed
-    * @param velocity Current robot velocity
-    * @param transformed_plan The transformed plan
+    * @param velocity Current robot velocity (linear threshold only; collision prediction uses configured rotate speed)
+    * @param transformed_plan The transformed plan (lookahead target heading only)
     * @param robot_pose Current robot pose
     * @return true if rotation should be performed, false otherwise
     */
@@ -685,12 +686,19 @@
      const geometry_msgs::msg::Twist & velocity,
      const std::vector<geometry_msgs::msg::PoseStamped> & transformed_plan,
      const geometry_msgs::msg::PoseStamped & robot_pose);
+
+   /**
+    * @brief 用参数 rotate_to_heading_angular_vel（及 rotate_min_angular_vel）在 pose 处预测转到目标角位移是否碰障；不用当前速度做加减速限幅
+    */
+   bool checkRotateToHeadingCollisionNominal(
+     const double & angular_distance_to_heading,
+     const geometry_msgs::msg::PoseStamped & pose);
    
    /**
     * @brief Compute rotation command for in-place rotation
     * @param angular_distance_to_heading Angle difference to target heading
     * @param pose Current robot pose
-    * @param velocity Current robot velocity
+    * @param velocity Current robot velocity (unused for ω: command uses rotate_to_heading_angular_vel to match collision pre-check after preempt)
     * @param[out] cmd_vel Output velocity command
     * @return true if rotation command is valid, false if collision detected
     */
