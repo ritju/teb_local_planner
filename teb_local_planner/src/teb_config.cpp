@@ -74,6 +74,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "min_vel_x_threshold", rclcpp::ParameterValue(trajectory.min_vel_x_threshold));
   declare_parameter_if_not_declared(nh, name + "." + "pose_num_threshold", rclcpp::ParameterValue(trajectory.pose_num_threshold));
   declare_parameter_if_not_declared(nh, name + "." + "corner_dist_threshold", rclcpp::ParameterValue(trajectory.corner_dist_threshold));
+  declare_parameter_if_not_declared(nh, name + "." + "max_plan_length_extend_on_trajectory_obstacle_m", rclcpp::ParameterValue(trajectory.max_plan_length_extend_on_trajectory_obstacle_m));
   // Robot
   declare_parameter_if_not_declared(nh, name + "." + "max_vel_x", rclcpp::ParameterValue(robot.max_vel_x));
   declare_parameter_if_not_declared(nh, name + "." + "max_vel_x_backwards", rclcpp::ParameterValue(robot.max_vel_x_backwards));
@@ -208,6 +209,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "rotation_max_angular_accel", rclcpp::ParameterValue(rotation.max_angular_accel));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_forward_lookahead_distance", rclcpp::ParameterValue(rotation.forward_lookahead_distance));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_rotate_min_angular_vel", rclcpp::ParameterValue(rotation.rotate_min_angular_vel));
+  declare_parameter_if_not_declared(nh, name + "." + "rotation_decel_blend_start_rad", rclcpp::ParameterValue(rotation.decel_blend_start_rad));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_simulate_ahead_time", rclcpp::ParameterValue(rotation.simulate_ahead_time));
 
   // Homotopy Class Planner
@@ -283,6 +285,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "min_vel_x_threshold", trajectory.min_vel_x_threshold, trajectory.min_vel_x_threshold);
   nh->get_parameter_or(name + "." + "pose_num_threshold", trajectory.pose_num_threshold, trajectory.pose_num_threshold);
   nh->get_parameter_or(name + "." + "corner_dist_threshold", trajectory.corner_dist_threshold, trajectory.corner_dist_threshold);
+  nh->get_parameter_or(name + "." + "max_plan_length_extend_on_trajectory_obstacle_m", trajectory.max_plan_length_extend_on_trajectory_obstacle_m, trajectory.max_plan_length_extend_on_trajectory_obstacle_m);
   // Robot
   nh->get_parameter_or(name + "." + "max_vel_x", robot.max_vel_x, robot.max_vel_x);
   nh->get_parameter_or(name + "." + "max_vel_x_backwards", robot.max_vel_x_backwards, robot.max_vel_x_backwards);
@@ -457,6 +460,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "rotation_max_angular_accel", rotation.max_angular_accel, rotation.max_angular_accel);
   nh->get_parameter_or(name + "." + "rotation_forward_lookahead_distance", rotation.forward_lookahead_distance, rotation.forward_lookahead_distance);
   nh->get_parameter_or(name + "." + "rotation_rotate_min_angular_vel", rotation.rotate_min_angular_vel, rotation.rotate_min_angular_vel);
+  nh->get_parameter_or(name + "." + "rotation_decel_blend_start_rad", rotation.decel_blend_start_rad, rotation.decel_blend_start_rad);
   nh->get_parameter_or(name + "." + "rotation_simulate_ahead_time", rotation.simulate_ahead_time, rotation.simulate_ahead_time);
 
   // footprint model
@@ -643,6 +647,8 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.pose_num_threshold = parameter.as_int();
       } else if (name == node_name + ".corner_dist_threshold") {
         trajectory.corner_dist_threshold = parameter.as_double();
+      } else if (name == node_name + ".max_plan_length_extend_on_trajectory_obstacle_m") {
+        trajectory.max_plan_length_extend_on_trajectory_obstacle_m = parameter.as_double();
       }
       // Robot
       else if (name == node_name + ".max_vel_x") {
@@ -936,6 +942,8 @@ rcl_interfaces::msg::SetParametersResult
         rotation.forward_lookahead_distance = parameter.as_double();
       } else if (name == node_name + ".rotation_rotate_min_angular_vel") {
         rotation.rotate_min_angular_vel = parameter.as_double();
+      } else if (name == node_name + ".rotation_decel_blend_start_rad") {
+        rotation.decel_blend_start_rad = parameter.as_double();
       } else if (name == node_name + ".rotation_simulate_ahead_time") {
         rotation.simulate_ahead_time = parameter.as_double();
       }

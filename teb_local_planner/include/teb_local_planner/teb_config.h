@@ -100,6 +100,8 @@ public:
     double min_global_plan_lookahead_dist_threshold, min_vel_x_threshold;
     int theta_threshold, pose_num_threshold;
     double corner_dist_threshold; //!< Distance threshold to consider a point a corner
+    //! transformGlobalPlan: when scorePose throws "Trajectory Hits Obstacle.", extend max plan length by this (m), capped by local costmap size
+    double max_plan_length_extend_on_trajectory_obstacle_m;
   } trajectory; //!< Trajectory related parameters
 
   //! Robot related parameters
@@ -317,6 +319,8 @@ public:
     double simulate_ahead_time; //!< Time to simulate ahead for collision checking during rotation [s] (deprecated, not used)
     double forward_lookahead_distance; //!< Forward lookahead distance to select target pose for rotation [m]
     double rotate_min_angular_vel; //!< Minimum angular velocity for in-place rotation [rad/s]
+    //!< >0：手动 blend(rad)，标称上界 wn*r/blend；<=0：由 wn、wm、max_angular_accel 与当前|ω|自动算 blend
+    double decel_blend_start_rad;
   } rotation; //!< Parameters related to in-place rotation
 
 
@@ -366,6 +370,7 @@ public:
     trajectory.publish_feedback = false;
     trajectory.min_resolution_collision_check_angular = M_PI;
     trajectory.control_look_ahead_poses = 1;
+    trajectory.max_plan_length_extend_on_trajectory_obstacle_m = 3.0;
     
     // Robot
 
@@ -556,6 +561,7 @@ public:
     rotation.max_angular_accel = 0.35;
     rotation.forward_lookahead_distance = 0.5;  // 0.5 meters forward
     rotation.rotate_min_angular_vel = 0.05;
+    rotation.decel_blend_start_rad = 0.0;
   }
   
   void declareParameters(const nav2_util::LifecycleNode::SharedPtr, const std::string name);

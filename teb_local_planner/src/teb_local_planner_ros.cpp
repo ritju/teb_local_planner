@@ -921,7 +921,9 @@ void TebLocalPlannerROS::configure(
    }
 
    // Check if in-place rotation should be performed before TEB planning
-  if (shouldRotateInPlace(velocity, transformed_plan, robot_pose))
+  const bool use_inplace_rotation =
+    shouldRotateInPlace(velocity, transformed_plan, robot_pose);
+  if (use_inplace_rotation)
   {
     geometry_msgs::msg::TwistStamped rotation_cmd_vel;
     // Calculate angle difference to target heading using forward lookahead distance
@@ -956,13 +958,26 @@ void TebLocalPlannerROS::configure(
     
     if (computeRotateToHeadingCommand(angular_distance_to_heading, robot_pose, velocity, rotation_cmd_vel))
     {
-      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000, "Performing in-place rotation before TEB planning");
+      const double v_xy = std::hypot(velocity.linear.x, velocity.linear.y);
+      // RCLCPP_INFO_THROTTLE(
+      //   logger_, *clock_, 500,
+      //   "原地转: 执行中（跳过 TEB），cmd_w=%.3f rad/s，|dtheta|=%.3f rad，w_odom=%.3f，v_xy=%.3f，wn=%.3f，dt=%.3f",
+      //   rotation_cmd_vel.twist.angular.z,
+      //   std::abs(angular_distance_to_heading),
+      //   velocity.angular.z,
+      //   v_xy,
+      //   cfg_->rotation.rotate_to_heading_angular_vel,
+      //   control_duration_);
       return rotation_cmd_vel;
     }
     // If rotation fails due to collision, continue with TEB planning
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000, "In-place rotation blocked by collision, using TEB planning");
+    // RCLCPP_INFO_THROTTLE(
+    //   logger_, *clock_, 500,
+    //   "原地转: computeRotateToHeadingCommand 失败，改用 TEB（|dtheta|=%.3f rad、w_odom=%.3f）",
+    //   std::abs(angular_distance_to_heading),
+    //   velocity.angular.z);
   }
-               
+
    // Get current goal point (last point of the transformed plan)
    const geometry_msgs::msg::PoseStamped &goal_point = transformed_plan.back();
    robot_goal_.x() = goal_point.pose.position.x;
@@ -2575,7 +2590,8 @@ void TebLocalPlannerROS::updateWallLineVec(
            }
            if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
            {
-             max_plan_length = std::min(max_plan_length + 3.0, costmap_->getSizeInMetersX());
+             max_plan_length = std::min(
+               max_plan_length + cfg_->trajectory.max_plan_length_extend_on_trajectory_obstacle_m, costmap_->getSizeInMetersX());
            }
            cfg_->optim.weight_viapoint = 1.0;
          }
@@ -3453,72 +3469,174 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
   const std::vector<geometry_msgs::msg::PoseStamped> & transformed_plan,
   const geometry_msgs::msg::PoseStamped & robot_pose)
 {
-  // Check linear velocity threshold
-  double linear_vel = std::sqrt(velocity.linear.x * velocity.linear.x + velocity.linear.y * velocity.linear.y);
-  if (linear_vel >= cfg_->rotation.linear_vel_threshold)
-  {
-    return false;
-  }
-  
   // Note: do NOT gate rotation on current angular velocity (intentionally removed)
-  
+
   // Check if plan is not empty
   if (transformed_plan.empty())
   {
+    // RCLCPP_INFO_THROTTLE(
+    //   logger_, *clock_, 2000,
+    //   "原地转: shouldRotateInPlace=false，transformed_plan 为空");
     return false;
   }
-  
+
+  // 线速度模长只依赖 odom，提前算好供门控与日志复用。超阈值时一律不原地转，可在 lookahead 前早退以省算力。
+  const double linear_vel = std::hypot(velocity.linear.x, velocity.linear.y);
+  if (std::abs(velocity.linear.x) >= cfg_->rotation.linear_vel_threshold)
+  {
+    // RCLCPP_INFO_THROTTLE(
+    //   logger_, *clock_, 500,
+    //   "原地转: shouldRotateInPlace=false，线速度 gate（v_xy=%.3f >= %.3f）",
+    //   velocity.linear.x, cfg_->rotation.linear_vel_threshold);
+    return false;
+  }
+
   // Find target pose based on forward lookahead distance
   // Start from the first pose (robot position) and find the first pose that is at least forward_lookahead_distance away
   const geometry_msgs::msg::PoseStamped *target_pose = nullptr;
   double accumulated_distance = 0.0;
-  
+
   for (size_t i = 1; i < transformed_plan.size(); ++i)
   {
     double dx = transformed_plan[i].pose.position.x - transformed_plan[i-1].pose.position.x;
     double dy = transformed_plan[i].pose.position.y - transformed_plan[i-1].pose.position.y;
     accumulated_distance += std::sqrt(dx * dx + dy * dy);
-    
+
     if (accumulated_distance >= cfg_->rotation.forward_lookahead_distance)
     {
       target_pose = &transformed_plan[i];
       break;
     }
   }
-  
+
   // If no pose found within lookahead distance, use the last pose
   if (target_pose == nullptr)
   {
     target_pose = &transformed_plan.back();
   }
-  
+
   // Calculate angle difference between robot orientation and target pose orientation
   double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
   double target_yaw = tf2::getYaw(target_pose->pose.orientation);
   double angular_distance = target_yaw - robot_yaw;
-  
+
   // Normalize to [-PI, PI]
   while (angular_distance > M_PI) angular_distance -= 2.0 * M_PI;
   while (angular_distance < -M_PI) angular_distance += 2.0 * M_PI;
-  
+
   // Check if angle difference exceeds threshold
   if (std::abs(angular_distance) <= cfg_->rotation.angle_threshold)
   {
+    // RCLCPP_INFO_THROTTLE(
+    //   logger_, *clock_, 500,
+    //   "原地转: shouldRotateInPlace=false，航向已对齐 |dtheta|=%.3f rad <= angle_threshold %.3f rad",
+    //   std::abs(angular_distance), cfg_->rotation.angle_threshold);
     return false;
   }
 
-  return checkRotateToHeadingCollisionNominal(angular_distance, robot_pose);
+  const bool collision_ok =
+    checkRotateToHeadingCollisionNominal(angular_distance, robot_pose, velocity);
+  if (!collision_ok) {
+    RCLCPP_INFO_THROTTLE(
+      logger_, *clock_, 500,
+      "原地转: shouldRotateInPlace=false，碰障预检未通过 |dtheta|=%.3f rad、w_odom=%.3f、v_xy=%.3f",
+      std::abs(angular_distance), velocity.angular.z, linear_vel);
+  } else {
+    RCLCPP_INFO_THROTTLE(
+      logger_, *clock_, 500,
+      "原地转: shouldRotateInPlace=true，碰障预检通过 |dtheta|=%.3f rad、v_xy=%.3f、w_odom=%.3f、forward_lookahead=%.2f m",
+      std::abs(angular_distance), linear_vel, velocity.angular.z,
+      cfg_->rotation.forward_lookahead_distance);
+  }
+  return collision_ok;
+}
+
+double TebLocalPlannerROS::rotateToHeadingOmegaMagnitude(
+  const double remaining_angle_rad, const double omega_current_abs) const
+{
+  const double wn = cfg_->rotation.rotate_to_heading_angular_vel;
+  const double wm = cfg_->rotation.rotate_min_angular_vel;
+  const double a = std::max(1e-6, cfg_->rotation.max_angular_accel);
+  const double r = std::max(0.0, remaining_angle_rad);
+  const double w_sqrt = std::min(wn, std::max(wm, std::sqrt(wm * wm + 2.0 * a * r)));
+
+  const double manual_blend = cfg_->rotation.decel_blend_start_rad;
+  double blend;
+  if (manual_blend > 1e-9) {
+    blend = manual_blend;
+  } else {
+    // 自动：从 wn 刹到 wm 所需角程 (wn²−wm²)/(2α)；从当前 |ω| 刹到 wm 为 (ω²−wm²)/(2α)。取较大者并乘扩展系数，使减速早于 sqrt 末端。
+    constexpr double kAutoExtend = 3.0;
+    const double r_from_wn = (wn * wn - wm * wm) / (2.0 * a);
+    const double w_cap = std::min(std::max(0.0, std::abs(omega_current_abs)), wn);
+    const double r_from_w =
+      (w_cap > wm + 1e-9) ? ((w_cap * w_cap - wm * wm) / (2.0 * a)) : 0.0;
+    blend = kAutoExtend * std::max(r_from_wn, r_from_w);
+    blend = std::clamp(blend, 1e-3, M_PI);
+  }
+
+  const double w_linear_cap = std::min(wn, wn * r / blend);
+  return std::max(wm, std::min(wn, std::min(w_sqrt, w_linear_cap)));
+}
+
+bool TebLocalPlannerROS::isRotationCollisionFreeDecel(
+  const geometry_msgs::msg::PoseStamped & pose,
+  double omega_direction_sign,
+  double rotation_magnitude_rad,
+  double initial_omega_z) const
+{
+  static_cast<void>(initial_omega_z);
+  if (rotation_magnitude_rad < 1e-9) {
+    return true;
+  }
+
+  const double dir = (omega_direction_sign >= 0.0) ? 1.0 : -1.0;
+  const double yaw0 = tf2::getYaw(pose.pose.orientation);
+  const std::vector<geometry_msgs::msg::Point> & footprint_poly =
+    (footprint_spec_.size() >= 3) ? footprint_spec_ : costmap_ros_->getRobotFootprint();
+
+  auto footprint_ok = [&](double y) -> bool {
+    while (y > M_PI) y -= 2.0 * M_PI;
+    while (y < -M_PI) y += 2.0 * M_PI;
+    using namespace nav2_costmap_2d;  // NOLINT
+    // 与 isTrajectoryFeasible 一致优先 footprint_spec_，避免 getRobotFootprint() 与贴边/动态轮廓不一致导致误报
+    const double footprint_cost = rotation_collision_checker_->footprintCostAtPose(
+      pose.pose.position.x, pose.pose.position.y, y, footprint_poly);
+    if (footprint_cost == static_cast<double>(LETHAL_OBSTACLE) || footprint_cost == static_cast<double>(INSCRIBED_INFLATED_OBSTACLE)) {
+      return false;
+    }
+    return true;
+  };
+
+  if (!footprint_ok(yaw0)) {
+    return false;
+  }
+
+  // 沿弧均匀采样 yaw，取代按 ω 积分步进：后者易数值不收敛，且步进路径与「整段旋转扫掠」不完全一致
+  constexpr double kSampleStepRad = M_PI / 36.0;  // 5°
+  const int n_samples =
+    std::min(256, std::max(8, static_cast<int>(std::ceil(rotation_magnitude_rad / kSampleStepRad)) + 1));
+  for (int i = 0; i <= n_samples; ++i) {
+    const double fraction = static_cast<double>(i) / static_cast<double>(n_samples);
+    const double y = yaw0 + dir * fraction * rotation_magnitude_rad;
+    if (!footprint_ok(y)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool TebLocalPlannerROS::checkRotateToHeadingCollisionNominal(
   const double & angular_distance_to_heading,
-  const geometry_msgs::msg::PoseStamped & pose)
+  const geometry_msgs::msg::PoseStamped & pose,
+  const geometry_msgs::msg::Twist & velocity)
 {
   const double abs_angular_distance = std::abs(angular_distance_to_heading);
   const double clockwise_angle = abs_angular_distance;
   const double counterclockwise_angle = 2.0 * M_PI - abs_angular_distance;
-  const double clockwise_time = clockwise_angle / cfg_->rotation.rotate_to_heading_angular_vel;
-  const double counterclockwise_time = counterclockwise_angle / cfg_->rotation.rotate_to_heading_angular_vel;
+  const double wn = std::max(1e-6, cfg_->rotation.rotate_to_heading_angular_vel);
+  const double clockwise_time = clockwise_angle / wn;
+  const double counterclockwise_time = counterclockwise_angle / wn;
   const bool use_clockwise = (clockwise_time <= counterclockwise_time);
   double angular_vel_sign = (angular_distance_to_heading > 0.0) ? 1.0 : -1.0;
   if (!use_clockwise)
@@ -3526,29 +3644,30 @@ bool TebLocalPlannerROS::checkRotateToHeadingCollisionNominal(
     angular_vel_sign = -angular_vel_sign;
   }
 
-  geometry_msgs::msg::TwistStamped test_cmd_vel;
-  test_cmd_vel.header = pose.header;
-  test_cmd_vel.header.stamp = clock_->now();
-  test_cmd_vel.twist.linear.x = 0.0;
-  test_cmd_vel.twist.linear.y = 0.0;
-  test_cmd_vel.twist.angular.z = angular_vel_sign * cfg_->rotation.rotate_to_heading_angular_vel;
-  test_cmd_vel.twist.angular.z = test_cmd_vel.twist.angular.z > 0
-    ? std::max(test_cmd_vel.twist.angular.z, cfg_->rotation.rotate_min_angular_vel)
-    : std::min(test_cmd_vel.twist.angular.z, -cfg_->rotation.rotate_min_angular_vel);
-
   double test_angular_distance = use_clockwise ? clockwise_angle : counterclockwise_angle;
-  if (isRotationCollisionFree(test_cmd_vel, test_angular_distance, pose))
-  {
+  const double primary_sign = angular_vel_sign;
+  const double primary_mag = test_angular_distance;
+  if (isRotationCollisionFreeDecel(pose, angular_vel_sign, test_angular_distance, velocity.angular.z)) {
     return true;
   }
 
   angular_vel_sign = -angular_vel_sign;
-  test_cmd_vel.twist.angular.z = angular_vel_sign * cfg_->rotation.rotate_to_heading_angular_vel;
-  test_cmd_vel.twist.angular.z = test_cmd_vel.twist.angular.z > 0
-    ? std::max(test_cmd_vel.twist.angular.z, cfg_->rotation.rotate_min_angular_vel)
-    : std::min(test_cmd_vel.twist.angular.z, -cfg_->rotation.rotate_min_angular_vel);
   test_angular_distance = use_clockwise ? counterclockwise_angle : clockwise_angle;
-  return isRotationCollisionFree(test_cmd_vel, test_angular_distance, pose);
+  if (isRotationCollisionFreeDecel(pose, angular_vel_sign, test_angular_distance, velocity.angular.z)) {
+    // RCLCPP_INFO_THROTTLE(
+    //   logger_, *clock_, 500,
+    //   "原地转: collision_nominal 首选向 sign=%.0f、rot_mag=%.3f rad 未通过，备选向 sign=%.0f、rot_mag=%.3f rad 通过 "
+    //   "（|dtheta|=%.3f、use_clockwise=%d、w_odom=%.3f）",
+    //   primary_sign,
+    //   primary_mag,
+    //   angular_vel_sign,
+    //   test_angular_distance,
+    //   abs_angular_distance,
+    //   use_clockwise ? 1 : 0,
+    //   velocity.angular.z);
+    return true;
+  }
+  return false;
 }
 
 bool TebLocalPlannerROS::computeRotateToHeadingCommand(
@@ -3557,61 +3676,85 @@ bool TebLocalPlannerROS::computeRotateToHeadingCommand(
   const geometry_msgs::msg::Twist & velocity,
   geometry_msgs::msg::TwistStamped & cmd_vel)
 {
-  (void)velocity;  // 与 shouldRotateInPlace / checkRotateToHeadingCollisionNominal 一致：用标称角速度，不按当前 ω 做 clamp，避免抢占后符号被夹反
+  const double abs_angular_distance = std::abs(angular_distance_to_heading);
+  const double clockwise_angle = abs_angular_distance;
+  const double counterclockwise_angle = 2.0 * M_PI - abs_angular_distance;
+  const double wn = std::max(1e-6, cfg_->rotation.rotate_to_heading_angular_vel);
+  const double clockwise_time = clockwise_angle / wn;
+  const double counterclockwise_time = counterclockwise_angle / wn;
 
-  // Calculate rotation time for both directions
-  double abs_angular_distance = std::abs(angular_distance_to_heading);
-  double clockwise_angle = abs_angular_distance;
-  double counterclockwise_angle = 2.0 * M_PI - abs_angular_distance;
-  double clockwise_time = clockwise_angle / cfg_->rotation.rotate_to_heading_angular_vel;
-  double counterclockwise_time = counterclockwise_angle / cfg_->rotation.rotate_to_heading_angular_vel;
-  
-  // Determine which direction is faster
-  bool use_clockwise = (clockwise_time <= counterclockwise_time);
-  
-  // Determine angular velocity sign based on angular_distance_to_heading
-  // Positive angular_distance means rotate counterclockwise (positive angular velocity)
-  // Negative angular_distance means rotate clockwise (negative angular velocity)
+  const bool use_clockwise = (clockwise_time <= counterclockwise_time);
   double angular_vel_sign = (angular_distance_to_heading > 0.0) ? 1.0 : -1.0;
-  
-  // If counterclockwise is faster, we need to reverse the sign
   if (!use_clockwise)
   {
     angular_vel_sign = -angular_vel_sign;
   }
-  
-  // Create command for first direction (faster direction)
-  geometry_msgs::msg::TwistStamped test_cmd_vel;
-  test_cmd_vel.header = pose.header;
-  test_cmd_vel.header.stamp = clock_->now();
-  test_cmd_vel.twist.linear.x = 0.0;
-  test_cmd_vel.twist.linear.y = 0.0;
-  test_cmd_vel.twist.angular.z = angular_vel_sign * cfg_->rotation.rotate_to_heading_angular_vel;
-  test_cmd_vel.twist.angular.z = test_cmd_vel.twist.angular.z > 0 ? std::max(test_cmd_vel.twist.angular.z, cfg_->rotation.rotate_min_angular_vel) :
-                                 std::min(test_cmd_vel.twist.angular.z, -cfg_->rotation.rotate_min_angular_vel);
 
-  // Check collision for first direction
+  auto fill_cmd = [&](double av_sign, double rot_mag) {
+    const double w_des_mag = rotateToHeadingOmegaMagnitude(rot_mag, std::abs(velocity.angular.z));
+    const double w_star = av_sign * w_des_mag;
+    const double alpha = std::max(1e-6, cfg_->rotation.max_angular_accel);
+    const double dt = control_duration_;
+    // 原地转斜坡起点：不要直接用 odom/上一帧 TEB 的大角速度。与 w_star 反向时从 0 起爬；
+    // 同向时幅值不超过 rotate_to_heading_angular_vel，否则 180° 对向时会长期像「TEB 在控角速度」。
+    const double w_odom = velocity.angular.z;
+    double w_prev = 0.0;
+    if (std::abs(w_odom) > 1e-9) {
+      const bool same_sign = (w_odom > 0.0) == (w_star > 0.0);
+      if (same_sign) {
+        w_prev = std::copysign(std::min(std::abs(w_odom), wn), w_star);
+      }
+    }
+    double w_cmd = w_prev + std::clamp(w_star - w_prev, -alpha * dt, alpha * dt);
+    // 原逻辑：只要 |w_cmd|>0 就 max(|w_cmd|, wm)。减速时斜坡会把 ω 降到 wm 以下，再被 max 顶回 wm，
+    // 在「即将对准目标」阶段会像末段突然加速。仅「从接近静止起步」时用 wm 克服执行器死区。
+    if (std::fabs(w_cmd) >= 1e-6 && std::fabs(w_prev) < 1e-6 &&
+      std::fabs(w_cmd) < cfg_->rotation.rotate_min_angular_vel)
+    {
+      w_cmd = std::copysign(cfg_->rotation.rotate_min_angular_vel, w_cmd > 0.0 ? 1.0 : -1.0);
+    }
+    cmd_vel.header = pose.header;
+    cmd_vel.header.stamp = clock_->now();
+    cmd_vel.twist.linear.x = 0.0;
+    cmd_vel.twist.linear.y = 0.0;
+    cmd_vel.twist.angular.z = w_cmd;
+  };
+
   double test_angular_distance = use_clockwise ? clockwise_angle : counterclockwise_angle;
-  if (isRotationCollisionFree(test_cmd_vel, test_angular_distance, pose))
+  const double cmd_primary_sign = angular_vel_sign;
+  const double cmd_primary_mag = test_angular_distance;
+  if (isRotationCollisionFreeDecel(pose, angular_vel_sign, test_angular_distance, velocity.angular.z))
   {
-    cmd_vel = test_cmd_vel;
+    fill_cmd(angular_vel_sign, test_angular_distance);
     return true;
   }
-  
-  // If first direction has collision, try opposite direction
-  angular_vel_sign = -angular_vel_sign;
-  test_cmd_vel.twist.angular.z = angular_vel_sign * cfg_->rotation.rotate_to_heading_angular_vel;
-  test_cmd_vel.twist.angular.z = test_cmd_vel.twist.angular.z > 0 ? std::max(test_cmd_vel.twist.angular.z, cfg_->rotation.rotate_min_angular_vel) :
-                                 std::min(test_cmd_vel.twist.angular.z, -cfg_->rotation.rotate_min_angular_vel);
 
+  angular_vel_sign = -angular_vel_sign;
   test_angular_distance = use_clockwise ? counterclockwise_angle : clockwise_angle;
-  if (isRotationCollisionFree(test_cmd_vel, test_angular_distance, pose))
+  if (isRotationCollisionFreeDecel(pose, angular_vel_sign, test_angular_distance, velocity.angular.z))
   {
-    cmd_vel = test_cmd_vel;
+    fill_cmd(angular_vel_sign, test_angular_distance);
+    // RCLCPP_INFO_THROTTLE(
+    //   logger_, *clock_, 500,
+    //   "原地转: computeRotate 首选 sign=%.0f、rot_mag=%.3f rad 未通过，备选 sign=%.0f、rot_mag=%.3f rad 已填 cmd "
+    //   "（|dtheta|=%.3f、use_clockwise=%d、w_odom=%.3f、cmd_w=%.3f）",
+    //   cmd_primary_sign,
+    //   cmd_primary_mag,
+    //   angular_vel_sign,
+    //   test_angular_distance,
+    //   abs_angular_distance,
+    //   use_clockwise ? 1 : 0,
+    //   velocity.angular.z,
+    //   cmd_vel.twist.angular.z);
     return true;
   }
-  
-  // Both directions have collision, return false
+
+  RCLCPP_INFO_THROTTLE(
+    logger_, *clock_, 500,
+    "原地转: 两旋转方向碰障预检均失败（computeRotateToHeadingCommand），|dtheta|=%.3f rad，use_clockwise=%d，w_odom=%.3f",
+    abs_angular_distance,
+    use_clockwise ? 1 : 0,
+    velocity.angular.z);
   return false;
 }
 

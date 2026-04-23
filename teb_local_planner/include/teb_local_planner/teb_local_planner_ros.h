@@ -688,17 +688,29 @@
      const geometry_msgs::msg::PoseStamped & robot_pose);
 
    /**
-    * @brief 用参数 rotate_to_heading_angular_vel（及 rotate_min_angular_vel）在 pose 处预测转到目标角位移是否碰障；不用当前速度做加减速限幅
+    * @brief 原地转向碰障预检：按剩余角位移用 ω∈[rotate_min, rotate_to_heading] 与 max_angular_accel 减速模型 + 当前 ω 斜坡仿真
     */
    bool checkRotateToHeadingCollisionNominal(
      const double & angular_distance_to_heading,
-     const geometry_msgs::msg::PoseStamped & pose);
+     const geometry_msgs::msg::PoseStamped & pose,
+     const geometry_msgs::msg::Twist & velocity);
+
+   /** 剩余角位移 remaining(rad) 下允许的最大角速度幅值（减速至 rotate_min 所需距离由 ω²−ω_min²=2αs 决定） */
+   /** @param omega_current_abs 当前角速度幅值(rad/s)，用于自动估计减速区间；手动 blend 时忽略 */
+   double rotateToHeadingOmegaMagnitude(double remaining_angle_rad, double omega_current_abs) const;
+
+   /** 沿 rotation_magnitude_rad 旋转弧均匀采样 yaw，仅 LETHAL 否决；与 footprint_spec_ 一致。initial_omega_z 保留兼容，不参与判定 */
+   bool isRotationCollisionFreeDecel(
+     const geometry_msgs::msg::PoseStamped & pose,
+     double omega_direction_sign,
+     double rotation_magnitude_rad,
+     double initial_omega_z) const;
    
    /**
     * @brief Compute rotation command for in-place rotation
     * @param angular_distance_to_heading Angle difference to target heading
     * @param pose Current robot pose
-    * @param velocity Current robot velocity (unused for ω: command uses rotate_to_heading_angular_vel to match collision pre-check after preempt)
+    * @param velocity Current robot velocity (ω 按 max_angular_accel 斜坡逼近减速模型目标角速度)
     * @param[out] cmd_vel Output velocity command
     * @return true if rotation command is valid, false if collision detected
     */
