@@ -791,17 +791,6 @@ void TebLocalPlannerROS::configure(
        }
      }
    }
- 
- 
-   // Publish global_plan_ for visualization/debugging
-   if (global_plan_pub_ && !global_plan_.empty())
-   {
-     nav_msgs::msg::Path global_plan_msg;
-     global_plan_msg.header.stamp = clock_->now();
-     global_plan_msg.header.frame_id = global_plan_.front().header.frame_id;
-     global_plan_msg.poses = global_plan_;
-     global_plan_pub_->publish(global_plan_msg);
-   }
 
   // Apply external speed limit (if any) before planning
   
@@ -968,6 +957,15 @@ void TebLocalPlannerROS::configure(
       //   v_xy,
       //   cfg_->rotation.rotate_to_heading_angular_vel,
       //   control_duration_);
+         // Publish global_plan_ for visualization/debugging
+      if (global_plan_pub_ && !global_plan_.empty())
+      {
+        nav_msgs::msg::Path global_plan_msg;
+        global_plan_msg.header.stamp = clock_->now();
+        global_plan_msg.header.frame_id = global_plan_.front().header.frame_id;
+        global_plan_msg.poses = global_plan_;
+        global_plan_pub_->publish(global_plan_msg);
+      }
       return rotation_cmd_vel;
     }
     // If rotation fails due to collision, continue with TEB planning
@@ -1134,6 +1132,15 @@ void TebLocalPlannerROS::configure(
    visualization_->publishObstacles(obstacles_);
    visualization_->publishViaPoints(via_points_);
    visualization_->publishGlobalPlan(global_plan_);
+
+   if (global_plan_pub_ && !global_plan_.empty())
+   {
+     nav_msgs::msg::Path global_plan_msg;
+     global_plan_msg.header.stamp = clock_->now();
+     global_plan_msg.header.frame_id = global_plan_.front().header.frame_id;
+     global_plan_msg.poses = global_plan_;
+     global_plan_pub_->publish(global_plan_msg);
+   }
    
    return cmd_vel;
  }
