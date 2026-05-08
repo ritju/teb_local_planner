@@ -588,7 +588,6 @@
    // flags
    bool initialized_; //!< Keeps track about the correct initialization of this class
    std::string name_; //!< Name of plugin ID
-   double launch_max_vel_x_, launch_max_global_plan_lookahead_dist_;
    double weight_wall_line_direction_, weight_wall_line_dist_;
    double weight_via_point_;
    double min_obstacle_dist_;

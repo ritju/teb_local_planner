@@ -133,7 +133,7 @@ bool segmentsCloseForFusion(
                                             costmap_converter_loader_("costmap_converter", "costmap_converter::BaseCostmapToPolygons"),
                                             custom_via_points_active_(false), no_infeasible_plans_(0),
                                             last_preferred_rotdir_(RotType::none), initialized_(false),
-                                            launch_max_vel_x_(0), launch_max_global_plan_lookahead_dist_(0),weight_via_point_(1.0),
+                                            weight_via_point_(1.0),
                                             cfg_max_angular_vel_(0.6), cfg_max_vel_x_(0.5), cfg_max_angular_acc_(0.6), wall_line_update_time_(0),
                                             curb_line_update_time_(0), min_obstacle_dist_(0.5), wall_line_ptr_(nullptr), curb_line_subscriber_(nullptr),
                                             normal_weight_optimaltime_(2.0), normal_min_obstacle_dist_(0.2),
@@ -173,9 +173,6 @@ bool segmentsCloseForFusion(
 
     // get parameters of TebConfig via the nodehandle and override the default config
     cfg_->loadRosParamFromNodeHandle(node, name_);
-    // 获取默认值
-    launch_max_vel_x_ = cfg_->robot.max_vel_x;
-    launch_max_global_plan_lookahead_dist_ = cfg_->trajectory.max_global_plan_lookahead_dist;
     weight_wall_line_direction_ = cfg_->optim.weight_wall_line_direction;
     weight_wall_line_dist_ = cfg_->optim.weight_wall_line_dist;
     weight_via_point_ = cfg_->optim.weight_viapoint;
@@ -580,22 +577,40 @@ void TebLocalPlannerROS::configure(
    
    if (global_plan_.size() < 30)
    {
-     cfg_->trajectory.max_global_plan_lookahead_dist = launch_max_global_plan_lookahead_dist_;
-    //  cfg_->robot.max_vel_x = launch_max_vel_x_;
-     // Initialize corner poses to avoid using uninitialized variables
      corner_pose_global = robot_pose;
      corner_pose_robot = robot_pose;
-     // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! Set succed !", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
    }
    else
    {
      double theta = cfg_->trajectory.theta_threshold;
      const double min_segment_length = 1e-6;  // Minimum segment length to avoid division by zero
      const double position_tolerance = 0.01;  // Tolerance for position comparison
-     
-     // Find the nearest corner point that satisfies the condition
-     for (size_t i = 2; i < global_plan_.size() - 2 && i < cfg_->trajectory.pose_num_threshold; ++i)
+
+     // Cumulative Euclidean length along global_plan from index 0 to current pose (corner search window).
+     double cum_dist = 0.0;
+     for (size_t j = 1; j < 2 && j < global_plan_.size(); ++j) {
+       const auto & pj0 = global_plan_.at(j - 1).pose.position;
+       const auto & pj1 = global_plan_.at(j).pose.position;
+       const double sdx = pj1.x - pj0.x;
+       const double sdy = pj1.y - pj0.y;
+       cum_dist += std::sqrt(sdx * sdx + sdy * sdy);
+     }
+
+     // Find the nearest corner point that satisfies the condition (within max_global_plan_lookahead_dist along the path).
+     for (size_t i = 2; i + 2 < global_plan_.size(); ++i)
      {
+       {
+         const auto & pi0 = global_plan_.at(i - 1).pose.position;
+         const auto & pi1 = global_plan_.at(i).pose.position;
+         const double sdx = pi1.x - pi0.x;
+         const double sdy = pi1.y - pi0.y;
+         cum_dist += std::sqrt(sdx * sdx + sdy * sdy);
+       }
+       const double max_corner_plan_len = cfg_->trajectory.max_global_plan_lookahead_dist + 1.0;
+       if (max_corner_plan_len > 0.0 && cum_dist > max_corner_plan_len) {
+         break;
+       }
+
        double x0 = global_plan_.at(i).pose.position.x;
        double y0 = global_plan_.at(i).pose.position.y;
        double x1 = global_plan_.at(i - 2).pose.position.x;
@@ -716,33 +731,14 @@ void TebLocalPlannerROS::configure(
          RCLCPP_ERROR(logger_, "TF 查询失败: %s", ex.what());
          corner_found = false;  // Mark corner as invalid if TF fails
        }
-       
-       if (corner_found)
-       {
-         // transformPoseInTargetFrame uses TimePointZero internally, which should be safe
-         if (nav2_util::transformPoseInTargetFrame(corner_pose_global, corner_pose_robot, *tf_, costmap_ros_->getBaseFrameID()))
-         {
-           if (theta < cfg_->trajectory.theta_threshold && corner_pose_robot.pose.position.x > 0)
-           {
-             cfg_->trajectory.max_global_plan_lookahead_dist = cfg_->trajectory.min_global_plan_lookahead_dist_threshold;
-             cfg_->robot.max_vel_x = cfg_->trajectory.min_vel_x_threshold;
-             // RCLCPP_INFO(logger_, "Theta: %f! Set theta succed !", theta);
-             // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! In small theta!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
-             //设置 max_global_plan_lookahead_dist、max_vel_x 为较小值
-           }
-           else
-           {
-             cfg_->trajectory.max_global_plan_lookahead_dist = launch_max_global_plan_lookahead_dist_;
-            //  cfg_->robot.max_vel_x = launch_max_vel_x_;
-             // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %f, max_vel_x: %f! In big theta!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
-           }
-         }
-         else
-         {
-           corner_found = false;  // Mark corner as invalid if transform fails
-           cfg_->trajectory.max_global_plan_lookahead_dist = launch_max_global_plan_lookahead_dist_;
-          //  cfg_->robot.max_vel_x = launch_max_vel_x_;
-         }
+       if (corner_found &&
+           !nav2_util::transformPoseInTargetFrame(
+             corner_pose_global, corner_pose_robot, *tf_,
+             costmap_ros_->getBaseFrameID(), 0.5)) {
+         RCLCPP_WARN_THROTTLE(
+           logger_, *clock_, 2000,
+           "Failed to transform corner pose to base frame");
+         corner_found = false;
        }
      }
      else
@@ -750,8 +746,6 @@ void TebLocalPlannerROS::configure(
        // No corner found, initialize corner poses
        corner_pose_global = robot_pose;
        corner_pose_robot = robot_pose;
-       cfg_->trajectory.max_global_plan_lookahead_dist = launch_max_global_plan_lookahead_dist_;
-      //  cfg_->robot.max_vel_x = launch_max_vel_x_;
      }
    }
    
@@ -869,7 +863,7 @@ void TebLocalPlannerROS::configure(
      // If no obstacle, find corner in transformed_plan and prune after corner if needed
      const double corner_position_tolerance = 0.05;  // Tolerance for finding corner in transformed plan
      for (auto check_it = transformed_plan.begin(); 
-          check_it != transformed_plan.end() && check_it != transformed_plan.begin() + 80; 
+          check_it != transformed_plan.end(); 
           ++check_it)
      {
        double dx = check_it->pose.position.x - local_corner_check_pose2d.pose.position.x;

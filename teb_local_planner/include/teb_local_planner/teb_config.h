@@ -86,7 +86,7 @@ public:
     bool allow_init_with_backwards_motion; //!< If true, the underlying trajectories might be initialized with backwards motions in case the goal is behind the start within the local costmap (this is only recommended if the robot is equipped with rear sensors)
     double global_plan_viapoint_sep; //!< Min. separation between each two consecutive via-points extracted from the global plan (if negative: disabled)
     bool via_points_ordered; //!< If true, the planner adheres to the order of via-points in the storage container
-    double max_global_plan_lookahead_dist; //!< Specify maximum length (cumulative Euclidean distances) of the subset of the global plan taken into account for optimization [if <=0: disabled; the length is also bounded by the local costmap size!]
+    double max_global_plan_lookahead_dist; //!< Cumulative path length from global plan start: limits optimization subset; also caps sharp-corner search along the plan (if <=0: no path-length cap for corner search; bounded by local costmap for optimization)
     double global_plan_prune_distance; //!< Distance between robot and via_points of global plan which is used for pruning
     double global_plan_prune_max_accum_dist; //!< pruneGlobalPlan: max cumulative path length from plan start to search for prune point [m]; <=0 disables cap (search entire plan)
     bool exact_arc_length; //!< If true, the planner uses the exact arc length in velocity, acceleration and turning rate computations [-> increased cpu time], otherwise the euclidean approximation is used.
@@ -97,8 +97,7 @@ public:
     bool publish_feedback; //!< Publish planner feedback containing the full trajectory and a list of active obstacles (should be enabled only for evaluation or debugging purposes)
     double min_resolution_collision_check_angular; //! Min angular resolution used during the costmap collision check. If not respected, intermediate samples are added. [rad]
     int control_look_ahead_poses; //! Index of the pose used to extract the velocity command
-    double min_global_plan_lookahead_dist_threshold, min_vel_x_threshold;
-    int theta_threshold, pose_num_threshold;
+    int theta_threshold;
     double corner_dist_threshold; //!< Distance threshold to consider a point a corner
     //! transformGlobalPlan: when scorePose throws "Trajectory Hits Obstacle.", extend max plan length by this (m), capped by local costmap size
     double max_plan_length_extend_on_trajectory_obstacle_m;
@@ -346,9 +345,6 @@ public:
 
     // Trajectory
     trajectory.theta_threshold = 135;
-    trajectory.min_global_plan_lookahead_dist_threshold = 0.3;
-    trajectory.min_vel_x_threshold = 0.3;
-    trajectory.pose_num_threshold = 30;
     trajectory.corner_dist_threshold = 1.5;
     trajectory.teb_autosize = true;
     trajectory.dt_ref = 0.3;

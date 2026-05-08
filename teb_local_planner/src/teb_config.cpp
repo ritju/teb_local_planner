@@ -70,9 +70,6 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "control_look_ahead_poses", rclcpp::ParameterValue(trajectory.control_look_ahead_poses));
   declare_parameter_if_not_declared(nh, name + "." + "feasibility_check_lookahead_distance", rclcpp::ParameterValue(trajectory.feasibility_check_lookahead_distance));
   declare_parameter_if_not_declared(nh, name + "." + "theta_threshold", rclcpp::ParameterValue(trajectory.theta_threshold));
-  declare_parameter_if_not_declared(nh, name + "." + "min_global_plan_lookahead_dist_threshold", rclcpp::ParameterValue(trajectory.min_global_plan_lookahead_dist_threshold));
-  declare_parameter_if_not_declared(nh, name + "." + "min_vel_x_threshold", rclcpp::ParameterValue(trajectory.min_vel_x_threshold));
-  declare_parameter_if_not_declared(nh, name + "." + "pose_num_threshold", rclcpp::ParameterValue(trajectory.pose_num_threshold));
   declare_parameter_if_not_declared(nh, name + "." + "corner_dist_threshold", rclcpp::ParameterValue(trajectory.corner_dist_threshold));
   declare_parameter_if_not_declared(nh, name + "." + "max_plan_length_extend_on_trajectory_obstacle_m", rclcpp::ParameterValue(trajectory.max_plan_length_extend_on_trajectory_obstacle_m));
   // Robot
@@ -281,9 +278,6 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "control_look_ahead_poses", trajectory.control_look_ahead_poses, trajectory.control_look_ahead_poses);
   nh->get_parameter_or(name + "." + "feasibility_check_lookahead_distance", trajectory.feasibility_check_lookahead_distance, trajectory.feasibility_check_lookahead_distance);
   nh->get_parameter_or(name + "." + "theta_threshold", trajectory.theta_threshold, trajectory.theta_threshold);
-  nh->get_parameter_or(name + "." + "min_global_plan_lookahead_dist_threshold", trajectory.min_global_plan_lookahead_dist_threshold, trajectory.min_global_plan_lookahead_dist_threshold);
-  nh->get_parameter_or(name + "." + "min_vel_x_threshold", trajectory.min_vel_x_threshold, trajectory.min_vel_x_threshold);
-  nh->get_parameter_or(name + "." + "pose_num_threshold", trajectory.pose_num_threshold, trajectory.pose_num_threshold);
   nh->get_parameter_or(name + "." + "corner_dist_threshold", trajectory.corner_dist_threshold, trajectory.corner_dist_threshold);
   nh->get_parameter_or(name + "." + "max_plan_length_extend_on_trajectory_obstacle_m", trajectory.max_plan_length_extend_on_trajectory_obstacle_m, trajectory.max_plan_length_extend_on_trajectory_obstacle_m);
   // Robot
@@ -639,12 +633,6 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.feasibility_check_lookahead_distance = parameter.as_double();
       } else if (name == node_name + ".theta_threshold") {
         trajectory.theta_threshold = parameter.as_int();
-      } else if (name == node_name + ".min_global_plan_lookahead_dist_threshold") {
-        trajectory.min_global_plan_lookahead_dist_threshold = parameter.as_double();
-      } else if (name == node_name + ".min_vel_x_threshold") {
-        trajectory.min_vel_x_threshold = parameter.as_double();
-      } else if (name == node_name + ".pose_num_threshold") {
-        trajectory.pose_num_threshold = parameter.as_int();
       } else if (name == node_name + ".corner_dist_threshold") {
         trajectory.corner_dist_threshold = parameter.as_double();
       } else if (name == node_name + ".max_plan_length_extend_on_trajectory_obstacle_m") {
