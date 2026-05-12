@@ -566,6 +566,42 @@ void TebLocalPlannerROS::configure(
    
    // Get robot velocity
    robot_vel_ = velocity;
+
+   if (cfg_->robot.map_to_base_transform_max_age > 0.0) {
+     const std::string & base_frame = costmap_ros_->getBaseFrameID();
+     try {
+       geometry_msgs::msg::TransformStamped tf_map_to_base =
+         tf_->lookupTransform(
+           cfg_->map_frame,
+           base_frame,
+           tf2::TimePointZero,
+           tf2::durationFromSec(std::max(0.0, cfg_->robot.transform_tolerance)));
+       const rclcpp::Time tf_stamp(tf_map_to_base.header.stamp, clock_->get_clock_type());
+       const double data_age_sec = std::max(0.0, (clock_->now() - tf_stamp).seconds());
+       if (data_age_sec > cfg_->robot.map_to_base_transform_max_age) {
+         RCLCPP_WARN_THROTTLE(
+           logger_,
+           *clock_,
+           1000,
+           "%s → %s 的 TF 数据滞后, 滞后 %.3f s (阈值 %.3f s), 输出零速度",
+           cfg_->map_frame.c_str(),
+           base_frame.c_str(),
+           data_age_sec,
+           cfg_->robot.map_to_base_transform_max_age);
+         return cmd_vel;
+       }
+     } catch (const tf2::TransformException & ex) {
+       RCLCPP_WARN_THROTTLE(
+         logger_,
+         *clock_,
+         1000,
+         "无法查询 %s → %s 变换: %s, 输出零速度",
+         cfg_->map_frame.c_str(),
+         base_frame.c_str(),
+         ex.what());
+       return cmd_vel;
+     }
+   }
    
    // prune global plan to cut off parts of the past (spatially before the robot)
    pruneGlobalPlan(robot_pose, global_plan_, cfg_->trajectory.global_plan_prune_distance,

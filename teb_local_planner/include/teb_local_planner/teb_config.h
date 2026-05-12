@@ -123,6 +123,8 @@ public:
     bool is_footprint_dynamic; //<! If true, updated the footprint before checking trajectory feasibility
     bool use_proportional_saturation; //<! If true, reduce all twists components (linear x and y, and angular z) proportionally if any exceed its corresponding bounds, instead of saturating each one individually
     double transform_tolerance = 0.5; //<! Tolerance when querying the TF Tree for a transformation (seconds)
+    //!< 若大于 0：当 map_frame→基底坐标系 TF 最新消息时间戳早于当前时钟超过该值 [s] 时，控制器输出零速度；<=0 关闭
+    double map_to_base_transform_max_age;
     double safe_linear_speed_limit; //!< Maximum linear speed limit for the robot
   } robot; //!< Robot related parameters
 
@@ -386,6 +388,7 @@ public:
     robot.cmd_angle_instead_rotvel = false;
     robot.is_footprint_dynamic = false;
     robot.use_proportional_saturation = false;
+    robot.map_to_base_transform_max_age = 0.0;
     robot.safe_linear_speed_limit = 2.0;
 
     // GoalTolerance
