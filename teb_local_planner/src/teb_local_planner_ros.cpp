@@ -888,11 +888,11 @@ void TebLocalPlannerROS::configure(
      // If corner has obstacle, delete all path points before the corner in global_plan_
      if (corner_has_obstacle)
      {
-       if (corner_index > 0 && corner_index < global_plan_.size() && corner_pose_robot.pose.position.x < std::max(cfg_->trajectory.max_global_plan_lookahead_dist / 2.0, 2.0))
-       {
-         // Erase all points before the corner (keep the corner point itself)
-         global_plan_.erase(global_plan_.begin(), global_plan_.begin() + corner_index);
-       }
+      //  if (corner_index > 0 && corner_index < global_plan_.size() && corner_pose_robot.pose.position.x < std::max(cfg_->trajectory.max_global_plan_lookahead_dist / 2.0, 2.0))
+      //  {
+      //    // Erase all points before the corner (keep the corner point itself)
+      //    global_plan_.erase(global_plan_.begin(), global_plan_.begin() + corner_index);
+      //  }
        goto jump_prune_transformed_plan;
      }
      
@@ -2399,7 +2399,7 @@ void TebLocalPlannerROS::updateWallLineVec(
          min_dist_threshold = dist_sq;
          erase_end = it;
        }
-       if (dist_sq < dist_thresh_sq)
+       if (dist_sq < min_dist_threshold)
        {
          // If close enough, additionally require plan pose orientation to align with robot orientation
          // If yaw misalignment is too large, keep searching forward until we find a close pose with aligned yaw
@@ -3501,6 +3501,185 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
    return;
  }
 
+namespace {
+double pathLengthToIndex(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const size_t end_index)
+{
+  if (plan.empty()) {
+    return 0.0;
+  }
+  const size_t last_seg = std::min(end_index, plan.size() - 1);
+  double len = 0.0;
+  for (size_t i = 0; i < last_seg; ++i) {
+    const double dx = plan[i + 1].pose.position.x - plan[i].pose.position.x;
+    const double dy = plan[i + 1].pose.position.y - plan[i].pose.position.y;
+    len += std::hypot(dx, dy);
+  }
+  return len;
+}
+
+/** 弧长 dist 处：取已驶过的最后一个离散路径点下标 k（cum[k]≤dist），朝向用 plan[k]（无 slerp） */
+size_t waypointIndexOwningArcLength(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const size_t end_index,
+  const double dist)
+{
+  if (plan.empty() || end_index >= plan.size()) {
+    return 0;
+  }
+  if (dist <= 0.0) {
+    return 0;
+  }
+  double cum_at_k = 0.0;
+  size_t k = 0;
+  while (k + 1 <= end_index) {
+    const double dx = plan[k + 1].pose.position.x - plan[k].pose.position.x;
+    const double dy = plan[k + 1].pose.position.y - plan[k].pose.position.y;
+    const double seg = std::hypot(dx, dy);
+    if (cum_at_k + seg <= dist + 1e-9) {
+      cum_at_k += seg;
+      ++k;
+    } else {
+      break;
+    }
+  }
+  return k;
+}
+
+bool interpolatePoseAlongPlanToIndex(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const size_t end_index,
+  const double distance_along,
+  geometry_msgs::msg::PoseStamped * out)
+{
+  if (!out || plan.empty() || end_index >= plan.size()) {
+    return false;
+  }
+  if (distance_along <= 0.0) {
+    *out = plan[0];
+    return true;
+  }
+  const double total = pathLengthToIndex(plan, end_index);
+  const double dist = std::min(std::max(0.0, distance_along), total);
+  if (dist >= total - 1e-9) {
+    *out = plan[end_index];
+    return true;
+  }
+  double accumulated = 0.0;
+  for (size_t i = 0; i < end_index; ++i) {
+    const double ax = plan[i].pose.position.x;
+    const double ay = plan[i].pose.position.y;
+    const double bx = plan[i + 1].pose.position.x;
+    const double by = plan[i + 1].pose.position.y;
+    const double dx = bx - ax;
+    const double dy = by - ay;
+    const double seg_len = std::hypot(dx, dy);
+    if (seg_len < 1e-9) {
+      continue;
+    }
+    if (accumulated + seg_len >= dist - 1e-9) {
+      const double t = (dist - accumulated) / seg_len;
+      out->header = plan[i].header;
+      out->pose.position.x = ax + t * dx;
+      out->pose.position.y = ay + t * dy;
+      out->pose.position.z =
+        plan[i].pose.position.z + t * (plan[i + 1].pose.position.z - plan[i].pose.position.z);
+      const size_t orient_idx = waypointIndexOwningArcLength(plan, end_index, dist);
+      out->pose.orientation = plan[orient_idx].pose.orientation;
+      return true;
+    }
+    accumulated += seg_len;
+  }
+  *out = plan[end_index];
+  return true;
+}
+}  // namespace
+
+bool TebLocalPlannerROS::orientedFootprintAnyVertexOutsideLocalCostmap(
+  double x, double y, double theta,
+  const std::vector<geometry_msgs::msg::Point> & footprint_poly) const
+{
+  if (!costmap_ || footprint_poly.size() < 2) {
+    return true;
+  }
+  const double c = std::cos(theta);
+  const double s = std::sin(theta);
+  unsigned int mx = 0, my = 0;
+  for (const auto & p : footprint_poly) {
+    const double wx = x + (p.x * c - p.y * s);
+    const double wy = y + (p.x * s + p.y * c);
+    if (!costmap_->worldToMap(wx, wy, mx, my)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const double sample_spacing_m) const
+{
+  if (!rotation_collision_checker_ || plan.empty()) {
+    return true;
+  }
+  const size_t end_idx = plan.size() - 1;
+
+  const std::vector<geometry_msgs::msg::Point> & footprint_poly =
+    (footprint_spec_.size() >= 3) ? footprint_spec_ : costmap_ros_->getRobotFootprint();
+
+  using nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+  using nav2_costmap_2d::LETHAL_OBSTACLE;
+
+  const auto pose_footprint_clear = [&](double px, double py, double pyaw) -> bool {
+    if (orientedFootprintAnyVertexOutsideLocalCostmap(px, py, pyaw, footprint_poly)) {
+      return true;
+    }
+    const double fc = rotation_collision_checker_->footprintCostAtPose(
+      px, py, pyaw, footprint_poly);
+    if (fc == static_cast<double>(LETHAL_OBSTACLE) ||
+        fc == static_cast<double>(INSCRIBED_INFLATED_OBSTACLE)) {
+      return false;
+    }
+    return true;
+  };
+
+  const double total_len = pathLengthToIndex(plan, end_idx);
+  double forward_cap = cfg_->trajectory.max_global_plan_lookahead_dist;
+  if (forward_cap <= 1e-9) {
+    forward_cap = total_len;
+  }
+  const double sample_len = std::min(total_len, forward_cap);
+  double spacing = std::max(1e-3, sample_spacing_m);
+  if (sample_len > 1e-9) {
+    spacing = std::max(spacing, sample_len / 150.0);
+  }
+
+  std::vector<double> dists;
+  for (double d = 0.0; d < sample_len + 1e-9; d += spacing) {
+    dists.push_back(std::min(d, sample_len));
+  }
+  if (dists.empty()) {
+    dists.push_back(0.0);
+  }
+  if (sample_len > 1e-9 &&
+      std::abs(dists.back() - sample_len) > 1e-3) {
+    dists.push_back(sample_len);
+  }
+
+  geometry_msgs::msg::PoseStamped sampled;
+  for (const double d : dists) {
+    if (!interpolatePoseAlongPlanToIndex(plan, end_idx, d, &sampled)) {
+      continue;
+    }
+    const double yaw = tf2::getYaw(sampled.pose.orientation);
+    if (!pose_footprint_clear(sampled.pose.position.x, sampled.pose.position.y, yaw)) {
+      return false;
+    }
+  }
+  return true;
+}
+
  bool TebLocalPlannerROS::shouldRotateInPlace(
   const geometry_msgs::msg::Twist & velocity,
   const std::vector<geometry_msgs::msg::PoseStamped> & transformed_plan,
@@ -3530,7 +3709,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
 
   // Find target pose based on forward lookahead distance
   // Start from the first pose (robot position) and find the first pose that is at least forward_lookahead_distance away
-  const geometry_msgs::msg::PoseStamped *target_pose = nullptr;
+  size_t target_idx = transformed_plan.size() - 1;
   double accumulated_distance = 0.0;
 
   for (size_t i = 1; i < transformed_plan.size(); ++i)
@@ -3541,16 +3720,12 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
 
     if (accumulated_distance >= cfg_->rotation.forward_lookahead_distance)
     {
-      target_pose = &transformed_plan[i];
+      target_idx = i;
       break;
     }
   }
 
-  // If no pose found within lookahead distance, use the last pose
-  if (target_pose == nullptr)
-  {
-    target_pose = &transformed_plan.back();
-  }
+  const geometry_msgs::msg::PoseStamped * const target_pose = &transformed_plan[target_idx];
 
   // Calculate angle difference between robot orientation and target pose orientation
   double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
@@ -3571,13 +3746,19 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
     return false;
   }
 
-  const bool collision_ok =
+  const bool rotate_in_place_clear =
     checkRotateToHeadingCollisionNominal(angular_distance, robot_pose, velocity);
+  const bool path_footprint_clear = isTransformedPlanFootprintSamplesCollisionFree(
+    transformed_plan, cfg_->rotation.path_footprint_sample_spacing);
+  const bool collision_ok = rotate_in_place_clear && path_footprint_clear;
   if (!collision_ok) {
     RCLCPP_INFO_THROTTLE(
       logger_, *clock_, 500,
-      "原地转: shouldRotateInPlace=false，碰障预检未通过 |dtheta|=%.3f rad、w_odom=%.3f、v_xy=%.3f",
-      std::abs(angular_distance), velocity.angular.z, linear_vel);
+      "原地转: shouldRotateInPlace=false，碰障预检未通过 |dtheta|=%.3f rad、w_odom=%.3f、v_xy=%.3f "
+      "(原地扫掠=%s、路径采样=%s)",
+      std::abs(angular_distance), velocity.angular.z, linear_vel,
+      rotate_in_place_clear ? "通过" : "未通过",
+      path_footprint_clear ? "通过" : "未通过");
   } else {
     RCLCPP_INFO_THROTTLE(
       logger_, *clock_, 500,

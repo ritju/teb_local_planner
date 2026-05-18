@@ -694,6 +694,16 @@
      const geometry_msgs::msg::PoseStamped & pose,
      const geometry_msgs::msg::Twist & velocity);
 
+   /** oriented footprint 任一顶点不在局部 costmap 栅格内（越界）时返回 true，按“无碰”处理 */
+   bool orientedFootprintAnyVertexOutsideLocalCostmap(
+     double x, double y, double theta,
+     const std::vector<geometry_msgs::msg::Point> & footprint_poly) const;
+
+   /** 沿整条 plan 弧长从起点向前采样；全长取 plan 全长，向前有效长度 capped 为 trajectory.max_global_plan_lookahead_dist（≤0 则用 plan 全长）；footprint 判定同 isRotationCollisionFreeDecel；越界顶点不判碰 */
+   bool isTransformedPlanFootprintSamplesCollisionFree(
+     const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+     double sample_spacing_m) const;
+
    /** 剩余角位移 remaining(rad) 下允许的最大角速度幅值（减速至 rotate_min 所需距离由 ω²−ω_min²=2αs 决定） */
    /** @param omega_current_abs 当前角速度幅值(rad/s)，用于自动估计减速区间；手动 blend 时忽略 */
    double rotateToHeadingOmegaMagnitude(double remaining_angle_rad, double omega_current_abs) const;

@@ -319,6 +319,8 @@ public:
     double max_angular_accel; //!< Maximum angular acceleration for in-place rotation [rad/s^2]
     double simulate_ahead_time; //!< Time to simulate ahead for collision checking during rotation [s] (deprecated, not used)
     double forward_lookahead_distance; //!< Forward lookahead distance to select target pose for rotation [m]
+    //!< 原地转路径 footprint 碰障采样间距 [m]（沿 transformed_plan 弧长）
+    double path_footprint_sample_spacing;
     double rotate_min_angular_vel; //!< Minimum angular velocity for in-place rotation [rad/s]
     //!< >0：手动 blend(rad)，标称上界 wn*r/blend；<=0：由 wn、wm、max_angular_accel 与当前|ω|自动算 blend
     double decel_blend_start_rad;
@@ -559,6 +561,7 @@ public:
     rotation.rotate_to_heading_angular_vel = 0.35;
     rotation.max_angular_accel = 0.35;
     rotation.forward_lookahead_distance = 0.5;  // 0.5 meters forward
+    rotation.path_footprint_sample_spacing = 0.2;
     rotation.rotate_min_angular_vel = 0.05;
     rotation.decel_blend_start_rad = 0.0;
   }
