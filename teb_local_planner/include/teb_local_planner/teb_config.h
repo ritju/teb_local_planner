@@ -101,6 +101,8 @@ public:
     double corner_dist_threshold; //!< Distance threshold to consider a point a corner
     //! transformGlobalPlan: when scorePose throws "Trajectory Hits Obstacle.", extend max plan length by this (m), capped by local costmap size
     double max_plan_length_extend_on_trajectory_obstacle_m;
+    //!< transformGlobalPlan: max cumulative path length from plan[0] while searching for the pose closest to the robot [m]; <=0 = no limit (entire plan)
+    double transform_global_plan_closest_search_max_accum_dist;
   } trajectory; //!< Trajectory related parameters
 
   //! Robot related parameters
@@ -371,6 +373,7 @@ public:
     trajectory.min_resolution_collision_check_angular = M_PI;
     trajectory.control_look_ahead_poses = 1;
     trajectory.max_plan_length_extend_on_trajectory_obstacle_m = 3.0;
+    trajectory.transform_global_plan_closest_search_max_accum_dist = 0.0;
     
     // Robot
 

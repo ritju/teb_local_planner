@@ -72,6 +72,9 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "theta_threshold", rclcpp::ParameterValue(trajectory.theta_threshold));
   declare_parameter_if_not_declared(nh, name + "." + "corner_dist_threshold", rclcpp::ParameterValue(trajectory.corner_dist_threshold));
   declare_parameter_if_not_declared(nh, name + "." + "max_plan_length_extend_on_trajectory_obstacle_m", rclcpp::ParameterValue(trajectory.max_plan_length_extend_on_trajectory_obstacle_m));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "transform_global_plan_closest_search_max_accum_dist",
+    rclcpp::ParameterValue(trajectory.transform_global_plan_closest_search_max_accum_dist));
   // Robot
   declare_parameter_if_not_declared(nh, name + "." + "max_vel_x", rclcpp::ParameterValue(robot.max_vel_x));
   declare_parameter_if_not_declared(nh, name + "." + "max_vel_x_backwards", rclcpp::ParameterValue(robot.max_vel_x_backwards));
@@ -282,6 +285,10 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "theta_threshold", trajectory.theta_threshold, trajectory.theta_threshold);
   nh->get_parameter_or(name + "." + "corner_dist_threshold", trajectory.corner_dist_threshold, trajectory.corner_dist_threshold);
   nh->get_parameter_or(name + "." + "max_plan_length_extend_on_trajectory_obstacle_m", trajectory.max_plan_length_extend_on_trajectory_obstacle_m, trajectory.max_plan_length_extend_on_trajectory_obstacle_m);
+  nh->get_parameter_or(
+    name + "." + "transform_global_plan_closest_search_max_accum_dist",
+    trajectory.transform_global_plan_closest_search_max_accum_dist,
+    trajectory.transform_global_plan_closest_search_max_accum_dist);
   // Robot
   nh->get_parameter_or(name + "." + "max_vel_x", robot.max_vel_x, robot.max_vel_x);
   nh->get_parameter_or(name + "." + "max_vel_x_backwards", robot.max_vel_x_backwards, robot.max_vel_x_backwards);
@@ -641,6 +648,8 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.corner_dist_threshold = parameter.as_double();
       } else if (name == node_name + ".max_plan_length_extend_on_trajectory_obstacle_m") {
         trajectory.max_plan_length_extend_on_trajectory_obstacle_m = parameter.as_double();
+      } else if (name == node_name + ".transform_global_plan_closest_search_max_accum_dist") {
+        trajectory.transform_global_plan_closest_search_max_accum_dist = parameter.as_double();
       }
       // Robot
       else if (name == node_name + ".max_vel_x") {

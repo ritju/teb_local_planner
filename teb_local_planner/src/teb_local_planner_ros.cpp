@@ -2558,27 +2558,40 @@ void TebLocalPlannerROS::updateWallLineVec(
      double sq_dist_threshold = dist_threshold * dist_threshold;
      double sq_dist = 1e10;
      
-     //we need to loop to a point on the plan that is within a certain distance of the robot
-     bool robot_reached = false;
-     for(int j=0; j < (int)global_plan.size() && j < 40; ++j)
-     {
-       double x_diff = robot_pose.pose.position.x - global_plan[j].pose.position.x;
-       double y_diff = robot_pose.pose.position.y - global_plan[j].pose.position.y;
-       double new_sq_dist = x_diff * x_diff + y_diff * y_diff;
-       if (new_sq_dist > sq_dist_threshold)
-         break;  // force stop if we have reached the costmap border
- 
-       if (robot_reached && new_sq_dist > sq_dist)
-         break;
- 
-       if (new_sq_dist < sq_dist) // find closest distance
-       {
-         sq_dist = new_sq_dist;
-         i = j;
-         if (sq_dist < 0.25)      // 2.5 cm to the robot; take the immediate local minima; if it's not the global
-           robot_reached = true;  // minima, probably means that there's a loop in the path, and so we prefer this
-       }
-     }
+    //we need to loop to a point on the plan that is within a certain distance of the robot
+    bool robot_reached = false;
+    double accum_path_from_plan_start = 0.0;
+    const double max_accum_closest_search =
+      cfg_->trajectory.transform_global_plan_closest_search_max_accum_dist;
+    for (int j = 0; j < static_cast<int>(global_plan.size()); ++j) {
+      if (j > 0) {
+        accum_path_from_plan_start += distance_points2d(
+          global_plan[static_cast<size_t>(j - 1)].pose.position,
+          global_plan[static_cast<size_t>(j)].pose.position);
+      }
+      if (max_accum_closest_search > 1e-9 &&
+        accum_path_from_plan_start > max_accum_closest_search + 1e-9) {
+        break;
+      }
+      double x_diff = robot_pose.pose.position.x - global_plan[j].pose.position.x;
+      double y_diff = robot_pose.pose.position.y - global_plan[j].pose.position.y;
+      double new_sq_dist = x_diff * x_diff + y_diff * y_diff;
+      if (new_sq_dist > sq_dist_threshold) {
+        break;  // force stop if we have reached the costmap border
+      }
+
+      if (robot_reached && new_sq_dist > sq_dist) {
+        break;
+      }
+
+      if (new_sq_dist < sq_dist) {  // find closest distance
+        sq_dist = new_sq_dist;
+        i = j;
+        if (sq_dist < 0.25) {  // 2.5 cm to the robot; take the immediate local minima; if it's not the global
+          robot_reached = true;  // minima, probably means that there's a loop in the path, and so we prefer this
+        }
+      }
+    }
  
      geometry_msgs::msg::PoseStamped newer_pose;
      
