@@ -127,7 +127,7 @@ public:
    */
   HomotopyClassPlanner(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles = NULL,
                        TebVisualizationPtr visualization = TebVisualizationPtr(), const ViaPointContainer* via_points = NULL,
-                       const std::vector<Eigen::Vector2d>* wall_line = NULL);
+                       const std::vector<Eigen::Vector2d>* wall_line = NULL, const capella_ros_msg::msg::MultiCurve* multi_curve = NULL);
 
   /**
    * @brief Destruct the HomotopyClassPlanner.
@@ -144,7 +144,7 @@ public:
    */
   void initialize(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles = NULL,
                   TebVisualizationPtr visualization = TebVisualizationPtr(), const ViaPointContainer* via_points = NULL,
-                  const std::vector<Eigen::Vector2d>* wall_line = NULL);
+                  const std::vector<Eigen::Vector2d>* wall_line = NULL, const capella_ros_msg::msg::MultiCurve* multi_curve = NULL);
 
   /** @name Plan a trajectory */
   //@{
@@ -574,6 +574,7 @@ protected:
 
   TebOptimalPlannerPtr last_best_teb_;  //!< Points to the plan used in the previous control cycle
   const std::vector<Eigen::Vector2d>* wall_line_;
+  const capella_ros_msg::msg::MultiCurve* multi_curve_;
 
 
 

@@ -85,6 +85,7 @@
 #include "capella_ros_msg/msg/lane_center_paths.hpp"
 #include "geometry_msgs/msg/pose_array.hpp"
 #include <limits>
+#include "capella_ros_msg/msg/multi_curve.hpp"
  namespace teb_local_planner
  {
  using TFBufferPtr = std::shared_ptr<tf2_ros::Buffer>;
@@ -263,6 +264,13 @@
      const double parallel_tolerance,
      const double distance_tolerance,
      const geometry_msgs::msg::PoseStamped& robot_pose);
+
+  void updateMultiCurveVec(
+    const capella_ros_msg::msg::MultiCurve multi_curve,
+    nav_msgs::msg::Path& input_path,
+    const double parallel_tolerance,
+    const double distance_tolerance,
+    const geometry_msgs::msg::PoseStamped& robot_pose);
 
   void edgeReferencePathsCallback(const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr msg);
   void updateReferenceLineVec(
@@ -598,6 +606,11 @@
    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr wall_line_marker_publisher_;
    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr edge_distance_publisher_;
    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr curb_line_subscriber_;
+   rclcpp::Subscription<capella_ros_msg::msg::MultiCurve>::SharedPtr multi_curve_subscriber_;
+   void multi_curve_callback(const capella_ros_msg::msg::MultiCurve::ConstSharedPtr msg);
+   std::mutex multi_curve_mutex_;
+   capella_ros_msg::msg::MultiCurve multi_curve_;
+   rclcpp::Time multi_curve_update_time_;
    void curb_line_callback(const nav_msgs::msg::Path::ConstSharedPtr msg);
    std::mutex curb_line_mutex_;
    nav_msgs::msg::Path curb_line_path_;
