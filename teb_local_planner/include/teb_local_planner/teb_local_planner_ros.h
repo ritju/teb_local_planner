@@ -539,6 +539,7 @@
    ObstContainer obstacles_; //!< Obstacle vector that should be considered during local trajectory optimization
    ViaPointContainer via_points_; //!< Container of via-points that should be considered during local trajectory optimization
    std::vector<Eigen::Vector2d> wall_line_points_; //!< Container of wall_line_points_ that should be considered during local trajectory optimization
+   capella_ros_msg::msg::MultiCurve edge_multi_curve_;
    TebVisualizationPtr visualization_; //!< Instance of the visualization class (local/global plan, obstacles, ...)
    std::shared_ptr<dwb_critics::ObstacleFootprintCritic> costmap_model_;
    FailureDetector failure_detector_; //!< Detect if the robot got stucked
@@ -560,6 +561,7 @@
    std::mutex via_point_mutex_; //!< Mutex that locks the via_points container (multi-threaded)
    std::mutex update_wall_line_mutex_; //!< Mutex that locks the wall_line container (multi-threaded)
    std::mutex update_curb_line_mutex_; //!< Mutex that locks the wall_line container (multi-threaded)
+   std::mutex update_edge_multi_curve_mutex_; //!< Mutex that locks the wall_line container (multi-threaded)
 
   // Vehicle poses around the robot (in map frame)
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr vehicle_poses_sub_; //!< Subscriber for /vehicle_poses_around

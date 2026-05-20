@@ -204,12 +204,12 @@ bool segmentsCloseForFusion(
     // create the planner instance
     if (cfg_->hcp.enable_homotopy_class_planning)
     {
-      planner_ = PlannerInterfacePtr(new HomotopyClassPlanner(node, *cfg_.get(), &obstacles_, visualization_, &via_points_, &wall_line_points_, nullptr));
+      planner_ = PlannerInterfacePtr(new HomotopyClassPlanner(node, *cfg_.get(), &obstacles_, visualization_, &via_points_, &wall_line_points_, &edge_multi_curve_));
       RCLCPP_INFO(logger_, "Parallel planning in distinctive topologies enabled.");
     }
     else
     {
-      planner_ = PlannerInterfacePtr(new TebOptimalPlanner(node, *cfg_.get(), &obstacles_, visualization_, &via_points_, &wall_line_points_, nullptr));
+      planner_ = PlannerInterfacePtr(new TebOptimalPlanner(node, *cfg_.get(), &obstacles_, visualization_, &via_points_, &wall_line_points_, &edge_multi_curve_));
       RCLCPP_INFO(logger_, "Parallel planning in distinctive topologies disabled.");
     }
     
@@ -2216,50 +2216,52 @@ void TebLocalPlannerROS::updateMultiCurveVec(
   const double distance_tolerance,
   const geometry_msgs::msg::PoseStamped& robot_pose)
 {
+  std::lock_guard<std::mutex> l(update_edge_multi_curve_mutex_);
+
   // ---- 路径长度检查 ----
   if (input_path.poses.size() < 2) {
-    if (wall_line_points_.size() > 0) { wall_line_points_.clear(); }
+    if (edge_multi_curve_.segments.size() > 0) { edge_multi_curve_.segments.clear(); }
     switchParameterMode(false);
     return;
   }
  
-  // ---- 附近车辆检查（复用现有逻辑）----
+  // TODO: ---- 附近车辆检查 ----
   bool has_near_vehicles = false;
-  {
-    std::lock_guard<std::mutex> veh_lock(global_vehicle_poses_mutex_);
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
-      "[MultiCurve] global_vehicle_poses_ size: %ld", global_vehicle_poses_.size());
-    const bool have_wall_segment = (wall_line_points_.size() >= 2);
-    Eigen::Vector2d w0, w1;
-    if (have_wall_segment) {
-      w0 = wall_line_points_[0];
-      w1 = wall_line_points_[1];
-    }
-    for (const auto& vehicle : global_vehicle_poses_) {
-      bool in_exit_region = false;
-      if (have_wall_segment) {
-        in_exit_region = isVehicleInEdgeFollowingExitCorridor(
-          robot_pose, w0, w1, vehicle.pose);
-      } else {
-        in_exit_region =
-          distance_points2d(robot_pose.pose.position, vehicle.pose.position) <
-          cfg_->wall_line.close_vehicle_distance_threshold;
-      }
-      if (in_exit_region) {
-        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
-          "[MultiCurve] Nearby vehicle detected, exiting edge-following mode");
-        has_near_vehicles = true;
-        break;
-      }
-    }
-  }
-  if (has_near_vehicles) {
-    if (wall_line_points_.size() > 0) { wall_line_points_.clear(); }
-    switchParameterMode(false);
-    return;
-  }
+  // {
+  //   std::lock_guard<std::mutex> veh_lock(global_vehicle_poses_mutex_);
+  //   RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+  //     "[MultiCurve] global_vehicle_poses_ size: %ld", global_vehicle_poses_.size());
+  //   const bool have_wall_segment = (wall_line_points_.size() >= 2);
+  //   Eigen::Vector2d w0, w1;
+  //   if (have_wall_segment) {
+  //     w0 = wall_line_points_[0];
+  //     w1 = wall_line_points_[1];
+  //   }
+  //   for (const auto& vehicle : global_vehicle_poses_) {
+  //     bool in_exit_region = false;
+  //     if (have_wall_segment) {
+  //       in_exit_region = isVehicleInEdgeFollowingExitCorridor(
+  //         robot_pose, w0, w1, vehicle.pose);
+  //     } else {
+  //       in_exit_region =
+  //         distance_points2d(robot_pose.pose.position, vehicle.pose.position) <
+  //         cfg_->wall_line.close_vehicle_distance_threshold;
+  //     }
+  //     if (in_exit_region) {
+  //       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+  //         "[MultiCurve] Nearby vehicle detected, exiting edge-following mode");
+  //       has_near_vehicles = true;
+  //       break;
+  //     }
+  //   }
+  // }
+  // if (has_near_vehicles) {
+  //   if (wall_line_points_.size() > 0) { wall_line_points_.clear(); }
+  //   switchParameterMode(false);
+  //   return;
+  // }
  
-  // ---- 突出障碍物检查（复用现有逻辑）----
+  // ---- 突出障碍物检查 ----
   {
     const Eigen::Vector2d robot_pos(
       robot_pose.pose.position.x, robot_pose.pose.position.y);
@@ -2275,7 +2277,7 @@ void TebLocalPlannerROS::updateMultiCurveVec(
       if (dist < cfg_->wall_line.obstacle_protrusion_reenter_distance) {
         RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
           "[MultiCurve] Protruding obstacle nearby, prohibiting edge-following mode");
-        if (wall_line_points_.size() > 0) { wall_line_points_.clear(); }
+        if (edge_multi_curve_.segments.size() > 0) { edge_multi_curve_.segments.clear(); }
         switchParameterMode(false);
         return;
       } else {
@@ -2291,7 +2293,7 @@ void TebLocalPlannerROS::updateMultiCurveVec(
   const double dy_path     = end_pose.y - start_pose.y;
   const double path_length = std::hypot(dx_path, dy_path);
   if (path_length < cfg_->wall_line.min_path_line_length) {
-    if (wall_line_points_.size() > 0) { wall_line_points_.clear(); }
+    if (edge_multi_curve_.segments.size() > 0) { edge_multi_curve_.segments.clear(); }
     switchParameterMode(false);
     return;
   }
@@ -2301,192 +2303,143 @@ void TebLocalPlannerROS::updateMultiCurveVec(
   while (angle_diff >  M_PI) { angle_diff -= 2.0 * M_PI; }
   while (angle_diff < -M_PI) { angle_diff += 2.0 * M_PI; }
   if (std::fabs(angle_diff) > M_PI / 4.0) {
-    if (wall_line_points_.size() > 0) { wall_line_points_.clear(); }
+    if (edge_multi_curve_.segments.size() > 0) { edge_multi_curve_.segments.clear(); }
     switchParameterMode(false);
     return;
   }
- 
+
   // ---- 数据时效检查 ----
   {
     const double age = (clock_->now() - multi_curve_update_time_).seconds();
     if (age > keep_wall_line_time_) {
-      if (wall_line_points_.size() > 0) { wall_line_points_.clear(); }
+      if (edge_multi_curve_.segments.size() > 0) { edge_multi_curve_.segments.clear(); }
       switchParameterMode(false);
       return;
     }
   }
  
   // ================================================================
-  //  核心：遍历所有段，找机器人侧向最近的段，生成虚拟切线段
+  //  核心：遍历所有段，找机器人侧向最近的段，判断角度、距离
   //
-  //  直线段：机器人到线段的垂足 = 真实侧向最近点
-  //  椭圆弧：对整个椭圆牛顿迭代求最近点（不限制 theta 范围）
+  //  直线段：机器人到线段的距离
+  //  椭圆弧：对弧度范围内椭圆牛顿迭代求最近点
   //
   //  夹角过滤：切线方向与机器人运动方向夹角超过 parallel_tolerance 时跳过
   // ================================================================
+
   const double parallel_threshold =
-    std::cos(parallel_tolerance / 180.0 * M_PI);
+  std::cos(parallel_tolerance / 180.0 * M_PI);
   const Eigen::Vector2d robot_dir(std::cos(robot_yaw), std::sin(robot_yaw));
-  const Eigen::Vector2d robot_pt(
-    robot_pose.pose.position.x, robot_pose.pose.position.y);
+  const Eigen::Vector2d robot_pt(robot_pose.pose.position.x, robot_pose.pose.position.y),
+                        path_start_pt(start_pose.x, start_pose.y);
  
-  bool            found           = false;
-  double          global_min_dist = std::numeric_limits<double>::max();
+  Eigen::Vector2d min_distance_point; // 最近点
+  Eigen::Vector2d min_distance_direction; // 最近点向量
   double          min_path_dist   = std::numeric_limits<double>::max();
-  Eigen::Vector2d best_tangent_start;
-  Eigen::Vector2d best_tangent_end;
- 
-  for (const auto& seg : multi_curve.segments) {
-    // 虚拟段跳过
-    if (seg.is_virtual) { continue; }
- 
-    // ----------------------------------------------------------
-    // A. 直线段
-    // ----------------------------------------------------------
-    if (seg.type == capella_ros_msg::msg::CurveSegment::LINE) {
-      const auto& ls = seg.line_segment;
-      const Eigen::Vector2d p0(ls.start_point.x, ls.start_point.y);
-      const Eigen::Vector2d p1(ls.end_point.x,   ls.end_point.y);
-      const double seg_len = (p1 - p0).norm();
-      if (seg_len < min_wall_line_length_) { continue; }
- 
-      const Eigen::Vector2d seg_dir = (p1 - p0) / seg_len;
- 
-      // 切线（线段方向）与机器人运动方向夹角检查
-      const double cos_angle = std::fabs(robot_dir.dot(seg_dir));
-      if (cos_angle < parallel_threshold) { continue; }
- 
-      // 路径起点到直线垂直距离（容差筛选，与 wall 一致）
-      const double A     =  p1.y() - p0.y();
-      const double B     =  p0.x() - p1.x();
-      const double C     =  p1.x() * p0.y() - p0.x() * p1.y();
-      const double denom = std::hypot(A, B);
-      if (denom < 1e-9) { continue; }
-      const double path_dist =
-        std::fabs(A * start_pose.x + B * start_pose.y + C) / denom;
-      if (path_dist > distance_tolerance) { continue; }
- 
-      // 机器人到线段垂足 → 真实侧向距离
-      const double t             = (robot_pt - p0).dot(seg_dir);
-      const Eigen::Vector2d foot = p0 + t * seg_dir;
-      const double robot_dist    = (robot_pt - foot).norm();
- 
-      if (path_dist < min_path_dist) {
-        global_min_dist    = robot_dist;
-        min_path_dist      = path_dist;
-        best_tangent_start = p0;   // 直线段直接用原始端点
-        best_tangent_end   = p1;
-        found              = true;
+  bool            found           = false;
+
+  if (!multi_curve.segments.empty()) {
+    auto getSEnd = [](const capella_ros_msg::msg::CurveSegment& seg) -> double {
+    return (seg.type == capella_ros_msg::msg::CurveSegment::LINE)
+            ? seg.line_segment.s_end
+            : seg.ellipse_arc_segment.s_end;
+    };
+
+    const double first = getSEnd(multi_curve.segments.front());
+    const double last  = getSEnd(multi_curve.segments.back());
+    
+    if (std::max(first, last) > min_wall_line_length_) {
+      // ── 线段 ──────────────────────────────────────────────────────────────────
+      for (const auto& seg : multi_curve.segments) {
+        if (seg.type == capella_ros_msg::msg::CurveSegment::LINE) {
+          const auto& ls = seg.line_segment;
+          const Eigen::Vector2d a(ls.start_point.x, ls.start_point.y);
+          const Eigen::Vector2d b(ls.end_point.x,   ls.end_point.y);
+
+          const Eigen::Vector2d ab = b - a;
+          const double len2 = ab.squaredNorm();
+
+          Eigen::Vector2d closest;
+          if (len2 < 1e-12) {
+            closest = a;
+          } else {
+            const double t = std::clamp((path_start_pt - a).dot(ab) / len2, 0.0, 1.0);
+            closest = a + t * ab;
+          }
+
+          const double dsq = (path_start_pt - closest).norm();
+          if (dsq < min_path_dist) {
+            min_path_dist = dsq;
+            min_distance_point = closest;
+
+            // 线段方向：终点 → 起点
+            const Eigen::Vector2d dir = a - b; // end→start
+            const double dir_len = dir.norm();
+            min_distance_direction = (dir_len > 1e-12) ? (dir / dir_len)
+                                                  : Eigen::Vector2d(1.0, 0.0);
+            
+          }
+
+        // ── 椭圆弧 ──────────────────────────────────────────────────────────────
+        } else if (seg.type == capella_ros_msg::msg::CurveSegment::ELLIPSE_ARC) {
+          const auto& eseg = seg.ellipse_arc_segment;
+          const auto& q    = eseg.frame.orientation;
+          const auto& o    = eseg.frame.position;
+
+          const Eigen::Matrix2d R =
+              Eigen::Quaterniond(q.w, q.x, q.y, q.z)
+                  .toRotationMatrix()
+                  .topLeftCorner<2, 2>();
+
+          const Eigen::Vector2d origin(o.x, o.y);
+          const Eigen::Vector2d p_local = R.transpose() * (path_start_pt - origin);
+
+          double theta = ellipseNearestAngle(eseg.a, eseg.b,
+                                            p_local.x(), p_local.y());
+          theta = clampAngleToArc(theta, eseg.theta_start, eseg.theta_end,
+                                  eseg.is_ccw);
+
+          const Eigen::Vector2d closest_local(eseg.a * std::cos(theta),
+                                              eseg.b * std::sin(theta));
+          const Eigen::Vector2d closest = R * closest_local + origin;
+          const double d = (path_start_pt - closest).norm();
+
+          if (d < min_path_dist) {
+            min_path_dist = d;
+            min_distance_point = closest;
+
+            // 椭圆切线（局部坐标）：d/dθ (a·cosθ, b·sinθ) = (-a·sinθ, b·cosθ)
+            // is_ccw=false 时反向
+            Eigen::Vector2d tangent_local(-eseg.a * std::sin(theta),
+                                          eseg.b * std::cos(theta));
+            if (!eseg.is_ccw) tangent_local = -tangent_local;
+
+            const Eigen::Vector2d tangent_world = R * tangent_local;
+            const double tlen = tangent_world.norm();
+            min_distance_direction = (tlen > 1e-12) ? (tangent_world / tlen)
+                                              : Eigen::Vector2d(1.0, 0.0);
+          }
+        }
       }
- 
-    // ----------------------------------------------------------
-    // B. 椭圆弧段
-    //    对整个椭圆求最近点，不受 theta_start/theta_end 限制
-    // ----------------------------------------------------------
-    } else if (seg.type == capella_ros_msg::msg::CurveSegment::ELLIPSE_ARC) {
-      const auto& ea = seg.ellipse_arc_segment;
-      if (ea.a < 1e-6 || ea.b < 1e-6) { continue; }
- 
-      const double cx        = ea.frame.position.x;
-      const double cy        = ea.frame.position.y;
-      // frame: X 轴对齐椭圆长轴，yaw 为长轴相对 map 系的旋转角
-      const double theta     = tf2::getYaw(ea.frame.orientation);
-      const double cos_theta = std::cos(theta);
-      const double sin_theta = std::sin(theta);
- 
-      // 机器人位置转到椭圆局部坐标系（旋转 -theta）
-      const double dx       = robot_pt.x() - cx;
-      const double dy       = robot_pt.y() - cy;
-      const double rx_local =  dx * cos_theta + dy * sin_theta;
-      const double ry_local = -dx * sin_theta + dy * cos_theta;
- 
-      // 牛顿迭代在整个椭圆上求最近点参数 t*
-      // 目标：f(t) = (P(t) - Q)·P'(t) = 0，即机器人-椭圆连线与切线垂直
-      // 初始值：将机器人位置投影到椭圆参数空间
-      double t_near = std::atan2(ry_local / ea.b, rx_local / ea.a);
- 
-      for (int iter = 0; iter < 20; ++iter) {
-        const double px   =  ea.a * std::cos(t_near);
-        const double py   =  ea.b * std::sin(t_near);
-        const double dpx  = -ea.a * std::sin(t_near);   // P'(t).x
-        const double dpy  =  ea.b * std::cos(t_near);   // P'(t).y
-        const double ddpx = -ea.a * std::cos(t_near);   // P''(t).x
-        const double ddpy = -ea.b * std::sin(t_near);   // P''(t).y
-        // f(t)  = (P - Q)·P'
-        const double fx  = (px - rx_local) * dpx + (py - ry_local) * dpy;
-        // f'(t) = |P'|² + (P - Q)·P''
-        const double dfx = dpx * dpx + dpy * dpy
-                         + (px - rx_local) * ddpx
-                         + (py - ry_local) * ddpy;
-        if (std::fabs(dfx) < 1e-12) { break; }
-        const double dt = fx / dfx;
-        t_near -= dt;
-        if (std::fabs(dt) < 1e-9) { break; }
-      }
- 
-      // 最近点（局部坐标）
-      const double px_local = ea.a * std::cos(t_near);
-      const double py_local = ea.b * std::sin(t_near);
- 
-      // 切线方向（局部坐标），归一化
-      const double tx_local  = -ea.a * std::sin(t_near);
-      const double ty_local  =  ea.b * std::cos(t_near);
-      const double tang_len  =  std::hypot(tx_local, ty_local);
-      if (tang_len < 1e-9) { continue; }
-      const double tnx_local = tx_local / tang_len;
-      const double tny_local = ty_local / tang_len;
- 
-      // 最近点和切线方向转回 map 坐标（旋转 +theta）
-      const double px_map  = cx + px_local * cos_theta - py_local * sin_theta;
-      const double py_map  = cy + px_local * sin_theta + py_local * cos_theta;
-      const double tnx_map = tnx_local * cos_theta - tny_local * sin_theta;
-      const double tny_map = tnx_local * sin_theta + tny_local * cos_theta;
- 
-      // 切线方向与机器人运动方向夹角检查（同向或反向均可）
-      const double cos_angle =
-        std::fabs(robot_dir.dot(Eigen::Vector2d(tnx_map, tny_map)));
-      if (cos_angle < parallel_threshold) { continue; }
- 
-      // 路径起点到切线所在直线的垂直距离（容差筛选）
-      // 切线直线法向量：n = (-tny_map, tnx_map)
-      const double A_tang =  -tny_map;
-      const double B_tang =   tnx_map;
-      const double C_tang = -(A_tang * px_map + B_tang * py_map);
-      const double path_dist =
-        std::fabs(A_tang * start_pose.x + B_tang * start_pose.y + C_tang);
-      if (path_dist > distance_tolerance) { continue; }
- 
-      // 机器人到椭圆最近点距离 = 真实侧向距离
-      const double robot_dist =
-        (robot_pt - Eigen::Vector2d(px_map, py_map)).norm();
- 
-      if (path_dist < min_path_dist) {
-        global_min_dist = robot_dist;
-        min_path_dist   = path_dist;
-        // 以最近点为中心，沿切线延伸 1m，生成 2m 虚拟线段
-        const double half_len  = 1.0;
-        best_tangent_start = Eigen::Vector2d(
-          px_map - tnx_map * half_len,
-          py_map - tny_map * half_len);
-        best_tangent_end = Eigen::Vector2d(
-          px_map + tnx_map * half_len,
-          py_map + tny_map * half_len);
+      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+        "[MultiCurve] Edge - path_dist_multi_curve: %.3f  cos_theta: %.3f parallel_threshold: %.3f",
+        min_path_dist, std::fabs(robot_dir.dot(min_distance_direction)), parallel_threshold);
+      if (min_path_dist <= distance_tolerance && std::fabs(robot_dir.dot(min_distance_direction)) >= parallel_threshold) {
         found = true;
       }
     }
-  } // end for segments
- 
+  }
+  
   // ================================================================
   //  结果应用
   // ================================================================
   if (found) {
-    if (wall_line_points_.size() > 0) { wall_line_points_.clear(); }
-    // 始终两个点 → perpendicularDistance 走两点直线逻辑
-    // 结果 = 机器人到切线垂直距离 ≈ 机器人到弧/线段的真实侧向距离
-    wall_line_points_.push_back(best_tangent_start);
-    wall_line_points_.push_back(best_tangent_end);
+    if (edge_multi_curve_.segments.size() > 0) { edge_multi_curve_.segments.clear(); }
+    for (const auto& seg : multi_curve.segments) {
+        edge_multi_curve_.segments.push_back(seg);
+    }
  
-    // 权重动态调整（与 wall/curb 完全一致）
+    // 权重动态调整
     cfg_->optim.weight_wall_line_dist = weight_wall_line_dist_;
     if (std::fabs(cfg_->wall_line.distance_tolerance -
                   cfg_->wall_line.min_wall_dist) > 1e-5) {
@@ -2503,50 +2456,110 @@ void TebLocalPlannerROS::updateMultiCurveVec(
     }
  
     wall_line_update_time_ = clock_->now();
- 
+
+    double robot_dis_multicurve = (robot_pt - min_distance_point).norm();
     // 发布机器人到边的距离
     std_msgs::msg::Float32 dist_msg;
-    dist_msg.data = static_cast<float>(global_min_dist);
+    dist_msg.data = static_cast<float>(robot_dis_multicurve);
     edge_distance_publisher_->publish(dist_msg);
  
     switchParameterMode(true);
  
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
       "[MultiCurve] Edge found - robot_dist: %.3f  path_dist: %.3f  weight: %.2f",
-      global_min_dist, min_path_dist, cfg_->optim.weight_wall_line_dist);
- 
-    // 可视化：发布虚拟切线段（青色区分 MultiCurve 模式）
-    visualization_msgs::msg::Marker marker_msg;
-    marker_msg.ns      = "teb_local_planner";
-    marker_msg.id      = 0;
-    marker_msg.type    = visualization_msgs::msg::Marker::LINE_LIST;
-    marker_msg.action  = visualization_msgs::msg::Marker::ADD;
-    marker_msg.scale.x = 0.1;
-    marker_msg.color.r = 0.0f;
-    marker_msg.color.g = 1.0f;
-    marker_msg.color.b = 1.0f;
-    marker_msg.color.a = 1.0f;
-    geometry_msgs::msg::Point p_start, p_end;
-    p_start.x = best_tangent_start.x();
-    p_start.y = best_tangent_start.y();
-    p_start.z = 0.0;
-    p_end.x   = best_tangent_end.x();
-    p_end.y   = best_tangent_end.y();
-    p_end.z   = 0.0;
-    marker_msg.points.push_back(p_start);
-    marker_msg.points.push_back(p_end);
-    marker_msg.header.stamp    = clock_->now();
-    marker_msg.header.frame_id = input_path.header.frame_id;
-    wall_line_marker_publisher_->publish(marker_msg);
+      robot_dis_multicurve, min_path_dist, cfg_->optim.weight_wall_line_dist);
+
+    // 可视化：发布 MultiCurve（青色区分 MultiCurve 模式）
+    {
+      visualization_msgs::msg::Marker marker_msg;
+      marker_msg.ns = "teb_local_planner";
+      marker_msg.id = 0;
+      marker_msg.type = visualization_msgs::msg::Marker::LINE_LIST;
+      marker_msg.action = visualization_msgs::msg::Marker::ADD;
+      marker_msg.scale.x = 0.1;
+      marker_msg.color.r = 0.0f;
+      marker_msg.color.g = 1.0f;
+      marker_msg.color.b = 1.0f;
+      marker_msg.color.a = 1.0f;
+
+      for (const auto& seg : edge_multi_curve_.segments) {
+        if (seg.type == capella_ros_msg::msg::CurveSegment::LINE) {
+          geometry_msgs::msg::Point p_start, p_end;
+          p_start.x = seg.line_segment.start_point.x;
+          p_start.y = seg.line_segment.start_point.y;
+          p_start.z = 0.0;
+          p_end.x = seg.line_segment.end_point.x;
+          p_end.y = seg.line_segment.end_point.y;
+          p_end.z = 0.0;
+          marker_msg.points.push_back(p_start);
+          marker_msg.points.push_back(p_end);
+        } else if (seg.type == capella_ros_msg::msg::CurveSegment::ELLIPSE_ARC) {
+          // 离散化椭圆弧
+          const auto& eseg = seg.ellipse_arc_segment;
+          const Eigen::Quaterniond q(eseg.frame.orientation.w, eseg.frame.orientation.x,
+                                      eseg.frame.orientation.y, eseg.frame.orientation.z);
+          const Eigen::Vector2d origin(eseg.frame.position.x, eseg.frame.position.y);
+          const Eigen::Matrix2d R = q.toRotationMatrix().topLeftCorner<2, 2>();
+
+          const double theta_start = eseg.theta_start;
+          const double theta_end = eseg.theta_end;
+          const bool is_ccw = eseg.is_ccw;
+
+          // 计算归一化的弧段跨度
+          double span = theta_end - theta_start;
+          if (is_ccw) {
+            while (span < 0.0) span += 2 * M_PI;
+          } else {
+            while (span > 0.0) span -= 2 * M_PI;
+          }
+
+          // 离散化：每 5 度一个点
+          const double step = M_PI / 36.0;
+          const int num_segments = static_cast<int>(std::abs(span) / step) + 1;
+
+          // 生成离散点
+          std::vector<Eigen::Vector2d> points_world;
+          for (int i = 0; i <= num_segments; ++i) {
+            const double t = theta_start + (is_ccw ? 1.0 : -1.0) * i * step;
+            const Eigen::Vector2d point_local(eseg.a * std::cos(t), eseg.b * std::sin(t));
+            const Eigen::Vector2d point_world = R * point_local + origin;
+            points_world.push_back(point_world);
+          }
+          // 确保最后一点精确落在 theta_end 上
+          const Eigen::Vector2d point_end_local(eseg.a * std::cos(theta_end),
+                                                eseg.b * std::sin(theta_end));
+          points_world.back() = R * point_end_local + origin;
+
+          // 添加线段
+          for (size_t i = 1; i < points_world.size(); ++i) {
+            geometry_msgs::msg::Point p_start, p_end;
+            p_start.x = points_world[i-1].x();
+            p_start.y = points_world[i-1].y();
+            p_start.z = 0.0;
+            p_end.x = points_world[i].x();
+            p_end.y = points_world[i].y();
+            p_end.z = 0.0;
+            marker_msg.points.push_back(p_start);
+            marker_msg.points.push_back(p_end);
+          }
+        }
+      }
+
+      if (!marker_msg.points.empty()) {
+        marker_msg.header.stamp = clock_->now();
+        marker_msg.header.frame_id = input_path.header.frame_id;
+        wall_line_marker_publisher_->publish(marker_msg);
+      }
+    }
  
   } else {
     // 没找到有效段：复用 keep_wall_line_time_ 超时逻辑，避免立刻退出导致抖动
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
       "[MultiCurve] No valid segment found");
-    if (wall_line_points_.size() > 0) {
+    if (edge_multi_curve_.segments.size() > 0) {
       const double time_diff = (clock_->now() - wall_line_update_time_).seconds();
       if (time_diff > keep_wall_line_time_) {
-        wall_line_points_.clear();
+        edge_multi_curve_.segments.clear();
         switchParameterMode(false);
       }
     }
