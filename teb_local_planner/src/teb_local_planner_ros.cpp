@@ -3739,15 +3739,59 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
   }
 
   const geometry_msgs::msg::PoseStamped * const target_pose = &transformed_plan[target_idx];
+  const rclcpp::Time now = clock_->now();
+  const double rotation_limit_duration = cfg_->rotation.rotation_limit_duration;
+  const double rotation_limit_distance = cfg_->rotation.rotation_limit_distance;
+
+  auto normalizeAngle = [](double angle) -> double
+  {
+    while (angle > M_PI) {
+      angle -= 2.0 * M_PI;
+    }
+    while (angle < -M_PI) {
+      angle += 2.0 * M_PI;
+    }
+    return angle;
+  };
 
   // Calculate angle difference between robot orientation and target pose orientation
   double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
   double target_yaw = tf2::getYaw(target_pose->pose.orientation);
-  double angular_distance = target_yaw - robot_yaw;
+  double angular_distance = normalizeAngle(target_yaw - robot_yaw);
 
-  // Normalize to [-PI, PI]
-  while (angular_distance > M_PI) angular_distance -= 2.0 * M_PI;
-  while (angular_distance < -M_PI) angular_distance += 2.0 * M_PI;
+  if (
+    rotation_limit_duration > 0.0 &&
+    rotation_limit_distance > 0.0 &&
+    last_rotation_pose_time_.nanoseconds() > 0 &&
+    !last_rotation_pose_.header.frame_id.empty() &&
+    last_rotation_pose_.header.frame_id == target_pose->header.frame_id)
+  {
+    const double elapsed = (now - last_rotation_pose_time_).seconds();
+    if (elapsed <= rotation_limit_duration)
+    {
+      const double last_rotation_yaw = tf2::getYaw(last_rotation_pose_.pose.orientation);
+      const double robot_to_last_rotation = normalizeAngle(last_rotation_yaw - robot_yaw);
+
+      // 在时间窗口内，一旦机器人航向与 last_rotation_pose_ 对齐，则把 last_rotation_pose_ 刷新为当前 target_idx 对应 pose。
+      if (std::abs(robot_to_last_rotation) <= cfg_->rotation.angle_threshold)
+      {
+        last_rotation_pose_ = *target_pose;
+        last_rotation_pose_time_ = now;
+      }
+
+      const double dx = target_pose->pose.position.x - last_rotation_pose_.pose.position.x;
+      const double dy = target_pose->pose.position.y - last_rotation_pose_.pose.position.y;
+      const double dist_to_last_rotation_pose = std::hypot(dx, dy);
+      if (dist_to_last_rotation_pose <= rotation_limit_distance)
+      {
+        RCLCPP_INFO_THROTTLE(
+          logger_, *clock_, 500,
+          "原地转: shouldRotateInPlace=false，rotation_limit 生效 (dt=%.2f <= %.2f, dist=%.3f <= %.3f)",
+          elapsed, rotation_limit_duration, dist_to_last_rotation_pose, rotation_limit_distance);
+        return false;
+      }
+    }
+  }
 
   // Check if angle difference exceeds threshold
   if (std::abs(angular_distance) <= cfg_->rotation.angle_threshold)
@@ -3778,6 +3822,9 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
       "原地转: shouldRotateInPlace=true，碰障预检通过 |dtheta|=%.3f rad、v_xy=%.3f、w_odom=%.3f、forward_lookahead=%.2f m",
       std::abs(angular_distance), linear_vel, velocity.angular.z,
       cfg_->rotation.forward_lookahead_distance);
+    // 仅在确定执行原地旋转时记录对应 target_idx 的 pose，供后续时间/距离门控复用。
+    last_rotation_pose_ = *target_pose;
+    last_rotation_pose_time_ = now;
   }
   return collision_ok;
 }

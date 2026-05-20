@@ -326,6 +326,8 @@ public:
     double rotate_min_angular_vel; //!< Minimum angular velocity for in-place rotation [rad/s]
     //!< >0：手动 blend(rad)，标称上界 wn*r/blend；<=0：由 wn、wm、max_angular_accel 与当前|ω|自动算 blend
     double decel_blend_start_rad;
+    double rotation_limit_duration; //!< Duration window to suppress repeated in-place rotation [s], <=0 disables
+    double rotation_limit_distance; //!< Distance threshold to suppress repeated in-place rotation [m], <=0 disables
   } rotation; //!< Parameters related to in-place rotation
 
 
@@ -567,6 +569,8 @@ public:
     rotation.path_footprint_sample_spacing = 0.2;
     rotation.rotate_min_angular_vel = 0.05;
     rotation.decel_blend_start_rad = 0.0;
+    rotation.rotation_limit_duration = 3.0;
+    rotation.rotation_limit_distance = 0.2;
   }
   
   void declareParameters(const nav2_util::LifecycleNode::SharedPtr, const std::string name);

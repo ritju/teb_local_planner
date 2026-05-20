@@ -673,6 +673,8 @@
    // In-place rotation
    double control_duration_;  // Control loop duration (1.0 / controller_frequency)
    std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>> rotation_collision_checker_;
+  geometry_msgs::msg::PoseStamped last_rotation_pose_;
+  rclcpp::Time last_rotation_pose_time_{0};
    
    /**
     * @brief Check if in-place rotation should be performed

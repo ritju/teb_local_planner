@@ -212,6 +212,8 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "rotation_path_footprint_sample_spacing", rclcpp::ParameterValue(rotation.path_footprint_sample_spacing));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_rotate_min_angular_vel", rclcpp::ParameterValue(rotation.rotate_min_angular_vel));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_decel_blend_start_rad", rclcpp::ParameterValue(rotation.decel_blend_start_rad));
+  declare_parameter_if_not_declared(nh, name + "." + "rotation_limit_duration", rclcpp::ParameterValue(rotation.rotation_limit_duration));
+  declare_parameter_if_not_declared(nh, name + "." + "rotation_limit_distance", rclcpp::ParameterValue(rotation.rotation_limit_distance));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_simulate_ahead_time", rclcpp::ParameterValue(rotation.simulate_ahead_time));
 
   // Homotopy Class Planner
@@ -466,6 +468,8 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "rotation_path_footprint_sample_spacing", rotation.path_footprint_sample_spacing, rotation.path_footprint_sample_spacing);
   nh->get_parameter_or(name + "." + "rotation_rotate_min_angular_vel", rotation.rotate_min_angular_vel, rotation.rotate_min_angular_vel);
   nh->get_parameter_or(name + "." + "rotation_decel_blend_start_rad", rotation.decel_blend_start_rad, rotation.decel_blend_start_rad);
+  nh->get_parameter_or(name + "." + "rotation_limit_duration", rotation.rotation_limit_duration, rotation.rotation_limit_duration);
+  nh->get_parameter_or(name + "." + "rotation_limit_distance", rotation.rotation_limit_distance, rotation.rotation_limit_distance);
   nh->get_parameter_or(name + "." + "rotation_simulate_ahead_time", rotation.simulate_ahead_time, rotation.simulate_ahead_time);
 
   // footprint model
@@ -949,6 +953,10 @@ rcl_interfaces::msg::SetParametersResult
         rotation.rotate_min_angular_vel = parameter.as_double();
       } else if (name == node_name + ".rotation_decel_blend_start_rad") {
         rotation.decel_blend_start_rad = parameter.as_double();
+      } else if (name == node_name + ".rotation_limit_duration") {
+        rotation.rotation_limit_duration = parameter.as_double();
+      } else if (name == node_name + ".rotation_limit_distance") {
+        rotation.rotation_limit_distance = parameter.as_double();
       } else if (name == node_name + ".rotation_simulate_ahead_time") {
         rotation.simulate_ahead_time = parameter.as_double();
       }
