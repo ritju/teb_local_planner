@@ -690,6 +690,7 @@
    std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>> rotation_collision_checker_;
   geometry_msgs::msg::PoseStamped last_rotation_pose_;
   rclcpp::Time last_rotation_pose_time_{0};
+  bool was_inplace_rotation_active_{false};
    
    /**
     * @brief Check if in-place rotation should be performed

@@ -2820,6 +2820,10 @@ void TebLocalPlannerROS::multi_curve_callback(
        {
          min_dist_threshold = dist_sq;
          erase_end = it;
+         if (dist_sq < dist_thresh_sq)
+         {
+           break;
+         }
        }
        if (dist_sq < min_dist_threshold)
        {
@@ -4128,17 +4132,19 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
     // RCLCPP_INFO_THROTTLE(
     //   logger_, *clock_, 2000,
     //   "原地转: shouldRotateInPlace=false，transformed_plan 为空");
+    was_inplace_rotation_active_ = false;
     return false;
   }
 
   // 线速度模长只依赖 odom，提前算好供门控与日志复用。超阈值时一律不原地转，可在 lookahead 前早退以省算力。
-  const double linear_vel = std::hypot(velocity.linear.x, velocity.linear.y);
+  // const double linear_vel = std::hypot(velocity.linear.x, velocity.linear.y);
   if (std::abs(velocity.linear.x) >= cfg_->rotation.linear_vel_threshold)
   {
     // RCLCPP_INFO_THROTTLE(
     //   logger_, *clock_, 500,
     //   "原地转: shouldRotateInPlace=false，线速度 gate（v_xy=%.3f >= %.3f）",
     //   velocity.linear.x, cfg_->rotation.linear_vel_threshold);
+    was_inplace_rotation_active_ = false;
     return false;
   }
 
@@ -4191,16 +4197,6 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
     const double elapsed = (now - last_rotation_pose_time_).seconds();
     if (elapsed <= rotation_limit_duration)
     {
-      const double last_rotation_yaw = tf2::getYaw(last_rotation_pose_.pose.orientation);
-      const double robot_to_last_rotation = normalizeAngle(last_rotation_yaw - robot_yaw);
-
-      // 在时间窗口内，一旦机器人航向与 last_rotation_pose_ 对齐，则把 last_rotation_pose_ 刷新为当前 target_idx 对应 pose。
-      if (std::abs(robot_to_last_rotation) <= cfg_->rotation.angle_threshold)
-      {
-        last_rotation_pose_ = *target_pose;
-        last_rotation_pose_time_ = now;
-      }
-
       const double dx = target_pose->pose.position.x - last_rotation_pose_.pose.position.x;
       const double dy = target_pose->pose.position.y - last_rotation_pose_.pose.position.y;
       const double dist_to_last_rotation_pose = std::hypot(dx, dy);
@@ -4210,6 +4206,7 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
           logger_, *clock_, 500,
           "原地转: shouldRotateInPlace=false，rotation_limit 生效 (dt=%.2f <= %.2f, dist=%.3f <= %.3f)",
           elapsed, rotation_limit_duration, dist_to_last_rotation_pose, rotation_limit_distance);
+        was_inplace_rotation_active_ = false;
         return false;
       }
     }
@@ -4218,6 +4215,13 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
   // Check if angle difference exceeds threshold
   if (std::abs(angular_distance) <= cfg_->rotation.angle_threshold)
   {
+    // 仅在“原地转状态退出”的那一拍记录锚点，避免直行阶段反复刷新导致误限流。
+    if (was_inplace_rotation_active_) {
+      last_rotation_pose_ = *target_pose;
+      last_rotation_pose_time_ = now;
+    }
+    was_inplace_rotation_active_ = false;
+
     // RCLCPP_INFO_THROTTLE(
     //   logger_, *clock_, 500,
     //   "原地转: shouldRotateInPlace=false，航向已对齐 |dtheta|=%.3f rad <= angle_threshold %.3f rad",
@@ -4231,22 +4235,24 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
     transformed_plan, cfg_->rotation.path_footprint_sample_spacing);
   const bool collision_ok = rotate_in_place_clear && path_footprint_clear;
   if (!collision_ok) {
+    was_inplace_rotation_active_ = false;
     RCLCPP_INFO_THROTTLE(
       logger_, *clock_, 500,
       "原地转: shouldRotateInPlace=false，碰障预检未通过 |dtheta|=%.3f rad、w_odom=%.3f、v_xy=%.3f "
       "(原地扫掠=%s、路径采样=%s)",
-      std::abs(angular_distance), velocity.angular.z, linear_vel,
+      std::abs(angular_distance), velocity.angular.z, std::abs(velocity.linear.x),
       rotate_in_place_clear ? "通过" : "未通过",
       path_footprint_clear ? "通过" : "未通过");
   } else {
+    was_inplace_rotation_active_ = true;
     RCLCPP_INFO_THROTTLE(
       logger_, *clock_, 500,
       "原地转: shouldRotateInPlace=true，碰障预检通过 |dtheta|=%.3f rad、v_xy=%.3f、w_odom=%.3f、forward_lookahead=%.2f m",
-      std::abs(angular_distance), linear_vel, velocity.angular.z,
+      std::abs(angular_distance), std::abs(velocity.linear.x), velocity.angular.z,
       cfg_->rotation.forward_lookahead_distance);
     // 仅在确定执行原地旋转时记录对应 target_idx 的 pose，供后续时间/距离门控复用。
-    last_rotation_pose_ = *target_pose;
-    last_rotation_pose_time_ = now;
+    // last_rotation_pose_ = *target_pose;
+    // last_rotation_pose_time_ = now;
   }
   return collision_ok;
 }
