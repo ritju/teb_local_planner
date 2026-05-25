@@ -33,32 +33,58 @@ inline double pointToSegmentDistSq(
   return (p - (a + t * ab)).squaredNorm();
 }
 
-/// 在无约束椭圆 x=a*cos(t), y=b*sin(t) 上求离 (px,py) 最近的参数 t
-/// Eberly Newton 迭代，折叠到第一象限
 inline double ellipseNearestAngle(
     double a, double b,
     double px, double py,
     int max_iter = 8)
 {
-  const double sx = (px >= 0.0) ? 1.0 : -1.0;
-  const double sy = (py >= 0.0) ? 1.0 : -1.0;
-  px = std::abs(px);
-  py = std::abs(py);
+    if (a <= 0.0 || b <= 0.0)
+        return 0.0;
 
-  double t = std::atan2(a * py, b * px);
-  for (int i = 0; i < max_iter; ++i) {
-    const double ct = std::cos(t), st = std::sin(t);
-    const double fx = a * ct - px, fy = b * st - py;
-    const double F  = -a * fx * st + b * fy * ct;
-    const double dF = -a * (fx * ct - a * st * st)
-                      + b * (fy * (-st) + b * ct * ct);
-    if (std::abs(dF) < 1e-14) break;
-    const double dt = F / dF;
-    t -= dt;
-    if (std::abs(dt) < 1e-9) break;
-  }
-  return std::atan2(sy * b * std::abs(std::sin(t)),
-                    sx * a * std::abs(std::cos(t)));
+    const double sx = (px >= 0.0) ? 1.0 : -1.0;
+    const double sy = (py >= 0.0) ? 1.0 : -1.0;
+
+    px = std::abs(px);
+    py = std::abs(py);
+
+    if (px < 1e-12 && py < 1e-12)
+        return 0.0;
+
+    double t = std::atan2(a * py, b * px);
+
+    for (int i = 0; i < max_iter; ++i)
+    {
+        const double ct = std::cos(t);
+        const double st = std::sin(t);
+
+        const double ex = a * ct;
+        const double ey = b * st;
+
+        const double rx = ex - px;
+        const double ry = ey - py;
+
+        const double F =
+            -a * st * rx +
+             b * ct * ry;
+
+        const double dF =
+            a * a * st * st +
+            b * b * ct * ct -
+            a * ct * rx -
+            b * st * ry;
+
+        if (std::abs(dF) < 1e-14)
+            break;
+
+        const double dt = F / dF;
+        t -= dt;
+        if (std::abs(dt) < 1e-12)
+          break;
+    }
+
+    double result = std::atan2(sy * std::sin(t), sx * std::cos(t));
+
+    return result;
 }
 
 /// 将 theta 夹入弧段角度范围（支持 ccw / cw）
