@@ -18,6 +18,8 @@ controller_server:
       global_plan_viapoint_sep: 0.3
       global_plan_prune_distance: 1.0
       global_plan_prune_max_accum_dist: 8.0   # <=0: search full path for prune point
+      rough_global_plan_prune_distance: 3.0   # coarse-pass prune distance [m]; <=0 disables coarse pass
+      rough_global_plan_prune_max_accum_dist: -1.0  # coarse-pass search range [m]; <=0 searches entire plan
       exact_arc_length: False
       feasibility_check_no_poses: 2
       publish_feedback: False

@@ -766,9 +766,19 @@ void TebLocalPlannerROS::configure(
    // Get robot velocity
    robot_vel_ = velocity;
    
-   // prune global plan to cut off parts of the past (spatially before the robot)
-   pruneGlobalPlan(robot_pose, global_plan_, cfg_->trajectory.global_plan_prune_distance,
-                   cfg_->trajectory.global_plan_prune_max_accum_dist);
+  // prune global plan to cut off parts of the past (spatially before the robot)
+  // Coarse pass: remove obviously-passed points using a larger distance threshold and an
+  // optionally unlimited search range. This prevents the fine pass from skipping too far
+  // ahead when the robot detours around a large obstacle.
+  if (cfg_->trajectory.rough_global_plan_prune_distance > 0.0)
+  {
+    pruneGlobalPlan(robot_pose, global_plan_,
+                    cfg_->trajectory.rough_global_plan_prune_distance,
+                    cfg_->trajectory.rough_global_plan_prune_max_accum_dist);
+  }
+  // Fine pass: precise pruning with the normal (smaller) distance and limited search range.
+  pruneGlobalPlan(robot_pose, global_plan_, cfg_->trajectory.global_plan_prune_distance,
+                  cfg_->trajectory.global_plan_prune_max_accum_dist);
    // pruneGlobalPlan(robot_pose, origin_plan_, 3);
    geometry_msgs::msg::PoseStamped corner_pose_global, corner_pose_robot;
    bool corner_found = false;

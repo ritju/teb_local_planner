@@ -89,6 +89,8 @@ public:
     double max_global_plan_lookahead_dist; //!< Cumulative path length from global plan start: limits optimization subset; also caps sharp-corner search along the plan (if <=0: no path-length cap for corner search; bounded by local costmap for optimization)
     double global_plan_prune_distance; //!< Distance between robot and via_points of global plan which is used for pruning
     double global_plan_prune_max_accum_dist; //!< pruneGlobalPlan: max cumulative path length from plan start to search for prune point [m]; <=0 disables cap (search entire plan)
+    double rough_global_plan_prune_distance; //!< Coarse-pass pruning distance threshold [m]; applied before the fine prune to remove obviously-passed points; <=0 skips coarse pass
+    double rough_global_plan_prune_max_accum_dist; //!< Coarse-pass pruning: max cumulative path length to search [m]; <=0 searches the entire plan
     bool exact_arc_length; //!< If true, the planner uses the exact arc length in velocity, acceleration and turning rate computations [-> increased cpu time], otherwise the euclidean approximation is used.
     double force_reinit_new_goal_dist; //!< Reinitialize the trajectory if a previous goal is updated with a seperation of more than the specified value in meters (skip hot-starting)
     double force_reinit_new_goal_angular; //!< Reinitialize the trajectory if a previous goal is updated with an angular difference of more than the specified value in radians (skip hot-starting)
@@ -370,6 +372,8 @@ public:
     trajectory.max_global_plan_lookahead_dist = 1;
     trajectory.global_plan_prune_distance = 1;
     trajectory.global_plan_prune_max_accum_dist = 8.0;
+    trajectory.rough_global_plan_prune_distance = 3.0;
+    trajectory.rough_global_plan_prune_max_accum_dist = -1.0;
     trajectory.exact_arc_length = false;
     trajectory.force_reinit_new_goal_dist = 1;
     trajectory.force_reinit_new_goal_angular = 0.5 * M_PI;

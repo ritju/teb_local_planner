@@ -61,6 +61,8 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "max_global_plan_lookahead_dist", rclcpp::ParameterValue(trajectory.max_global_plan_lookahead_dist));
   declare_parameter_if_not_declared(nh, name + "." + "global_plan_prune_distance", rclcpp::ParameterValue(trajectory.global_plan_prune_distance));
   declare_parameter_if_not_declared(nh, name + "." + "global_plan_prune_max_accum_dist", rclcpp::ParameterValue(trajectory.global_plan_prune_max_accum_dist));
+  declare_parameter_if_not_declared(nh, name + "." + "rough_global_plan_prune_distance", rclcpp::ParameterValue(trajectory.rough_global_plan_prune_distance));
+  declare_parameter_if_not_declared(nh, name + "." + "rough_global_plan_prune_max_accum_dist", rclcpp::ParameterValue(trajectory.rough_global_plan_prune_max_accum_dist));
   declare_parameter_if_not_declared(nh, name + "." + "exact_arc_length", rclcpp::ParameterValue(trajectory.exact_arc_length));
   declare_parameter_if_not_declared(nh, name + "." + "force_reinit_new_goal_dist", rclcpp::ParameterValue(trajectory.force_reinit_new_goal_dist));
   declare_parameter_if_not_declared(nh, name + "." + "force_reinit_new_goal_angular", rclcpp::ParameterValue(trajectory.force_reinit_new_goal_angular));
@@ -282,6 +284,8 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "max_global_plan_lookahead_dist", trajectory.max_global_plan_lookahead_dist, trajectory.max_global_plan_lookahead_dist);
   nh->get_parameter_or(name + "." + "global_plan_prune_distance", trajectory.global_plan_prune_distance, trajectory.global_plan_prune_distance);
   nh->get_parameter_or(name + "." + "global_plan_prune_max_accum_dist", trajectory.global_plan_prune_max_accum_dist, trajectory.global_plan_prune_max_accum_dist);
+  nh->get_parameter_or(name + "." + "rough_global_plan_prune_distance", trajectory.rough_global_plan_prune_distance, trajectory.rough_global_plan_prune_distance);
+  nh->get_parameter_or(name + "." + "rough_global_plan_prune_max_accum_dist", trajectory.rough_global_plan_prune_max_accum_dist, trajectory.rough_global_plan_prune_max_accum_dist);
   nh->get_parameter_or(name + "." + "exact_arc_length", trajectory.exact_arc_length, trajectory.exact_arc_length);
   nh->get_parameter_or(name + "." + "force_reinit_new_goal_dist", trajectory.force_reinit_new_goal_dist, trajectory.force_reinit_new_goal_dist);
   nh->get_parameter_or(name + "." + "force_reinit_new_goal_angular", trajectory.force_reinit_new_goal_angular, trajectory.force_reinit_new_goal_angular);
@@ -652,6 +656,10 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.global_plan_prune_distance = parameter.as_double();
       } else if (name == node_name + ".global_plan_prune_max_accum_dist") {
         trajectory.global_plan_prune_max_accum_dist = parameter.as_double();
+      } else if (name == node_name + ".rough_global_plan_prune_distance") {
+        trajectory.rough_global_plan_prune_distance = parameter.as_double();
+      } else if (name == node_name + ".rough_global_plan_prune_max_accum_dist") {
+        trajectory.rough_global_plan_prune_max_accum_dist = parameter.as_double();
       } else if (name == node_name + ".force_reinit_new_goal_dist") {
         trajectory.force_reinit_new_goal_dist = parameter.as_double();
       } else if (name == node_name + ".force_reinit_new_goal_angular") {
