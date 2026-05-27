@@ -68,10 +68,14 @@
  #include <tf2_ros/transform_listener.h>
  #include <tf2_ros/buffer_interface.h>
  #include "dwb_core/exceptions.hpp"
+ #include "dwb_critics/obstacle_footprint.hpp"
+ #include "dwb_critics/line_iterator.hpp"
  #include "nav2_util/robot_utils.hpp"
  #include <algorithm>
 #include <cmath>
 #include <cctype>
+#include <cstring>
+#include <limits>
  
  using nav2_util::declare_parameter_if_not_declared;
  
@@ -124,6 +128,192 @@ bool segmentsCloseForFusion(
   const Eigen::Vector2d reference_segment_midpoint =
     (reference_segment_start + reference_segment_end) * 0.5;
   return (reference_segment_midpoint - primary_segment_midpoint).norm() <= maximum_midpoint_separation_meters;
+}
+
+int computeCohenSutherlandOutCode(
+  double x, double y,
+  double xmin, double ymin, double xmax, double ymax)
+{
+  constexpr int LEFT = 1;
+  constexpr int RIGHT = 2;
+  constexpr int BOTTOM = 4;
+  constexpr int TOP = 8;
+  int code = 0;
+  if (x < xmin) {
+    code |= LEFT;
+  } else if (x > xmax) {
+    code |= RIGHT;
+  }
+  if (y < ymin) {
+    code |= BOTTOM;
+  } else if (y > ymax) {
+    code |= TOP;
+  }
+  return code;
+}
+
+bool clipWorldSegmentToAlignedRect(
+  double & x0,
+  double & y0,
+  double & x1,
+  double & y1,
+  double xmin,
+  double ymin,
+  double xmax,
+  double ymax)
+{
+  constexpr double kEpsilonSeg = 1e-14;
+  int out_code0 =
+    computeCohenSutherlandOutCode(x0, y0, xmin, ymin, xmax, ymax);
+  int out_code1 =
+    computeCohenSutherlandOutCode(x1, y1, xmin, ymin, xmax, ymax);
+
+  for (int iterations = 0; iterations < 64; ++iterations) {
+    if (!(out_code0 | out_code1)) {
+      const double dx = x1 - x0;
+      const double dy = y1 - y0;
+      return (dx * dx + dy * dy > kEpsilonSeg * kEpsilonSeg);
+    }
+    if (out_code0 & out_code1) {
+      return false;
+    }
+
+    const int outside = out_code0 ? out_code0 : out_code1;
+    double x_intersect = x0;
+    double y_intersect = y0;
+    constexpr int TOP = 8;
+    constexpr int BOTTOM = 4;
+    constexpr int RIGHT = 2;
+    constexpr int LEFT = 1;
+
+    if (outside & TOP) {
+      const double denom = y1 - y0;
+      if (std::fabs(denom) > kEpsilonSeg) {
+        x_intersect = x0 + (x1 - x0) * (ymax - y0) / denom;
+      } else {
+        x_intersect = x0;
+      }
+      y_intersect = ymax;
+    } else if (outside & BOTTOM) {
+      const double denom = y1 - y0;
+      if (std::fabs(denom) > kEpsilonSeg) {
+        x_intersect = x0 + (x1 - x0) * (ymin - y0) / denom;
+      } else {
+        x_intersect = x0;
+      }
+      y_intersect = ymin;
+    } else if (outside & RIGHT) {
+      const double denom = x1 - x0;
+      if (std::fabs(denom) > kEpsilonSeg) {
+        y_intersect = y0 + (y1 - y0) * (xmax - x0) / denom;
+      } else {
+        y_intersect = y0;
+      }
+      x_intersect = xmax;
+    } else if (outside & LEFT) {
+      const double denom = x1 - x0;
+      if (std::fabs(denom) > kEpsilonSeg) {
+        y_intersect = y0 + (y1 - y0) * (xmin - x0) / denom;
+      } else {
+        y_intersect = y0;
+      }
+      x_intersect = xmin;
+    }
+
+    if (outside == out_code0) {
+      x0 = x_intersect;
+      y0 = y_intersect;
+      out_code0 =
+        computeCohenSutherlandOutCode(x0, y0, xmin, ymin, xmax, ymax);
+    } else {
+      x1 = x_intersect;
+      y1 = y_intersect;
+      out_code1 =
+        computeCohenSutherlandOutCode(x1, y1, xmin, ymin, xmax, ymax);
+    }
+  }
+  return false;
+}
+
+bool footprintAxisAlignedBboxSeparateFromCostmapRect(
+  const std::vector<geometry_msgs::msg::Point> & footprint,
+  double map_x_min,
+  double map_y_min,
+  double map_x_max_ex,
+  double map_y_max_ex)
+{
+  if (footprint.empty()) {
+    return true;
+  }
+  double fminx = footprint[0].x;
+  double fmaxx = footprint[0].x;
+  double fminy = footprint[0].y;
+  double fmaxy = footprint[0].y;
+  for (unsigned int ii = 1; ii < footprint.size(); ++ii) {
+    fminx = std::min(fminx, footprint[ii].x);
+    fmaxx = std::max(fmaxx, footprint[ii].x);
+    fminy = std::min(fminy, footprint[ii].y);
+    fmaxy = std::max(fmaxy, footprint[ii].y);
+  }
+  constexpr double tol = 1e-9;
+  return (
+    fmaxx <= map_x_min + tol ||
+    fminx >= map_x_max_ex - tol ||
+    fmaxy <= map_y_min + tol ||
+    fminy >= map_y_max_ex - tol);
+}
+
+bool clippedFootprintOutlineTouchesBlockingCost(
+  const nav2_costmap_2d::Costmap2D & costmap_ref,
+  const std::vector<geometry_msgs::msg::Point> & footprint,
+  double clip_x_min,
+  double clip_y_min,
+  double clip_x_max,
+  double clip_y_max)
+{
+  if (footprint.size() < 2) {
+    return false;
+  }
+  if (!(clip_x_max > clip_x_min && clip_y_max > clip_y_min)) {
+    return false;
+  }
+  const unsigned int sx = costmap_ref.getSizeInCellsX();
+  const unsigned int sy = costmap_ref.getSizeInCellsY();
+  const unsigned int n = static_cast<unsigned int>(footprint.size());
+  for (unsigned int i = 0; i < n; ++i) {
+    const unsigned int j = (i + 1) % n;
+    double ax = footprint[i].x;
+    double ay = footprint[i].y;
+    double bx = footprint[j].x;
+    double by = footprint[j].y;
+    if (!clipWorldSegmentToAlignedRect(ax, ay, bx, by,
+      clip_x_min, clip_y_min, clip_x_max, clip_y_max))
+    {
+      continue;
+    }
+    int gx0_int = 0;
+    int gy0_int = 0;
+    int gx1_int = 0;
+    int gy1_int = 0;
+    costmap_ref.worldToMapEnforceBounds(ax, ay, gx0_int, gy0_int);
+    costmap_ref.worldToMapEnforceBounds(bx, by, gx1_int, gy1_int);
+    dwb_critics::LineIterator line(gx0_int, gy0_int, gx1_int, gy1_int);
+    for (; line.isValid(); line.advance()) {
+      const int lx = line.getX();
+      const int ly = line.getY();
+      if (lx < 0 || ly < 0 || lx >= static_cast<int>(sx) || ly >= static_cast<int>(sy)) {
+        continue;
+      }
+      const unsigned char cost = costmap_ref.getCost(
+        static_cast<unsigned int>(lx), static_cast<unsigned int>(ly));
+      if (cost == nav2_costmap_2d::LETHAL_OBSTACLE ||
+        cost == nav2_costmap_2d::NO_INFORMATION)
+      {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 }  // namespace
    
@@ -2859,9 +3049,207 @@ void TebLocalPlannerROS::multi_curve_callback(
    }
    return true;
  }
-       
- 
- bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::msg::PoseStamped>& global_plan,
+
+bool TebLocalPlannerROS::globalPlanPoseFootprintFreeInControllerFrame(
+  const geometry_msgs::msg::PoseStamped& pose_plan_frame,
+  const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
+  geometry_msgs::msg::PoseStamped* out_pose_global_frame) const
+{
+  geometry_msgs::msg::PoseStamped pose_global;
+  tf2::doTransform(pose_plan_frame, pose_global, plan_to_global_transform);
+  if (out_pose_global_frame) {
+    *out_pose_global_frame = pose_global;
+  }
+  geometry_msgs::msg::Pose2D pose2d;
+  pose2d.x = pose_global.pose.position.x;
+  pose2d.y = pose_global.pose.position.y;
+  pose2d.theta = tf2::getYaw(pose_global.pose.orientation);
+
+  const dwb_critics::Footprint oriented_footprint =
+    dwb_critics::getOrientedFootprint(pose2d, footprint_spec_);
+  return orientedFootprintNavigableOnPartialCostmap(pose2d, oriented_footprint);
+}
+
+bool TebLocalPlannerROS::orientedFootprintNavigableOnPartialCostmap(
+  const geometry_msgs::msg::Pose2D & pose2d_controller_frame,
+  const std::vector<geometry_msgs::msg::Point> & oriented_footprint) const
+{
+  if (costmap_ == nullptr || oriented_footprint.size() < 2) {
+    return true;
+  }
+
+  const unsigned int sx_cells = costmap_->getSizeInCellsX();
+  const unsigned int sy_cells = costmap_->getSizeInCellsY();
+  if (sx_cells < 1 || sy_cells < 1) {
+    return true;
+  }
+
+  const double res = costmap_->getResolution();
+  const double map_x_min = costmap_->getOriginX();
+  const double map_y_min = costmap_->getOriginY();
+  const double map_x_max_ex = map_x_min + static_cast<double>(sx_cells) * res;
+  const double map_y_max_ex = map_y_min + static_cast<double>(sy_cells) * res;
+
+  if (footprintAxisAlignedBboxSeparateFromCostmapRect(
+      oriented_footprint, map_x_min, map_y_min, map_x_max_ex, map_y_max_ex))
+  {
+    return true;
+  }
+
+  constexpr double kClipShrink = 1e-8;
+  double clip_x_min = map_x_min + kClipShrink;
+  double clip_y_min = map_y_min + kClipShrink;
+  double clip_x_max = map_x_max_ex - kClipShrink;
+  double clip_y_max = map_y_max_ex - kClipShrink;
+  if (!(clip_x_max > clip_x_min && clip_y_max > clip_y_min)) {
+    clip_x_min = map_x_min;
+    clip_y_min = map_y_min;
+    clip_x_max = map_x_max_ex - std::numeric_limits<double>::epsilon() *
+      std::max(std::fabs(map_x_max_ex), 1.0);
+    clip_y_max = map_y_max_ex - std::numeric_limits<double>::epsilon() *
+      std::max(std::fabs(map_y_max_ex), 1.0);
+    if (!(clip_x_max > clip_x_min && clip_y_max > clip_y_min)) {
+      return true;
+    }
+  }
+
+  unsigned int verts_in_grid = 0;
+  for (const auto & p : oriented_footprint) {
+    unsigned int mx_dummy = 0;
+    unsigned int my_dummy = 0;
+    if (costmap_->worldToMap(p.x, p.y, mx_dummy, my_dummy)) {
+      ++verts_in_grid;
+    }
+  }
+
+  const auto clipped_outline_ok = [&]()
+    {
+      return !clippedFootprintOutlineTouchesBlockingCost(
+        *costmap_, oriented_footprint, clip_x_min, clip_y_min, clip_x_max,
+        clip_y_max);
+    };
+
+  if (verts_in_grid == oriented_footprint.size()) {
+    try {
+      (void)costmap_model_->scorePose(pose2d_controller_frame, oriented_footprint);
+      return true;
+    } catch (const dwb_core::IllegalTrajectoryException & exc) {
+      const char * em = exc.what();
+      if (!std::strcmp(em, "Trajectory Hits Obstacle.") ||
+        !std::strcmp(em, "Trajectory Hits Unknown Region."))
+      {
+        return false;
+      }
+      if (!std::strcmp(em, "Footprint Goes Off Grid.") ||
+        !std::strcmp(em, "Trajectory Goes Off Grid."))
+      {
+        return clipped_outline_ok();
+      }
+      throw;
+    }
+  }
+
+  return clipped_outline_ok();
+}
+
+bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
+  const geometry_msgs::msg::PoseStamped& original_last_pose_plan_frame,
+  const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
+  geometry_msgs::msg::PoseStamped& last_pose_plan_frame_inout) const
+{
+  last_pose_plan_frame_inout = original_last_pose_plan_frame;
+  if (globalPlanPoseFootprintFreeInControllerFrame(
+      original_last_pose_plan_frame, plan_to_global_transform, nullptr))
+  {
+    return true;
+  }
+  const double tol = cfg_->trajectory.transform_global_plan_goal_occupied_tolerance;
+  const double res = cfg_->trajectory.transform_global_plan_goal_search_resolution;
+  if (tol <= 1e-9 || res <= 1e-9) {
+    RCLCPP_WARN(
+      logger_,
+      "transformGlobalPlan: last pose occupied but goal search disabled "
+      "(transform_global_plan_goal_occupied_tolerance / goal_search_resolution <= 0)");
+    return false;
+  }
+  {
+    geometry_msgs::msg::PoseStamped occupied_global;
+    tf2::doTransform(original_last_pose_plan_frame, occupied_global, plan_to_global_transform);
+    RCLCPP_INFO(
+      logger_,
+      "transformGlobalPlan: last path point footprint collides — starting plan-frame grid search "
+      "(frame=%s, tolerance=%.3f m, resolution=%.3f m)",
+      original_last_pose_plan_frame.header.frame_id.c_str(), tol, res);
+    RCLCPP_INFO(
+      logger_,
+      "transformGlobalPlan: last path point before adjust — plan[%s]: x=%.3f y=%.3f yaw=%.3f | "
+      "controller[%s]: x=%.3f y=%.3f yaw=%.3f",
+      original_last_pose_plan_frame.header.frame_id.c_str(),
+      original_last_pose_plan_frame.pose.position.x,
+      original_last_pose_plan_frame.pose.position.y,
+      tf2::getYaw(original_last_pose_plan_frame.pose.orientation),
+      occupied_global.header.frame_id.c_str(),
+      occupied_global.pose.position.x,
+      occupied_global.pose.position.y,
+      tf2::getYaw(occupied_global.pose.orientation));
+  }
+  double min_dist_sq = std::numeric_limits<double>::infinity();
+  geometry_msgs::msg::PoseStamped best = original_last_pose_plan_frame;
+  bool found = false;
+  for (double goal_search_x = -tol; goal_search_x < tol + 0.1; goal_search_x += res) {
+    for (double goal_search_y = -tol; goal_search_y < tol + 0.1; goal_search_y += res) {
+      geometry_msgs::msg::PoseStamped search_goal = original_last_pose_plan_frame;
+      search_goal.pose.position.x += goal_search_x;
+      search_goal.pose.position.y += goal_search_y;
+      if (!globalPlanPoseFootprintFreeInControllerFrame(
+          search_goal, plan_to_global_transform, nullptr))
+      {
+        continue;
+      }
+      const double dist_sq = goal_search_x * goal_search_x + goal_search_y * goal_search_y;
+      if (dist_sq < min_dist_sq) {
+        min_dist_sq = dist_sq;
+        best = search_goal;
+        found = true;
+      }
+    }
+  }
+  if (!found) {
+    RCLCPP_WARN(
+      logger_,
+      "transformGlobalPlan: last global plan pose occupied, no free pose within tolerance %.3f m "
+      "(plan-frame grid search)",
+      tol);
+    return false;
+  }
+  {
+    const double dx = best.pose.position.x - original_last_pose_plan_frame.pose.position.x;
+    const double dy = best.pose.position.y - original_last_pose_plan_frame.pose.position.y;
+    geometry_msgs::msg::PoseStamped best_global;
+    tf2::doTransform(best, best_global, plan_to_global_transform);
+    RCLCPP_INFO(
+      logger_,
+      "transformGlobalPlan: last path point after adjust — plan[%s]: x=%.3f y=%.3f yaw=%.3f | "
+      "controller[%s]: x=%.3f y=%.3f yaw=%.3f",
+      best.header.frame_id.c_str(),
+      best.pose.position.x,
+      best.pose.position.y,
+      tf2::getYaw(best.pose.orientation),
+      best_global.header.frame_id.c_str(),
+      best_global.pose.position.x,
+      best_global.pose.position.y,
+      tf2::getYaw(best_global.pose.orientation));
+    RCLCPP_INFO(
+      logger_,
+      "transformGlobalPlan: last path point adjust delta (plan frame): dx=%.3f m dy=%.3f m | "
+      "horizontal offset=%.3f m",
+      dx, dy, std::hypot(dx, dy));
+  }
+  last_pose_plan_frame_inout = best;
+  return true;
+}
+
+bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::msg::PoseStamped>& global_plan,
                    const geometry_msgs::msg::PoseStamped& global_pose, const nav2_costmap_2d::Costmap2D& costmap, const std::string& global_frame, double max_plan_length,
                    std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan, int* current_goal_idx, geometry_msgs::msg::TransformStamped* tf_plan_to_global) const
  {
@@ -3019,6 +3407,14 @@ void TebLocalPlannerROS::multi_curve_callback(
       }
     }
  
+    const int n_plan = static_cast<int>(global_plan.size());
+    const int last_idx = n_plan - 1;
+    geometry_msgs::msg::PoseStamped effective_last_plan_pose = global_plan.back();
+    auto planPoseAt = [&](int idx) -> const geometry_msgs::msg::PoseStamped & {
+      return (idx == last_idx) ? effective_last_plan_pose :
+                               global_plan[static_cast<size_t>(idx)];
+    };
+
      geometry_msgs::msg::PoseStamped newer_pose;
      
      double plan_length = 0; // check cumulative Euclidean distance along the plan
@@ -3030,7 +3426,7 @@ void TebLocalPlannerROS::multi_curve_callback(
        //const geometry_msgs::msg::PoseStamped& pose = global_plan[i];
        //tf::poseStampedMsgToTF(pose, tf_pose);
        //tf_pose.setData(plan_to_global_transform * tf_pose);
-       tf2::doTransform(global_plan[i], newer_pose, plan_to_global_transform);
+       tf2::doTransform(planPoseAt(i), newer_pose, plan_to_global_transform);
  
  //      tf_pose.stamp_ = plan_to_global_transform.stamp_;
  //      tf_pose.frame_id_ = global_frame;
@@ -3038,44 +3434,48 @@ void TebLocalPlannerROS::multi_curve_callback(
  
        transformed_plan.push_back(newer_pose);
  
-       geometry_msgs::msg::Pose2D check_pose2d;
-       check_pose2d.x = newer_pose.pose.position.x;
-       check_pose2d.y = newer_pose.pose.position.y;
-       check_pose2d.theta = tf2::getYaw(newer_pose.pose.orientation);
-       double check_cost = 0;
-       try
-       {
-         check_cost =  costmap_model_->scorePose(check_pose2d, dwb_critics::getOrientedFootprint(check_pose2d, footprint_spec_));
-         if (check_cost > 0)
-         {
-           cfg_->optim.weight_viapoint = 1.0;
-         }
-       }
-       catch(const dwb_core::IllegalTrajectoryException& e)
-       {
-         if ((int)global_plan.size() > 0)
-         {
-           if (i == ((int)global_plan.size() - 1))
-           {
-             if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
-             {
-               throw nav2_core::PlannerException(
-                 std::string("Teb cannot find a free goal, goals are occupied ! ") + e.what()
-               );
-             }
-           }
-           if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
-           {
-             max_plan_length = std::min(
-               max_plan_length + cfg_->trajectory.max_plan_length_extend_on_trajectory_obstacle_m, costmap_->getSizeInMetersX());
-           }
-           cfg_->optim.weight_viapoint = 1.0;
-         }
-       }
+       
        
        // caclulate distance to previous pose
        if (i>0 && max_plan_length>0)
-         plan_length += distance_points2d(global_plan[i-1].pose.position, global_plan[i].pose.position);
+         plan_length += distance_points2d(
+           planPoseAt(i - 1).pose.position, planPoseAt(i).pose.position);
+       if (plan_length > max_plan_length || i == last_idx) {
+          const bool pose_free = globalPlanPoseFootprintFreeInControllerFrame(
+            planPoseAt(i), plan_to_global_transform, nullptr);
+          if (!pose_free && (int)global_plan.size() > 0) {
+            if (i == last_idx) {
+              if (!transformed_plan.empty()) {
+                transformed_plan.pop_back();
+              }
+              RCLCPP_WARN(
+                logger_,
+                "transformGlobalPlan: last path point footprint not free in local costmap; "
+                "running plan-frame goal search (no PlannerException).");
+              const bool adjusted_ok = adjustOccupiedGlobalPlanGoalInPlace(
+                global_plan.back(), plan_to_global_transform, effective_last_plan_pose);
+              if (!adjusted_ok) {
+                RCLCPP_ERROR(
+                  logger_,
+                  "transformGlobalPlan: last goal search did not find a free pose; keeping last plan pose.");
+              }
+              tf2::doTransform(planPoseAt(last_idx), newer_pose, plan_to_global_transform);
+              transformed_plan.push_back(newer_pose);
+              if (!globalPlanPoseFootprintFreeInControllerFrame(
+                  planPoseAt(last_idx), plan_to_global_transform, nullptr))
+              {
+                cfg_->optim.weight_viapoint = 1.0;
+              }
+            }
+            RCLCPP_WARN(
+              logger_,
+              "transformGlobalPlan: trajectory footprint not free under globalPlanPose check, extending plan length to %f",
+              max_plan_length + cfg_->trajectory.max_plan_length_extend_on_trajectory_obstacle_m);
+            max_plan_length = std::min(
+              max_plan_length + cfg_->trajectory.max_plan_length_extend_on_trajectory_obstacle_m, costmap_->getSizeInMetersX());
+            cfg_->optim.weight_viapoint = 1.0;
+          }
+        }
        ++i;
      }
          
@@ -3085,7 +3485,7 @@ void TebLocalPlannerROS::multi_curve_callback(
      {
        //如果最后一个目标点不可达，抛出异常
        geometry_msgs::msg::PoseStamped plan_local_pose;
-       tf2::doTransform(global_plan[i], plan_local_pose, plan_to_global_transform);
+       tf2::doTransform(effective_last_plan_pose, plan_local_pose, plan_to_global_transform);
        geometry_msgs::msg::Pose2D pose2d;
        pose2d.x = plan_local_pose.pose.position.x;
        pose2d.y = plan_local_pose.pose.position.y;
@@ -3099,14 +3499,17 @@ void TebLocalPlannerROS::multi_curve_callback(
        {
          if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
          {
-           throw nav2_core::PlannerException(
-             std::string("Teb cannot find a free goal, goals are occupied ! ") + e.what()
-           );
+           RCLCPP_WARN(
+             logger_,
+             "transformGlobalPlan: empty transformed plan and last pose hits obstacle; "
+             "running plan-frame goal search (no PlannerException).");
+           (void)adjustOccupiedGlobalPlanGoalInPlace(
+             global_plan.back(), plan_to_global_transform, effective_last_plan_pose);
          }
        }
        //如果最后一个目标点不可达，抛出异常
  
-       tf2::doTransform(global_plan.back(), newer_pose, plan_to_global_transform);
+       tf2::doTransform(effective_last_plan_pose, newer_pose, plan_to_global_transform);
  
        transformed_plan.push_back(newer_pose);
        

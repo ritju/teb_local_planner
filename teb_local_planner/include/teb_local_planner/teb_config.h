@@ -103,6 +103,10 @@ public:
     double max_plan_length_extend_on_trajectory_obstacle_m;
     //!< transformGlobalPlan: max cumulative path length from plan[0] while searching for the pose closest to the robot [m]; <=0 = no limit (entire plan)
     double transform_global_plan_closest_search_max_accum_dist;
+    //!< transformGlobalPlan: 若末端路径点在局部代价地图上 footprint 碰撞，在全局路径(plan 系)上以该值为半宽做网格偏移搜索可调位姿 [m]；<=0 关闭微调
+    double transform_global_plan_goal_occupied_tolerance;
+    //!< transformGlobalPlan: 末端位姿微调时的平面网格步长 [m]，与 SMAC Hybrid 等价的 goal_search_resolution
+    double transform_global_plan_goal_search_resolution;
   } trajectory; //!< Trajectory related parameters
 
   //! Robot related parameters
@@ -376,6 +380,8 @@ public:
     trajectory.control_look_ahead_poses = 1;
     trajectory.max_plan_length_extend_on_trajectory_obstacle_m = 3.0;
     trajectory.transform_global_plan_closest_search_max_accum_dist = 0.0;
+    trajectory.transform_global_plan_goal_occupied_tolerance = 1.0;
+    trajectory.transform_global_plan_goal_search_resolution = 0.2;
     
     // Robot
 

@@ -681,6 +681,31 @@
      const Eigen::Vector2d& wall_w1,
      const geometry_msgs::msg::Pose& vehicle_pose) const;
 
+   /**
+    * @brief 末端路径点(plan系)变换到控制器坐标系后用 footprint 做占据检测；无障碍返回 true。
+    */
+   bool globalPlanPoseFootprintFreeInControllerFrame(
+     const geometry_msgs::msg::PoseStamped& pose_plan_frame,
+     const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
+     geometry_msgs::msg::PoseStamped* out_pose_global_frame) const;
+
+   /**
+    * Oriented footprint（控制器系）相对局部滚动代价图：外包框不与图相交则视为无障碍；
+    * 顶点全部落在图内时沿用 DWB scorePose；跨界时仅对已裁剪至图内的轮廓段做栅栏带代价判定。
+    */
+   bool orientedFootprintNavigableOnPartialCostmap(
+     const geometry_msgs::msg::Pose2D & pose2d_controller_frame,
+     const std::vector<geometry_msgs::msg::Point> & oriented_footprint) const;
+
+   /**
+    * @brief 参照 SMAC Hybrid：仅在末端点在局部代价地图上碰撞时，在 plan 系平面内网格搜索偏移，取欧式距离最短的无碰位姿。
+    * @return 若末端已无障碍或搜索到替代位姿则为 true；无法找到仍为 false。
+    */
+   bool adjustOccupiedGlobalPlanGoalInPlace(
+     const geometry_msgs::msg::PoseStamped& original_last_pose_plan_frame,
+     const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
+     geometry_msgs::msg::PoseStamped& last_pose_plan_frame_inout) const;
+
    double new_vehicle_distance_threshold_;  //!< Distance threshold for adding/removing vehicles from global_vehicle_poses_
    double erase_vehicle_distance_threshold_;  //!< Distance threshold for adding/removing vehicles from global_vehicle_poses_
    static constexpr double same_vehicle_threshold_sq_ = 0.5;

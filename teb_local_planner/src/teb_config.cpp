@@ -75,6 +75,12 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(
     nh, name + "." + "transform_global_plan_closest_search_max_accum_dist",
     rclcpp::ParameterValue(trajectory.transform_global_plan_closest_search_max_accum_dist));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "transform_global_plan_goal_occupied_tolerance",
+    rclcpp::ParameterValue(trajectory.transform_global_plan_goal_occupied_tolerance));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "transform_global_plan_goal_search_resolution",
+    rclcpp::ParameterValue(trajectory.transform_global_plan_goal_search_resolution));
   // Robot
   declare_parameter_if_not_declared(nh, name + "." + "max_vel_x", rclcpp::ParameterValue(robot.max_vel_x));
   declare_parameter_if_not_declared(nh, name + "." + "max_vel_x_backwards", rclcpp::ParameterValue(robot.max_vel_x_backwards));
@@ -291,6 +297,14 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
     name + "." + "transform_global_plan_closest_search_max_accum_dist",
     trajectory.transform_global_plan_closest_search_max_accum_dist,
     trajectory.transform_global_plan_closest_search_max_accum_dist);
+  nh->get_parameter_or(
+    name + "." + "transform_global_plan_goal_occupied_tolerance",
+    trajectory.transform_global_plan_goal_occupied_tolerance,
+    trajectory.transform_global_plan_goal_occupied_tolerance);
+  nh->get_parameter_or(
+    name + "." + "transform_global_plan_goal_search_resolution",
+    trajectory.transform_global_plan_goal_search_resolution,
+    trajectory.transform_global_plan_goal_search_resolution);
   // Robot
   nh->get_parameter_or(name + "." + "max_vel_x", robot.max_vel_x, robot.max_vel_x);
   nh->get_parameter_or(name + "." + "max_vel_x_backwards", robot.max_vel_x_backwards, robot.max_vel_x_backwards);
@@ -654,6 +668,10 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.max_plan_length_extend_on_trajectory_obstacle_m = parameter.as_double();
       } else if (name == node_name + ".transform_global_plan_closest_search_max_accum_dist") {
         trajectory.transform_global_plan_closest_search_max_accum_dist = parameter.as_double();
+      } else if (name == node_name + ".transform_global_plan_goal_occupied_tolerance") {
+        trajectory.transform_global_plan_goal_occupied_tolerance = parameter.as_double();
+      } else if (name == node_name + ".transform_global_plan_goal_search_resolution") {
+        trajectory.transform_global_plan_goal_search_resolution = parameter.as_double();
       }
       // Robot
       else if (name == node_name + ".max_vel_x") {
