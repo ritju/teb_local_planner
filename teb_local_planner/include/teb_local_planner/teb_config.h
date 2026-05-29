@@ -101,6 +101,10 @@ public:
     int control_look_ahead_poses; //! Index of the pose used to extract the velocity command
     int theta_threshold;
     double corner_dist_threshold; //!< Distance threshold to consider a point a corner
+    //!< 角点不可达时裁剪 global_plan：LETHAL_OBSTACLE 下允许裁剪的机器人到角点横向距离上限 [m]
+    double cut_path_before_corner_lethal_dist;
+    //!< 角点不可达时裁剪 global_plan：INSCRIBED_INFLATED_OBSTACLE 下允许裁剪的机器人到角点横向距离上限 [m]
+    double cut_path_before_corner_inscribed_dist;
     //! transformGlobalPlan: when scorePose throws "Trajectory Hits Obstacle.", extend max plan length by this (m), capped by local costmap size
     double max_plan_length_extend_on_trajectory_obstacle_m;
     //!< transformGlobalPlan: max cumulative path length from plan[0] while searching for the pose closest to the robot [m]; <=0 = no limit (entire plan)
@@ -360,6 +364,8 @@ public:
     // Trajectory
     trajectory.theta_threshold = 135;
     trajectory.corner_dist_threshold = 1.5;
+    trajectory.cut_path_before_corner_lethal_dist = 1.0;
+    trajectory.cut_path_before_corner_inscribed_dist = 1.5;
     trajectory.teb_autosize = true;
     trajectory.dt_ref = 0.3;
     trajectory.dt_hysteresis = 0.1;

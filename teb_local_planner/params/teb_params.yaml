@@ -15,6 +15,8 @@ controller_server:
       global_plan_overwrite_orientation: False
       allow_init_with_backwards_motion: False
       max_global_plan_lookahead_dist: 3.0
+      cut_path_before_corner_lethal_dist: 1.0
+      cut_path_before_corner_inscribed_dist: 1.5
       global_plan_viapoint_sep: 0.3
       global_plan_prune_distance: 1.0
       global_plan_prune_max_accum_dist: 8.0   # <=0: search full path for prune point

@@ -73,6 +73,12 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "feasibility_check_lookahead_distance", rclcpp::ParameterValue(trajectory.feasibility_check_lookahead_distance));
   declare_parameter_if_not_declared(nh, name + "." + "theta_threshold", rclcpp::ParameterValue(trajectory.theta_threshold));
   declare_parameter_if_not_declared(nh, name + "." + "corner_dist_threshold", rclcpp::ParameterValue(trajectory.corner_dist_threshold));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "cut_path_before_corner_lethal_dist",
+    rclcpp::ParameterValue(trajectory.cut_path_before_corner_lethal_dist));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "cut_path_before_corner_inscribed_dist",
+    rclcpp::ParameterValue(trajectory.cut_path_before_corner_inscribed_dist));
   declare_parameter_if_not_declared(nh, name + "." + "max_plan_length_extend_on_trajectory_obstacle_m", rclcpp::ParameterValue(trajectory.max_plan_length_extend_on_trajectory_obstacle_m));
   declare_parameter_if_not_declared(
     nh, name + "." + "transform_global_plan_closest_search_max_accum_dist",
@@ -296,6 +302,14 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "feasibility_check_lookahead_distance", trajectory.feasibility_check_lookahead_distance, trajectory.feasibility_check_lookahead_distance);
   nh->get_parameter_or(name + "." + "theta_threshold", trajectory.theta_threshold, trajectory.theta_threshold);
   nh->get_parameter_or(name + "." + "corner_dist_threshold", trajectory.corner_dist_threshold, trajectory.corner_dist_threshold);
+  nh->get_parameter_or(
+    name + "." + "cut_path_before_corner_lethal_dist",
+    trajectory.cut_path_before_corner_lethal_dist,
+    trajectory.cut_path_before_corner_lethal_dist);
+  nh->get_parameter_or(
+    name + "." + "cut_path_before_corner_inscribed_dist",
+    trajectory.cut_path_before_corner_inscribed_dist,
+    trajectory.cut_path_before_corner_inscribed_dist);
   nh->get_parameter_or(name + "." + "max_plan_length_extend_on_trajectory_obstacle_m", trajectory.max_plan_length_extend_on_trajectory_obstacle_m, trajectory.max_plan_length_extend_on_trajectory_obstacle_m);
   nh->get_parameter_or(
     name + "." + "transform_global_plan_closest_search_max_accum_dist",
@@ -672,6 +686,10 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.theta_threshold = parameter.as_int();
       } else if (name == node_name + ".corner_dist_threshold") {
         trajectory.corner_dist_threshold = parameter.as_double();
+      } else if (name == node_name + ".cut_path_before_corner_lethal_dist") {
+        trajectory.cut_path_before_corner_lethal_dist = parameter.as_double();
+      } else if (name == node_name + ".cut_path_before_corner_inscribed_dist") {
+        trajectory.cut_path_before_corner_inscribed_dist = parameter.as_double();
       } else if (name == node_name + ".max_plan_length_extend_on_trajectory_obstacle_m") {
         trajectory.max_plan_length_extend_on_trajectory_obstacle_m = parameter.as_double();
       } else if (name == node_name + ".transform_global_plan_closest_search_max_accum_dist") {
