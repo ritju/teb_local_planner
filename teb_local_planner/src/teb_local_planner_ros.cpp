@@ -799,28 +799,28 @@ void TebLocalPlannerROS::configure(
   // ahead when the robot detours around a large obstacle.
   if (cfg_->trajectory.rough_global_plan_prune_distance > 0.0)
   {
-    pruneGlobalPlan(robot_pose, global_plan_,
-                    cfg_->trajectory.rough_global_plan_prune_distance,
-                    cfg_->trajectory.rough_global_plan_prune_max_accum_dist);
+  pruneGlobalPlan(robot_pose, global_plan_,
+                  cfg_->trajectory.rough_global_plan_prune_distance,
+                  cfg_->trajectory.rough_global_plan_prune_max_accum_dist);
   }
   // Fine pass: precise pruning with the normal (smaller) distance and limited search range.
   pruneGlobalPlan(robot_pose, global_plan_, cfg_->trajectory.global_plan_prune_distance,
-                  cfg_->trajectory.global_plan_prune_max_accum_dist);
-   // pruneGlobalPlan(robot_pose, origin_plan_, 3);
-   geometry_msgs::msg::PoseStamped corner_pose_global, corner_pose_robot;
-   bool corner_found = false;
-   size_t corner_index = 0;  // Index of corner in global_plan_
-   
-   if (global_plan_.size() < 30)
-   {
-     corner_pose_global = robot_pose;
-     corner_pose_robot = robot_pose;
-   }
-   else
-   {
-     double theta = cfg_->trajectory.theta_threshold;
-     const double min_segment_length = 1e-6;  // Minimum segment length to avoid division by zero
-     const double position_tolerance = 0.01;  // Tolerance for position comparison
+                cfg_->trajectory.global_plan_prune_max_accum_dist);
+  // pruneGlobalPlan(robot_pose, origin_plan_, 3);
+  geometry_msgs::msg::PoseStamped corner_pose_global, corner_pose_robot;
+  bool corner_found = false;
+  size_t corner_index = 0;  // Index of corner in global_plan_
+
+  if (global_plan_.size() < 30)
+  {
+    corner_pose_global = robot_pose;
+    corner_pose_robot = robot_pose;
+  }
+  else
+  {
+    double theta = cfg_->trajectory.theta_threshold;
+    const double min_segment_length = 1e-6;  // Minimum segment length to avoid division by zero
+    const double position_tolerance = 0.01;  // Tolerance for position comparison
 
     // Cumulative Euclidean length along global_plan from index 0 to current pose (corner search window).
     double cum_dist = 0.0;
