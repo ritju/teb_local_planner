@@ -71,7 +71,6 @@
 #include "teb_local_planner/g2o_types/edge_prefer_rotdir.h"
 #include "teb_local_planner/g2o_types/edge_parallel_to_wall.h"
 #include "teb_local_planner/g2o_types/edge_distance_to_wall.h"
-#include "teb_local_planner/g2o_types/edge_distance_to_multi_curve.h"
 
 // messages
 #include <nav_msgs/msg/path.hpp>
@@ -133,7 +132,7 @@ public:
    */
   TebOptimalPlanner(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles = NULL,
                     TebVisualizationPtr visual = TebVisualizationPtr(), const ViaPointContainer* via_points = NULL,
-                    const std::vector<Eigen::Vector2d>* wall_line = NULL, const capella_ros_msg::msg::MultiCurve* multi_curve = NULL);
+                    const std::vector<Eigen::Vector2d>* wall_line = NULL);
   
   /**
    * @brief Destruct the optimal planner.
@@ -151,7 +150,7 @@ public:
     */
   void initialize(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles = NULL,
                   TebVisualizationPtr visual = TebVisualizationPtr(), const ViaPointContainer* via_points = NULL,
-                  const std::vector<Eigen::Vector2d>* wall_line = NULL, const capella_ros_msg::msg::MultiCurve* multi_curve = NULL);
+                  const std::vector<Eigen::Vector2d>* wall_line = NULL);
   
   /** @name Plan a trajectory  */
   //@{
@@ -337,23 +336,6 @@ public:
    * @return Const reference to the wall_line container
    */
   const std::vector<Eigen::Vector2d> getWallLine() const {return *wall_line_;}
-
-  /**
-   * @brief Assign a new set of multi_curve
-   * @param via_points pointer to a multi_curve container (can also be a nullptr)
-   * @details Any previously set container will be overwritten.
-   */
-  void setMultiCurve(const capella_ros_msg::msg::MultiCurve* multi_curve) 
-  {
-    multi_curve_ = multi_curve;
-    // RCLCPP_INFO(rclcpp::get_logger("teb_local_planner"), "After setWallLine wall_line_points_.size(): %ld !", wall_line_->size());
-  }
-  
-  /**
-   * @brief Access the internal multi_curve container.
-   * @return Const reference to the multi_curve container
-   */
-  const capella_ros_msg::msg::MultiCurve getMultiCurve() const {return *multi_curve_;}
 
   //@}
 	  
@@ -700,14 +682,6 @@ protected:
    * @see optimizeGraph
    */
   void AddEdgesDistanceToWall();
-
-      /**
-   * @brief Add all edges (local cost functions) related to minimizing the distance to wall
-   * @see EdgeViaPoint
-   * @see buildGraph
-   * @see optimizeGraph
-   */
-  void AddEdgesDistanceToMultiCurve();
   
   /**
    * @brief Add all edges (local cost functions) related to keeping a distance from dynamic (moving) obstacles.
@@ -768,7 +742,6 @@ protected:
   ObstContainer* obstacles_; //!< Store obstacles that are relevant for planning
   const ViaPointContainer* via_points_; //!< Store via points for planning
   const std::vector<Eigen::Vector2d>* wall_line_;
-  const capella_ros_msg::msg::MultiCurve* multi_curve_;
   std::vector<ObstContainer> obstacles_per_vertex_; //!< Store the obstacles associated with the n-1 initial vertices
   
   double cost_; //!< Store cost value of the current hyper-graph

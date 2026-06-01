@@ -48,9 +48,9 @@ HomotopyClassPlanner::HomotopyClassPlanner() : cfg_(NULL), obstacles_(NULL), via
 }
 
 HomotopyClassPlanner::HomotopyClassPlanner(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles,
-                                           TebVisualizationPtr visual, const ViaPointContainer* via_points, const std::vector<Eigen::Vector2d>* wall_line, const capella_ros_msg::msg::MultiCurve* multi_curve) : initial_plan_(NULL)
+                                           TebVisualizationPtr visual, const ViaPointContainer* via_points, const std::vector<Eigen::Vector2d>* wall_line) : initial_plan_(NULL)
 {
-  initialize(node, cfg, obstacles, visual, via_points, wall_line, multi_curve);
+  initialize(node, cfg, obstacles, visual, via_points, wall_line);
 }
 
 HomotopyClassPlanner::~HomotopyClassPlanner()
@@ -58,15 +58,13 @@ HomotopyClassPlanner::~HomotopyClassPlanner()
 }
 
 void HomotopyClassPlanner::initialize(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles,
-                                      TebVisualizationPtr visual, const ViaPointContainer* via_points, const std::vector<Eigen::Vector2d>* wall_line, const capella_ros_msg::msg::MultiCurve* multi_curve)
+                                      TebVisualizationPtr visual, const ViaPointContainer* via_points, const std::vector<Eigen::Vector2d>* wall_line)
 {
   node_ = node;
   cfg_ = &cfg;
   obstacles_ = obstacles;
   via_points_ = via_points;
   wall_line_ = wall_line;
-  multi_curve_ = multi_curve;
-  
 
   if (cfg_->hcp.simple_exploration)
     graph_search_ = std::shared_ptr<GraphSearchInterface>(new lrKeyPointGraph(*cfg_, this));

@@ -68,9 +68,9 @@ TebOptimalPlanner::TebOptimalPlanner() : cfg_(nullptr), obstacles_(NULL), via_po
 {    
 }
   
-TebOptimalPlanner::TebOptimalPlanner(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles, TebVisualizationPtr visual, const ViaPointContainer* via_points, const std::vector<Eigen::Vector2d>* wall_line, const capella_ros_msg::msg::MultiCurve* multi_curve)
+TebOptimalPlanner::TebOptimalPlanner(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles, TebVisualizationPtr visual, const ViaPointContainer* via_points, const std::vector<Eigen::Vector2d>* wall_line)
 {    
-  initialize(node, cfg, obstacles, visual, via_points, wall_line, multi_curve);
+  initialize(node, cfg, obstacles, visual, via_points, wall_line);
 }
 
 TebOptimalPlanner::~TebOptimalPlanner()
@@ -83,17 +83,16 @@ TebOptimalPlanner::~TebOptimalPlanner()
   //g2o::HyperGraphActionLibrary::destroy();
 }
 
-void TebOptimalPlanner::initialize(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles, TebVisualizationPtr visual, const ViaPointContainer* via_points, const std::vector<Eigen::Vector2d>* wall_line, const capella_ros_msg::msg::MultiCurve* multi_curve)
-{
+void TebOptimalPlanner::initialize(nav2_util::LifecycleNode::SharedPtr node, const TebConfig& cfg, ObstContainer* obstacles, TebVisualizationPtr visual, const ViaPointContainer* via_points, const std::vector<Eigen::Vector2d>* wall_line)
+{    
   node_ = node;
   // init optimizer (set solver and block ordering settings)
   optimizer_ = initOptimizer();
-
+  
   cfg_ = &cfg;
   obstacles_ = obstacles;
   via_points_ = via_points;
   wall_line_ = wall_line;
-  multi_curve_ = multi_curve;
   cost_ = HUGE_VAL;
   prefer_rotdir_ = RotType::none;
 
@@ -352,8 +351,6 @@ bool TebOptimalPlanner::buildGraph(double weight_multiplier)
   AddEdgesViaPoints();
   
   AddEdgesDistanceToWall();
-
-  AddEdgesDistanceToMultiCurve();
 
   // AddEdgesParallelToWall();
   
@@ -921,27 +918,6 @@ void TebOptimalPlanner::AddEdgesShortestPath()
     shortest_path_edge->setInformation(information);
     shortest_path_edge->setTebConfig(*cfg_);
     optimizer_->addEdge(shortest_path_edge);
-  }
-}
-
-void TebOptimalPlanner::AddEdgesDistanceToMultiCurve()
-{
-  if (cfg_->optim.weight_wall_line_dist==0)
-    return; // if weight equals zero skip adding edges!
-  if (!multi_curve_ || multi_curve_->segments.empty())
-    return; // no multi-curve available, skip adding edges!
-  Eigen::Matrix<double,1,1> information;
-  const Eigen::Vector2d p0 = teb_.PoseVertex(0)->position();
-  for (int i=0; i < teb_.sizePoses(); ++i)
-  {
-    const double dist_from_robot = (teb_.PoseVertex(i)->position() - p0).norm();
-    const double k = EdgeDistanceToMultiCurve::distanceWeightScale(*cfg_, dist_from_robot);
-    information.fill(cfg_->optim.weight_wall_line_dist * k);
-    EdgeDistanceToMultiCurve* multi_curve_dist_edge = new EdgeDistanceToMultiCurve;
-    multi_curve_dist_edge->setVertex(0,teb_.PoseVertex(i));
-    multi_curve_dist_edge->setInformation(information);
-    multi_curve_dist_edge->setParameters(*cfg_, multi_curve_);
-    optimizer_->addEdge(multi_curve_dist_edge);
   }
 }
 
