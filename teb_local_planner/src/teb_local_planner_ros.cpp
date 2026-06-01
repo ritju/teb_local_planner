@@ -2550,16 +2550,6 @@ void TebLocalPlannerROS::updateMultiCurveVec(
     return;
   }
 
-  // ---- 数据时效检查 ----
-  {
-    const double age = (clock_->now() - multi_curve_update_time_).seconds();
-    if (age > keep_wall_line_time_) {
-      if (edge_multi_curve_.segments.size() > 0) { edge_multi_curve_.segments.clear(); }
-      switchParameterMode(false);
-      return;
-    }
-  }
- 
   // ================================================================
   //  核心：遍历所有段，找机器人侧向最近的段，判断角度、距离
   //
