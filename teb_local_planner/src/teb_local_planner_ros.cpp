@@ -918,13 +918,13 @@ void TebLocalPlannerROS::configure(
       if (std::isfinite(limit) && speed_limit_linear_x_ > 0) {
         if (limit < safe_linear_speed_limit_ && cfg_->robot.max_vel_x != limit) {
           cfg_->robot.max_vel_x = std::min(limit, safe_linear_speed_limit_);
-          RCLCPP_INFO(logger_, "Performing change speed limit !, max linear speed is: %f", cfg_->robot.max_vel_x);
+          RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Performing change speed limit !, max linear speed is: %f", cfg_->robot.max_vel_x);
         } else if (limit >= safe_linear_speed_limit_ && cfg_->robot.max_vel_x != safe_linear_speed_limit_) {
           cfg_->robot.max_vel_x = safe_linear_speed_limit_;
-          RCLCPP_INFO(logger_, "Receive speed limit is greater than safe linear speed limit, set limit speed to safe linear speed limit: %f !", safe_linear_speed_limit_);
+          RCLCPP_WARN(logger_, "Receive speed limit is greater than safe linear speed limit, set limit speed to safe linear speed limit: %f !", safe_linear_speed_limit_);
         }
       } else if (!std::isfinite(limit) || limit <= 0) {
-        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 5000, "Speed limit is not finite or less than 0, current speed limit is: %f !", cfg_->robot.max_vel_x);
+        RCLCPP_WARN(logger_, "Speed limit is not finite or less than 0, current speed limit is: %f !", cfg_->robot.max_vel_x);
       }
     }
     }
@@ -4787,6 +4787,7 @@ bool TebLocalPlannerROS::trySelectSegmentFromTwoPointPath(
   minimum_average_distance_to_plan = std::numeric_limits<double>::max();
   robot_perpendicular_distance_to_edge_line = std::numeric_limits<double>::max();
   if (two_point_line_path.poses.size() < 2 || input_path.poses.size() < 2) {
+    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "Two point line path or input path size is less than 2, two_point_line_path_size: %d, input_path_size: %d", two_point_line_path.poses.size(), input_path.poses.size());
     return false;
   }
   const auto& input_path_start_position = input_path.poses.front().pose.position;
@@ -4886,6 +4887,7 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
 
   for (const auto& raw_reference_path : reference_path_candidates) {
     if (raw_reference_path.poses.size() < 2) {
+      RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "Reference path size is less than 2, reference_path_size: %d", raw_reference_path.poses.size());
       continue;
     }
     // TF：用 TimePointZero 取缓冲区内最新可用变换，避免 now() 略超前于已发布 TF 导致外推失败。
@@ -5131,6 +5133,7 @@ void TebLocalPlannerROS::updateReferenceLineVec(
   const geometry_msgs::msg::PoseStamped& robot_pose)
 {
   if (!edgeFollowingEntryGuards(robot_pose, input_path)) {
+    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "Edge following entry guards failed");
     return;
   }
   Eigen::Vector2d selected_reference_segment_start;
