@@ -649,6 +649,11 @@
    Eigen::Vector2d locked_wall_end_;
    int wall_line_stable_count_{0};
 
+   // stable MultiCurve locking state
+   bool stable_multi_curve_locked_{false};
+   capella_ros_msg::msg::MultiCurve stable_multi_curve_;
+   int multi_curve_stable_count_{0};
+
    // Protruding obstacles that caused exit from edge-following mode
    std::vector<ProtrudingObstacle> protruding_obstacles_;
    std::vector<rclcpp::Time> protrusion_detection_timestamps_;  //!< Sliding window timestamps for protrusion confirmation

@@ -1301,10 +1301,65 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
     }
   }
 
+  // multicurve 稳定判断
+  bool use_multi_curve_filter = false;
+  capella_ros_msg::msg::MultiCurve use_multi_curve;
+
+  if (is_edge_following_mode_ && edge_multi_curve_.segments.size() > 0)
+  {
+    auto getSEnd = [](const capella_ros_msg::msg::CurveSegment& seg) -> double {
+    return (seg.type == capella_ros_msg::msg::CurveSegment::LINE)
+            ? seg.line_segment.s_end
+            : seg.ellipse_arc_segment.s_end;
+    };
+
+    double cur_len = std::max(getSEnd(edge_multi_curve_.segments.back()), getSEnd(edge_multi_curve_.segments.front()));
+
+    if (cur_len > 1e-6)
+    {
+      // --- MultiCurve locking: compare current vs locked ---
+      if (stable_multi_curve_locked_)
+      {
+        double dist_change = multiCurveCentroidDist(edge_multi_curve_, stable_multi_curve_, 0.15);
+        if (dist_change > cfg_->wall_line.wall_line_lock_distance_threshold)
+        {
+          stable_multi_curve_locked_ = false;
+          multi_curve_stable_count_ = 0;
+          RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+            "MultiCurve unlocked: dist_change=%.3f", dist_change);
+        }
+      }
+
+      if (!stable_multi_curve_locked_)
+      {
+        ++multi_curve_stable_count_;
+        if (multi_curve_stable_count_ >= cfg_->wall_line.wall_line_lock_min_stable_count)
+        {
+          stable_multi_curve_ = extendMultiCurve(edge_multi_curve_, cfg_->wall_line.wall_line_extension_distance);
+          stable_multi_curve_locked_ = true;
+          RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+            "MultiCurve locked after %d stable frames", multi_curve_stable_count_);
+        }
+      }
+
+      // Use locked MultiCurve if available, otherwise current
+      use_multi_curve = stable_multi_curve_locked_ ? stable_multi_curve_ : extendMultiCurve(edge_multi_curve_, cfg_->wall_line.wall_line_extension_distance);
+      use_multi_curve_filter = true;
+    }
+  }
+  else
+  {
+    if (stable_multi_curve_locked_)
+    {
+      stable_multi_curve_locked_ = false;
+      multi_curve_stable_count_ = 0;
+    }
+  }
+
   geometry_msgs::msg::TransformStamped tf_base_from_obstacles;
   bool have_tf_obstacles_to_base = false;
 
-  if (use_wall_line_filter && tf_ && costmap_ros_) {
+  if ((use_wall_line_filter || use_multi_curve_filter) && tf_ && costmap_ros_) {
     try {
       tf_base_from_obstacles = tf_->lookupTransform(
         costmap_ros_->getBaseFrameID(), obstacles_frame, tf2::TimePointZero);
@@ -1314,6 +1369,24 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
         logger_, *(clock_), 2000,
         "protrusion exit: TF %s->%s failed: %s",
         obstacles_frame.c_str(), costmap_ros_->getBaseFrameID().c_str(), ex.what());
+    }
+  }
+
+  auto getSide = [](const Eigen::Vector2d& input_pt, const Eigen::Vector2d& closest_pt, const Eigen::Vector2d& dir) -> double {
+      const Eigen::Vector2d to_pt = input_pt - closest_pt;
+      return dir.x() * to_pt.y() - dir.y() * to_pt.x();
+  };
+
+  // 提前计算机器人multicurve距离及切线
+  Eigen::Vector2d robot_closet_pt, robot_min_dis_dir;
+  const Eigen::Vector2d robot_pt = robot_pose_.position();
+  double robot_dis_multi_curve = std::numeric_limits<double>::infinity(), robot_multicurve_cross;
+  if (use_multi_curve_filter)
+  {
+    robot_dis_multi_curve = minDistToMultiCurveWithDir(robot_pt, robot_closet_pt, robot_min_dis_dir, use_multi_curve);
+    if (!std::isinf(robot_dis_multi_curve))
+    {
+      robot_multicurve_cross = getSide(robot_pt, robot_closet_pt, robot_min_dis_dir);
     }
   }
 
@@ -1482,6 +1555,156 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
             }
             protrusion_detection_timestamps_.clear();
           }
+        }
+      }
+    }
+    else if (!polygon->points.empty() && use_multi_curve_filter && !std::isinf(robot_dis_multi_curve) && robot_dis_multi_curve > 0) 
+    {
+      double max_robot_penetration = 0.0;
+      Eigen::Vector2d max_penetration_point(0.0, 0.0);
+
+      bool exit_trigger = false;
+      Eigen::Vector2d exit_best_point(0.0, 0.0);
+      double exit_best_pen = 0.0;
+
+      const double base_d_exit = cfg_->wall_line.wall_line_obstacle_protrusion_base_distance;
+      const double scale_k_exit = cfg_->wall_line.wall_line_protrusion_exit_depth_min;
+      auto eff_protrusion_for_vertex_dist = [&](double dist_robot_vertex) -> double {
+        double e = cfg_->wall_line.wall_line_protrusion_exit_depth_min;
+        if (dist_robot_vertex > base_d_exit) {
+          e = std::min(
+            e + scale_k_exit * (dist_robot_vertex - base_d_exit),
+            cfg_->wall_line.wall_line_obstacle_filter_distance_max);
+        }
+        return e;
+      };
+
+      const double fwd_max = cfg_->wall_line.wall_line_protrusion_exit_forward_max;
+      const double lat_max = cfg_->wall_line.wall_line_protrusion_exit_lateral_max;
+      const double depth_max = cfg_->wall_line.wall_line_protrusion_exit_depth_max;
+      
+      double offset = cfg_->wall_line.wall_line_safety_offset;
+      for (const auto& pt : polygon->points)
+      {
+        Eigen::Vector2d closet_pt, closet_dir, c_pt = Eigen::Vector2d(pt.x, pt.y);
+        double pt_multi_curve_dist = minDistToMultiCurveWithDir(c_pt, closet_pt, closet_dir, use_multi_curve);
+
+        if (std::isinf(pt_multi_curve_dist))
+        {
+          continue;
+        }
+
+        const double pt_multicurve_cross = getSide(c_pt, closet_pt, closet_dir);
+
+        if (robot_multicurve_cross * pt_multicurve_cross <= 0)
+        {
+          // 在不同边或者点在切线上
+          continue;
+        }
+
+        const double pen = pt_multi_curve_dist - offset;
+
+        if (pen > max_robot_penetration)
+        {
+          max_robot_penetration = pen;
+          max_penetration_point = c_pt;
+        }
+
+        if (!have_tf_obstacles_to_base)
+        {
+          continue;
+        }
+
+        // 按区域和距离找障碍物最大突出点
+        geometry_msgs::msg::PointStamped pin;
+        pin.header.frame_id = obstacles_frame;
+        pin.point.x = pt.x;
+        pin.point.y = pt.y;
+        pin.point.z = pt.z;
+        geometry_msgs::msg::PointStamped p_base;
+        tf2::doTransform(pin, p_base, tf_base_from_obstacles);
+
+        if (p_base.point.x <= -cfg_->wall_line.wall_line_obstacle_along_wall_rear_margin || 
+            p_base.point.x > fwd_max ||
+            std::fabs(p_base.point.y) > lat_max)
+        {
+          continue;
+        }
+        
+        const double d_rv = (c_pt - robot_pt).norm();
+        const double eff_v = eff_protrusion_for_vertex_dist(d_rv);
+        if (pen <= eff_v || pen > depth_max)
+        {
+          continue;
+        }
+        if (!exit_trigger || pen > exit_best_pen)
+        {
+          exit_trigger = true;
+          exit_best_pen = pen;
+          exit_best_point = c_pt;
+        }
+      }
+
+      const double dist_robot_to_protrusion =
+        (max_penetration_point - robot_pt).norm();
+      const double base_d = cfg_->wall_line.wall_line_obstacle_protrusion_base_distance;
+      const double scale_k = cfg_->wall_line.wall_line_obstacle_filter_distance;
+      double eff_protrusion_threshold = cfg_->wall_line.wall_line_obstacle_filter_distance;
+      if (dist_robot_to_protrusion > base_d) {
+        eff_protrusion_threshold = std::min(
+          eff_protrusion_threshold + scale_k * (dist_robot_to_protrusion - base_d),
+          cfg_->wall_line.wall_line_obstacle_filter_distance_max);
+      }
+
+      // 最大突出点小于设置的阈值 裁剪障碍物
+      if (max_robot_penetration < eff_protrusion_threshold)
+      {
+        continue;
+      }
+
+      if (exit_trigger)
+      {
+        rclcpp::Time now = clock_->now();
+        protrusion_detection_timestamps_.push_back(now);
+
+        rclcpp::Duration window_duration = rclcpp::Duration::from_seconds(
+          cfg_->wall_line.obstacle_protrusion_confirm_window);
+        while (!protrusion_detection_timestamps_.empty() &&
+                (now - protrusion_detection_timestamps_.front()) > window_duration)
+        {
+          protrusion_detection_timestamps_.erase(protrusion_detection_timestamps_.begin());
+        }
+
+        if (static_cast<int>(protrusion_detection_timestamps_.size()) >=
+            cfg_->wall_line.obstacle_protrusion_min_confirm_frames)
+        {
+          bool is_duplicate = false;
+          for (const auto& existing : protruding_obstacles_)
+          {
+            if ((existing.position - exit_best_point).norm() < 0.5)
+            {
+              is_duplicate = true;
+              break;
+            }
+          }
+
+          if (!is_duplicate)
+          {
+            while (static_cast<int>(protruding_obstacles_.size()) >=
+                    cfg_->wall_line.obstacle_protrusion_max_stored)
+            {
+              protruding_obstacles_.erase(protruding_obstacles_.begin());
+            }
+
+            ProtrudingObstacle protruding_obst;
+            protruding_obst.position = exit_best_point;
+            protruding_obst.influence_radius = exit_best_pen;
+            protruding_obst.detection_time = now;
+            protruding_obstacles_.push_back(protruding_obst);
+            RCLCPP_INFO(logger_, "Protruding obstacle confirmed at (%.2f, %.2f), penetration=%.2f.",
+              exit_best_point.x(), exit_best_point.y(), exit_best_pen);
+          }
+          protrusion_detection_timestamps_.clear();
         }
       }
     }
@@ -2351,93 +2574,26 @@ void TebLocalPlannerROS::updateMultiCurveVec(
     
     if (std::max(first, last) > min_wall_line_length_) {
       // ── 线段 ──────────────────────────────────────────────────────────────────
-      for (const auto& seg : multi_curve.segments) {
-        if (seg.type == capella_ros_msg::msg::CurveSegment::LINE) {
-          const auto& ls = seg.line_segment;
-          const Eigen::Vector2d a(ls.start_point.x, ls.start_point.y);
-          const Eigen::Vector2d b(ls.end_point.x,   ls.end_point.y);
-
-          const Eigen::Vector2d ab = b - a;
-          const double len2 = ab.squaredNorm();
-
-          Eigen::Vector2d closest;
-          if (len2 < 1e-12) {
-            closest = a;
-          } else {
-            const double t = std::clamp((path_start_pt - a).dot(ab) / len2, 0.0, 1.0);
-            closest = a + t * ab;
-          }
-
-          const double dsq = (path_start_pt - closest).norm();
-          if (dsq < min_path_dist) {
+      min_path_dist = minDistToMultiCurveWithDir(path_start_pt, min_distance_point, min_distance_direction, multi_curve);
+      if (!std::isinf(min_path_dist))
+      {
             found_min_dis_pt = true;
-            min_path_dist = dsq;
-            min_distance_point = closest;
-
-            // 线段方向：终点 → 起点
-            const Eigen::Vector2d dir = a - b; // end→start
-            const double dir_len = dir.norm();
-            min_distance_direction = (dir_len > 1e-12) ? (dir / dir_len)
-                                                  : Eigen::Vector2d(1.0, 0.0);
-            
-          }
-
-        // ── 椭圆弧 ──────────────────────────────────────────────────────────────
-        } else if (seg.type == capella_ros_msg::msg::CurveSegment::ELLIPSE_ARC) {
-          const auto& eseg = seg.ellipse_arc_segment;
-          const auto& q    = eseg.frame.orientation;
-          const auto& o    = eseg.frame.position;
-
-          const Eigen::Matrix2d R =
-              Eigen::Quaterniond(q.w, q.x, q.y, q.z)
-                  .toRotationMatrix()
-                  .topLeftCorner<2, 2>();
-
-          const Eigen::Vector2d origin(o.x, o.y);
-          const Eigen::Vector2d p_local = R.transpose() * (path_start_pt - origin);
-
-          double theta = ellipseNearestAngle(eseg.a, eseg.b,
-                                            p_local.x(), p_local.y());
-          theta = clampAngleToArc(theta, eseg.theta_start, eseg.theta_end,
-                                  eseg.is_ccw);
-
-          const Eigen::Vector2d closest_local(eseg.a * std::cos(theta),
-                                              eseg.b * std::sin(theta));
-          const Eigen::Vector2d closest = R * closest_local + origin;
-          const double d = (path_start_pt - closest).norm();
-
-          if (d < min_path_dist) {
-            found_min_dis_pt = true;
-            min_path_dist = d;
-            min_distance_point = closest;
-
-            // 椭圆切线（局部坐标）：d/dθ (a·cosθ, b·sinθ) = (-a·sinθ, b·cosθ)
-            // is_ccw=false 时反向
-            Eigen::Vector2d tangent_local(-eseg.a * std::sin(theta),
-                                          eseg.b * std::cos(theta));
-            if (!eseg.is_ccw) tangent_local = -tangent_local;
-
-            const Eigen::Vector2d tangent_world = R * tangent_local;
-            const double tlen = tangent_world.norm();
-            min_distance_direction = (tlen > 1e-12) ? (tangent_world / tlen)
-                                              : Eigen::Vector2d(1.0, 0.0);
-          }
-        }
       }
-
       const Eigen::Vector2d r_to_pt = min_distance_point - robot_pt;
       const double r_to_pt_len = r_to_pt.norm();
 
+      const double robot_dir_angle = (r_to_pt / r_to_pt_len).dot(robot_dir);
+
       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
-        "[MultiCurve] Edge - path_dist_multi_curve: %.3f  cos_theta: %.3f parallel_threshold: %.3f robot_to_min_pt_len: %.3f",
-        min_path_dist, std::fabs(robot_dir.dot(min_distance_direction)), parallel_threshold, r_to_pt_len);
+        "[MultiCurve] Edge - path_dist_multi_curve: %.3f  cos_theta: %.3f parallel_threshold: %.3f robot_to_min_pt_len: %.3f robot_dir_close_angle: %.3f",
+        min_path_dist, std::fabs(robot_dir.dot(min_distance_direction)), parallel_threshold, r_to_pt_len, robot_dir_angle);
 
       // 小于等于运行路径最小距离阈值
       // 最近点切线方向与机器人方向近似平行
-      // 最近点不能太靠机器人后方30度 std::cos(5 * M_PI / 6)为-0.866左右
+      // 最近点不能太靠机器人后方120度 std::cos(2 * M_PI / 3)为-0.5左右
       if (found_min_dis_pt && min_path_dist <= distance_tolerance 
         && std::fabs(robot_dir.dot(min_distance_direction)) >= parallel_threshold
-        && (r_to_pt_len < 1e-12 || (r_to_pt / r_to_pt_len).dot(robot_dir) > -0.866)) {
+        && (r_to_pt_len < 1e-12 || robot_dir_angle > -0.5)) {
         found = true;
       }
     }
@@ -2490,11 +2646,10 @@ void TebLocalPlannerROS::updateMultiCurveVec(
       marker_msg.action = visualization_msgs::msg::Marker::ADD;
       marker_msg.scale.x = 0.1;
       marker_msg.color.r = 0.0f;
-      marker_msg.color.g = 1.0f;
-      marker_msg.color.b = 1.0f;
+      marker_msg.color.g = 0.0f;
+      marker_msg.color.b = 0.5f;
       marker_msg.color.a = 1.0f;
 
-      for (const auto& seg : edge_multi_curve_.segments) {
         if (found_min_dis_pt){
           geometry_msgs::msg::Point p_min, p_start_path;
           p_start_path.x = path_start_pt.x();
@@ -2508,6 +2663,7 @@ void TebLocalPlannerROS::updateMultiCurveVec(
           marker_msg.points.push_back(p_min);
         }
 
+      for (const auto& seg : edge_multi_curve_.segments) {
         if (seg.type == capella_ros_msg::msg::CurveSegment::LINE) {
           geometry_msgs::msg::Point p_start, p_end;
           p_start.x = seg.line_segment.start_point.x;
@@ -2519,42 +2675,10 @@ void TebLocalPlannerROS::updateMultiCurveVec(
           marker_msg.points.push_back(p_start);
           marker_msg.points.push_back(p_end);
         } else if (seg.type == capella_ros_msg::msg::CurveSegment::ELLIPSE_ARC) {
-          // 离散化椭圆弧
-          const auto& eseg = seg.ellipse_arc_segment;
-          const Eigen::Quaterniond q(eseg.frame.orientation.w, eseg.frame.orientation.x,
-                                      eseg.frame.orientation.y, eseg.frame.orientation.z);
-          const Eigen::Vector2d origin(eseg.frame.position.x, eseg.frame.position.y);
-          const Eigen::Matrix2d R = q.toRotationMatrix().topLeftCorner<2, 2>();
-
-          const double theta_start = eseg.theta_start;
-          const double theta_end = eseg.theta_end;
-          const bool is_ccw = eseg.is_ccw;
-
-          // 计算归一化的弧段跨度
-          double span = theta_end - theta_start;
-          if (is_ccw) {
-            while (span < 0.0) span += 2 * M_PI;
-          } else {
-            while (span > 0.0) span -= 2 * M_PI;
-          }
-
-          // 离散化：每 5 度一个点
-          const double step = M_PI / 36.0;
-          const int num_segments = static_cast<int>(std::abs(span) / step) + 1;
 
           // 生成离散点
           std::vector<Eigen::Vector2d> points_world;
-          for (int i = 0; i <= num_segments; ++i) {
-            const double t = theta_start + (is_ccw ? 1.0 : -1.0) * i * step;
-            const Eigen::Vector2d point_local(eseg.a * std::cos(t), eseg.b * std::sin(t));
-            const Eigen::Vector2d point_world = R * point_local + origin;
-            points_world.push_back(point_world);
-          }
-          // 确保最后一点精确落在 theta_end 上
-          const Eigen::Vector2d point_end_local(eseg.a * std::cos(theta_end),
-                                                eseg.b * std::sin(theta_end));
-          points_world.back() = R * point_end_local + origin;
-
+          sampleEllipseArcSegment(seg.ellipse_arc_segment, 0.1, points_world);
           // 添加线段
           for (size_t i = 1; i < points_world.size(); ++i) {
             geometry_msgs::msg::Point p_start, p_end;
@@ -2598,11 +2722,10 @@ void TebLocalPlannerROS::updateMultiCurveVec(
       marker_msg.action = visualization_msgs::msg::Marker::ADD;
       marker_msg.scale.x = 0.1;
       marker_msg.color.r = 0.0f;
-      marker_msg.color.g = 1.0f;
-      marker_msg.color.b = 1.0f;
+      marker_msg.color.g = 0.0f;
+      marker_msg.color.b = 0.5f;
       marker_msg.color.a = 1.0f;
 
-      for (const auto& seg : edge_multi_curve_.segments) {
         if (found_min_dis_pt){
           geometry_msgs::msg::Point p_min, p_start_path;
           p_start_path.x = path_start_pt.x();
@@ -2615,6 +2738,8 @@ void TebLocalPlannerROS::updateMultiCurveVec(
           marker_msg.points.push_back(p_start_path);
           marker_msg.points.push_back(p_min);
         }
+
+      for (const auto& seg : edge_multi_curve_.segments) {
         if (seg.type == capella_ros_msg::msg::CurveSegment::LINE) {
           geometry_msgs::msg::Point p_start, p_end;
           p_start.x = seg.line_segment.start_point.x;
@@ -2626,42 +2751,10 @@ void TebLocalPlannerROS::updateMultiCurveVec(
           marker_msg.points.push_back(p_start);
           marker_msg.points.push_back(p_end);
         } else if (seg.type == capella_ros_msg::msg::CurveSegment::ELLIPSE_ARC) {
-          // 离散化椭圆弧
-          const auto& eseg = seg.ellipse_arc_segment;
-          const Eigen::Quaterniond q(eseg.frame.orientation.w, eseg.frame.orientation.x,
-                                      eseg.frame.orientation.y, eseg.frame.orientation.z);
-          const Eigen::Vector2d origin(eseg.frame.position.x, eseg.frame.position.y);
-          const Eigen::Matrix2d R = q.toRotationMatrix().topLeftCorner<2, 2>();
-
-          const double theta_start = eseg.theta_start;
-          const double theta_end = eseg.theta_end;
-          const bool is_ccw = eseg.is_ccw;
-
-          // 计算归一化的弧段跨度
-          double span = theta_end - theta_start;
-          if (is_ccw) {
-            while (span < 0.0) span += 2 * M_PI;
-          } else {
-            while (span > 0.0) span -= 2 * M_PI;
-          }
-
-          // 离散化：每 5 度一个点
-          const double step = M_PI / 36.0;
-          const int num_segments = static_cast<int>(std::abs(span) / step) + 1;
 
           // 生成离散点
           std::vector<Eigen::Vector2d> points_world;
-          for (int i = 0; i <= num_segments; ++i) {
-            const double t = theta_start + (is_ccw ? 1.0 : -1.0) * i * step;
-            const Eigen::Vector2d point_local(eseg.a * std::cos(t), eseg.b * std::sin(t));
-            const Eigen::Vector2d point_world = R * point_local + origin;
-            points_world.push_back(point_world);
-          }
-          // 确保最后一点精确落在 theta_end 上
-          const Eigen::Vector2d point_end_local(eseg.a * std::cos(theta_end),
-                                                eseg.b * std::sin(theta_end));
-          points_world.back() = R * point_end_local + origin;
-
+          sampleEllipseArcSegment(seg.ellipse_arc_segment, 0.1, points_world);
           // 添加线段
           for (size_t i = 1; i < points_world.size(); ++i) {
             geometry_msgs::msg::Point p_start, p_end;
