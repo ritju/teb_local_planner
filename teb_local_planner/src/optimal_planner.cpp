@@ -923,7 +923,7 @@ void TebOptimalPlanner::AddEdgesShortestPath()
 
 void TebOptimalPlanner::AddEdgesDistanceToWall()
 {
-  if (cfg_->optim.weight_wall_line_dist==0 || !wall_line_ || wall_line_->size() == 0)
+  if (cfg_->optim.weight_wall_line_dist==0)
     return; // if weight equals zero skip adding edges!
   Eigen::Matrix<double,1,1> information;
   const Eigen::Vector2d p0 = teb_.PoseVertex(0)->position();

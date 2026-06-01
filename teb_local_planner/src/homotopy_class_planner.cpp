@@ -123,7 +123,6 @@ bool HomotopyClassPlanner::plan(const PoseSE2& start, const PoseSE2& goal, const
   // update via-points if activated
   updateReferenceTrajectoryViaPoints(cfg_->hcp.viapoints_all_candidates);
   updateReferenceTrajectoryWallLinePoints(cfg_->hcp.viapoints_all_candidates);
-  updateReferenceTrajectoryMultiCurve(cfg_->hcp.viapoints_all_candidates);
   // Optimize all trajectories in alternative homotopy classes
   optimizeAllTEBs(cfg_->optim.no_inner_iterations, cfg_->optim.no_outer_iterations);
   // Select which candidate (based on alternative homotopy classes) should be used
@@ -368,41 +367,6 @@ void HomotopyClassPlanner::updateReferenceTrajectoryWallLinePoints(bool all_traj
       if(initial_plan_eq_class_->isEqual(*equivalence_classes_[i].first))
       {
         tebs_[i]->setWallLine(wall_line_);
-      }
-      else
-      {
-        tebs_[i]->setWallLine(NULL);
-      }
-    }
-  }
-}
-
-void HomotopyClassPlanner::updateReferenceTrajectoryMultiCurve(bool all_trajectories)
-{
-  if (!multi_curve_ || (cfg_->optim.weight_wall_line_direction <= 0 && cfg_->optim.weight_wall_line_dist <= 0))
-    return;
-  if(equivalence_classes_.size() < tebs_.size())
-  {
-    RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"), "HomotopyClassPlanner::updateReferenceTrajectoryWithViaPoints(): Number of h-signatures does not match number of trajectories.");
-    return;
-  }
-
-  if (all_trajectories)
-  {
-    // enable wall-line-points for all tebs
-    for (std::size_t i=0; i < equivalence_classes_.size(); ++i)
-    {
-        tebs_[i]->setMultiCurve(multi_curve_);
-    }
-  }
-  else
-  {
-    // enable wall-line-points for teb in the same hommotopy class as the initial_plan and deactivate it for all other ones
-    for (std::size_t i=0; i < equivalence_classes_.size(); ++i)
-    {
-      if(initial_plan_eq_class_->isEqual(*equivalence_classes_[i].first))
-      {
-        tebs_[i]->setMultiCurve(multi_curve_);
       }
       else
       {

@@ -543,8 +543,6 @@ protected:
   void updateReferenceTrajectoryViaPoints(bool all_trajectories);
 
   void updateReferenceTrajectoryWallLinePoints(bool all_trajectories);
-
-  void updateReferenceTrajectoryMultiCurve(bool all_trajectories);
   //@}
 
   // external objects (store weak pointers)
