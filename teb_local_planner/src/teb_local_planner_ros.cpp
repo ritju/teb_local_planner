@@ -4785,6 +4785,7 @@ bool TebLocalPlannerROS::trySelectSegmentFromTwoPointPath(
   const double input_path_delta_y = input_path_end_position.y - input_path_start_position.y;
   const double input_path_segment_length = std::hypot(input_path_delta_x, input_path_delta_y);
   if (input_path_segment_length <= cfg_->wall_line.min_path_line_length) {
+    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "Input path segment length is too short, input_path_segment_length: %f", input_path_segment_length);
     return false;
   }
   const double robot_yaw_radians = tf2::getYaw(robot_pose.pose.orientation);
@@ -4808,6 +4809,7 @@ bool TebLocalPlannerROS::trySelectSegmentFromTwoPointPath(
   const double edge_line_delta_y = edge_line_end_position.y - edge_line_start_position.y;
   const double edge_line_segment_length = std::hypot(edge_line_delta_x, edge_line_delta_y);
   if (edge_line_segment_length < min_wall_line_length_) {
+    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "Edge line segment length is too short, edge_line_segment_length: %f", edge_line_segment_length);
     return false;
   }
   const double edge_line_direction_x = edge_line_delta_x / edge_line_segment_length;
@@ -4819,6 +4821,7 @@ bool TebLocalPlannerROS::trySelectSegmentFromTwoPointPath(
   const double parallelism_cosine_threshold =
     std::fabs(std::cos(parallel_tolerance_degrees / 180.0 * M_PI));
   if (absolute_cosine_parallelism <= parallelism_cosine_threshold) {
+    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "Edge line is not parallel to input path, absolute_cosine_parallelism: %f", absolute_cosine_parallelism);
     return false;
   }
   const double edge_line_implicit_x_coefficient = edge_line_delta_y;
@@ -4841,6 +4844,7 @@ bool TebLocalPlannerROS::trySelectSegmentFromTwoPointPath(
       edge_line_implicit_constant_term) /
     (line_equation_normalization + 1e-18);
   if (average_distance_path_to_edge_line > distance_tolerance_meters) {
+    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "Average distance path to edge line is too large, average_distance_path_to_edge_line: %f", average_distance_path_to_edge_line);
     return false;
   }
   selected_edge_segment_start =
@@ -4849,6 +4853,7 @@ bool TebLocalPlannerROS::trySelectSegmentFromTwoPointPath(
     Eigen::Vector2d(edge_line_end_position.x, edge_line_end_position.y);
   minimum_average_distance_to_plan = average_distance_path_to_edge_line;
   robot_perpendicular_distance_to_edge_line = robot_perpendicular_distance_to_edge_line_value;
+  RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Selected edge segment start: (%f, %f), end: (%f, %f), minimum_average_distance_to_plan: %f, robot_perpendicular_distance_to_edge_line: %f", selected_edge_segment_start.x(), selected_edge_segment_start.y(), selected_edge_segment_end.x(), selected_edge_segment_end.y(), minimum_average_distance_to_plan, robot_perpendicular_distance_to_edge_line);
   return true;
 }
 
@@ -4926,6 +4931,7 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
           candidate_minimum_average_distance,
           candidate_robot_perpendicular_distance)) {
       if (candidate_minimum_average_distance < best_minimum_average_distance_to_plan) {
+        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Selected best reference segment, candidate_minimum_average_distance: %f", candidate_minimum_average_distance);
         best_minimum_average_distance_to_plan = candidate_minimum_average_distance;
         best_reference_segment_start = candidate_segment_start;
         best_reference_segment_end = candidate_segment_end;
@@ -4967,6 +4973,7 @@ void TebLocalPlannerROS::applyWallLineSegmentAndVisual(
             (cfg_->wall_line.distance_tolerance - cfg_->wall_line.min_wall_dist) *
             (minimum_average_distance_to_plan - cfg_->wall_line.min_wall_dist) +
           weight_wall_line_dist_)));
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Weight wall line dist: %f", cfg_->optim.weight_wall_line_dist);
   }
   wall_line_update_time_ = clock_->now();
   std_msgs::msg::Float32 edge_distance_message;
