@@ -1557,7 +1557,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
           }
         }
       }
-    }
+    } 
     else if (!polygon->points.empty() && use_multi_curve_filter && !std::isinf(robot_dis_multi_curve) && robot_dis_multi_curve > 0) 
     {
       double max_robot_penetration = 0.0;
@@ -1708,7 +1708,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
         }
       }
     }
-
+    
     if (polygon->points.size()==1 && obstacle->radius > 0) // Circle
     {
       obstacles_.push_back(ObstaclePtr(new CircularObstacle(polygon->points[0].x, polygon->points[0].y, obstacle->radius)));
@@ -1748,6 +1748,25 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
     obstacles_.push_back(ObstaclePtr(new LineObstacle(
       eff_wall_start.x(), eff_wall_start.y(),
       eff_wall_end.x(), eff_wall_end.y())));
+  }
+
+  if (use_multi_curve_filter)
+  {
+    std::vector<Eigen::Vector2d> line_pts;
+    for (const auto& seg : use_multi_curve.segments) {
+      if (seg.type == capella_ros_msg::msg::CurveSegment::LINE) {
+        line_pts.emplace_back(Eigen::Vector2d(seg.line_segment.start_point.x, seg.line_segment.start_point.y));
+        line_pts.emplace_back(Eigen::Vector2d(seg.line_segment.end_point.x, seg.line_segment.end_point.y));
+      } else if (seg.type == capella_ros_msg::msg::CurveSegment::ELLIPSE_ARC) {
+        sampleEllipseArcSegment(seg.ellipse_arc_segment, 0.1, line_pts);
+      }
+    }
+    if (line_pts.size() > 0)
+    {
+      obstacles_.push_back(ObstaclePtr(new MultiLineObstacle(Point2dContainer(
+        line_pts.begin(),
+        line_pts.end()))));
+    }
   }
 
   // OccupancyGrid 仅在 costmap_converter 流程末尾发布（不在纯 costmap 点障碍路径后发布）
@@ -2577,7 +2596,7 @@ void TebLocalPlannerROS::updateMultiCurveVec(
       min_path_dist = minDistToMultiCurveWithDir(path_start_pt, min_distance_point, min_distance_direction, multi_curve);
       if (!std::isinf(min_path_dist))
       {
-            found_min_dis_pt = true;
+        found_min_dis_pt = true;
       }
       const Eigen::Vector2d r_to_pt = min_distance_point - robot_pt;
       const double r_to_pt_len = r_to_pt.norm();
@@ -2650,7 +2669,7 @@ void TebLocalPlannerROS::updateMultiCurveVec(
       marker_msg.color.b = 0.5f;
       marker_msg.color.a = 1.0f;
 
-        if (found_min_dis_pt){
+      if (found_min_dis_pt){
           geometry_msgs::msg::Point p_min, p_start_path;
           p_start_path.x = path_start_pt.x();
           p_start_path.y = path_start_pt.y();
@@ -2661,7 +2680,7 @@ void TebLocalPlannerROS::updateMultiCurveVec(
           p_min.z = 0.0;
           marker_msg.points.push_back(p_start_path);
           marker_msg.points.push_back(p_min);
-        }
+      }
 
       for (const auto& seg : edge_multi_curve_.segments) {
         if (seg.type == capella_ros_msg::msg::CurveSegment::LINE) {
@@ -2726,7 +2745,7 @@ void TebLocalPlannerROS::updateMultiCurveVec(
       marker_msg.color.b = 0.5f;
       marker_msg.color.a = 1.0f;
 
-        if (found_min_dis_pt){
+      if (found_min_dis_pt){
           geometry_msgs::msg::Point p_min, p_start_path;
           p_start_path.x = path_start_pt.x();
           p_start_path.y = path_start_pt.y();
@@ -2737,7 +2756,7 @@ void TebLocalPlannerROS::updateMultiCurveVec(
           p_min.z = 0.0;
           marker_msg.points.push_back(p_start_path);
           marker_msg.points.push_back(p_min);
-        }
+      }
 
       for (const auto& seg : edge_multi_curve_.segments) {
         if (seg.type == capella_ros_msg::msg::CurveSegment::LINE) {

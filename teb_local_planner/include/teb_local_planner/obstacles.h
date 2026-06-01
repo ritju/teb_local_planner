@@ -1106,6 +1106,326 @@ public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW  
 };
 
+class MultiLineObstacle : public Obstacle
+{
+public:
+
+  MultiLineObstacle() : Obstacle()
+  {
+    centroid_.setZero();
+  }
+
+  explicit MultiLineObstacle(
+      const Point2dContainer& vertices,
+      double radius = 0.0)
+      : Obstacle(),
+        vertices_(vertices),
+        radius_(radius)
+  {
+    calcCentroid();
+  }
+
+  virtual ~MultiLineObstacle() {}
+
+  virtual bool checkCollision(
+      const Eigen::Vector2d& point,
+      double min_dist) const override
+  {
+    return getMinimumDistance(point) <= min_dist;
+  }
+
+  virtual bool checkLineIntersection(
+      const Eigen::Vector2d& line_start,
+      const Eigen::Vector2d& line_end,
+      double min_dist = 0) const override
+  {
+    if (vertices_.size() < 2)
+      return false;
+
+    for (size_t i = 0; i + 1 < vertices_.size(); ++i)
+    {
+      if (check_line_segments_intersection_2d(
+              line_start,
+              line_end,
+              vertices_[i],
+              vertices_[i + 1]))
+      {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  virtual double getMinimumDistance(
+      const Eigen::Vector2d& position) const override
+  {
+    if (vertices_.size() < 2)
+      return std::numeric_limits<double>::max();
+
+    double min_dist = std::numeric_limits<double>::max();
+
+    for (size_t i = 0; i + 1 < vertices_.size(); ++i)
+    {
+      double d = distance_point_to_segment_2d(
+          position,
+          vertices_[i],
+          vertices_[i + 1]);
+
+      min_dist = std::min(min_dist, d);
+    }
+
+    return min_dist - radius_;
+  }
+
+  virtual double getMinimumDistance(
+      const Eigen::Vector2d& line_start,
+      const Eigen::Vector2d& line_end) const override
+  {
+    if (vertices_.size() < 2)
+      return std::numeric_limits<double>::max();
+
+    double min_dist = std::numeric_limits<double>::max();
+
+    for (size_t i = 0; i + 1 < vertices_.size(); ++i)
+    {
+      double d = distance_segment_to_segment_2d(
+          vertices_[i],
+          vertices_[i + 1],
+          line_start,
+          line_end);
+
+      min_dist = std::min(min_dist, d);
+    }
+
+    return min_dist - radius_;
+  }
+
+  virtual double getMinimumDistance(
+      const Point2dContainer& polygon) const override
+  {
+    if (vertices_.size() < 2)
+      return std::numeric_limits<double>::max();
+
+    double min_dist = std::numeric_limits<double>::max();
+
+    for (size_t i = 0; i + 1 < vertices_.size(); ++i)
+    {
+      double d = distance_segment_to_polygon_2d(
+          vertices_[i],
+          vertices_[i + 1],
+          polygon);
+
+      min_dist = std::min(min_dist, d);
+    }
+
+    return min_dist - radius_;
+  }
+
+  virtual Eigen::Vector2d getClosestPoint(
+      const Eigen::Vector2d& position) const override
+  {
+    Eigen::Vector2d best_pt = Eigen::Vector2d::Zero();
+
+    if (vertices_.size() < 2)
+      return best_pt;
+
+    double min_dist_sq = std::numeric_limits<double>::max();
+
+    for (size_t i = 0; i + 1 < vertices_.size(); ++i)
+    {
+      Eigen::Vector2d pt =
+          closest_point_on_line_segment_2d(
+              position,
+              vertices_[i],
+              vertices_[i + 1]);
+
+      double dsq = (position - pt).squaredNorm();
+
+      if (dsq < min_dist_sq)
+      {
+        min_dist_sq = dsq;
+        best_pt = pt;
+      }
+    }
+
+    if (radius_ > 1e-9)
+    {
+      Eigen::Vector2d dir = position - best_pt;
+
+      if (dir.squaredNorm() > 1e-12)
+      {
+        best_pt += radius_ * dir.normalized();
+      }
+    }
+
+    return best_pt;
+  }
+
+  virtual double getMinimumSpatioTemporalDistance(
+      const Eigen::Vector2d& position,
+      double t) const override
+  {
+    if (vertices_.size() < 2)
+      return std::numeric_limits<double>::max();
+
+    Eigen::Vector2d offset = t * centroid_velocity_;
+
+    double min_dist = std::numeric_limits<double>::max();
+
+    for (size_t i = 0; i + 1 < vertices_.size(); ++i)
+    {
+      double d = distance_point_to_segment_2d(
+          position,
+          vertices_[i] + offset,
+          vertices_[i + 1] + offset);
+
+      min_dist = std::min(min_dist, d);
+    }
+
+    return min_dist - radius_;
+  }
+
+  virtual double getMinimumSpatioTemporalDistance(
+      const Eigen::Vector2d& line_start,
+      const Eigen::Vector2d& line_end,
+      double t) const override
+  {
+    if (vertices_.size() < 2)
+      return std::numeric_limits<double>::max();
+
+    Eigen::Vector2d offset = t * centroid_velocity_;
+
+    double min_dist = std::numeric_limits<double>::max();
+
+    for (size_t i = 0; i + 1 < vertices_.size(); ++i)
+    {
+      double d = distance_segment_to_segment_2d(
+          vertices_[i] + offset,
+          vertices_[i + 1] + offset,
+          line_start,
+          line_end);
+
+      min_dist = std::min(min_dist, d);
+    }
+
+    return min_dist - radius_;
+  }
+
+  virtual double getMinimumSpatioTemporalDistance(
+      const Point2dContainer& polygon,
+      double t) const override
+  {
+    if (vertices_.size() < 2)
+      return std::numeric_limits<double>::max();
+
+    Eigen::Vector2d offset = t * centroid_velocity_;
+
+    double min_dist = std::numeric_limits<double>::max();
+
+    for (size_t i = 0; i + 1 < vertices_.size(); ++i)
+    {
+      double d = distance_segment_to_polygon_2d(
+          vertices_[i] + offset,
+          vertices_[i + 1] + offset,
+          polygon);
+
+      min_dist = std::min(min_dist, d);
+    }
+
+    return min_dist - radius_;
+  }
+
+  virtual const Eigen::Vector2d& getCentroid() const override
+  {
+    return centroid_;
+  }
+
+  virtual std::complex<double> getCentroidCplx() const override
+  {
+    return std::complex<double>(
+        centroid_.x(),
+        centroid_.y());
+  }
+
+  virtual void toPolygonMsg(
+      geometry_msgs::msg::Polygon& polygon) override
+  {
+    polygon.points.resize(vertices_.size());
+
+    for (size_t i = 0; i < vertices_.size(); ++i)
+    {
+      polygon.points[i].x = vertices_[i].x();
+      polygon.points[i].y = vertices_[i].y();
+      polygon.points[i].z = 0;
+    }
+  }
+
+  const Point2dContainer& vertices() const
+  {
+    return vertices_;
+  }
+
+  Point2dContainer& vertices()
+  {
+    return vertices_;
+  }
+
+  void setVertices(const Point2dContainer& vertices)
+  {
+    vertices_ = vertices;
+    calcCentroid();
+  }
+
+  void addVertex(const Eigen::Vector2d& pt)
+  {
+    vertices_.push_back(pt);
+    calcCentroid();
+  }
+
+  void clearVertices()
+  {
+    vertices_.clear();
+    centroid_.setZero();
+  }
+
+  double radius() const
+  {
+    return radius_;
+  }
+
+  void setRadius(double radius)
+  {
+    radius_ = radius;
+  }
+
+protected:
+  void calcCentroid()
+  {
+    centroid_.setZero();
+
+    if (vertices_.empty())
+      return;
+
+    for (const auto& pt : vertices_)
+    {
+      centroid_ += pt;
+    }
+
+    centroid_ /= static_cast<double>(vertices_.size());
+  }
+
+protected:
+  Point2dContainer vertices_;
+
+  Eigen::Vector2d centroid_;
+
+  double radius_ = 0.0;
+
+public:
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+};
+
 
 } // namespace teb_local_planner
 

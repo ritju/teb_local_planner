@@ -337,6 +337,45 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
     }
   }
   
+  // Visualize multiLine obstacles
+  {
+    std::size_t idx = 0;
+    for (ObstContainer::const_iterator obst = obstacles.begin(); obst != obstacles.end(); ++obst)
+    {	
+      std::shared_ptr<MultiLineObstacle> pobst = std::dynamic_pointer_cast<MultiLineObstacle>(*obst);
+      if (!pobst)
+        continue;
+      
+      visualization_msgs::msg::Marker marker;
+      marker.header.frame_id = cfg_->map_frame;
+      marker.header.stamp = current_time;
+      marker.ns = "MultiLineObstacles";
+      marker.id = idx++;
+      marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+      marker.action = visualization_msgs::msg::Marker::ADD;
+      marker.lifetime = rclcpp::Duration(2, 0);
+      marker.pose.orientation.w = 1.0;
+      
+      for (Point2dContainer::const_iterator vertex = pobst->vertices().begin(); vertex != pobst->vertices().end(); ++vertex)
+      {
+        geometry_msgs::msg::Point point;
+        point.x = vertex->x();
+        point.y = vertex->y();
+        point.z = 0;
+        marker.points.push_back(point);
+      }
+      
+      marker.scale.x = 0.1;
+      marker.scale.y = 0.1;
+      marker.color.a = 1.0;
+      marker.color.r = 1.0;
+      marker.color.g = 0.0;
+      marker.color.b = 0.0;
+      
+      markers.push_back(marker);
+    }
+  }
+  
   // 一次性发布所有障碍物 marker，使用 MarkerArray
   if (!markers.empty())
   {
