@@ -235,6 +235,416 @@ bool clipWorldSegmentToAlignedRect(
   return false;
 }
 
+struct EffWallFrame {
+  Eigen::Vector2d start;
+  Eigen::Vector2d dir;
+  Eigen::Vector2d normal;
+  double length{0.0};
+};
+
+struct WallClipGeometryParams {
+  double intersect_min_span{0.05};
+  double min_keep_area_sq{0.008};
+  double vertex_dedupe_dist{0.02};
+};
+
+WallClipGeometryParams wallClipGeometryParamsFromConfig(const TebConfig& config)
+{
+  WallClipGeometryParams params;
+  params.intersect_min_span =
+    config.wall_line.wall_line_obstacle_clip_intersect_min_span;
+  params.min_keep_area_sq =
+    config.wall_line.wall_line_obstacle_clip_min_keep_area_sq;
+  params.vertex_dedupe_dist =
+    config.wall_line.wall_line_obstacle_clip_vertex_dedupe_dist;
+  return params;
+}
+
+double wallSignedDist(const Eigen::Vector2d& p, const EffWallFrame& wall)
+{
+  return (p - wall.start).dot(wall.normal);
+}
+
+double wallAlongCoord(const Eigen::Vector2d& p, const EffWallFrame& wall)
+{
+  return (p - wall.start).dot(wall.dir);
+}
+
+Eigen::Vector2d wallPointAtT(const EffWallFrame& wall, double t)
+{
+  return wall.start + wall.dir * t;
+}
+
+bool intersectEdgeWithWallSegment(
+  const Eigen::Vector2d& edge_start,
+  const Eigen::Vector2d& edge_end,
+  const EffWallFrame& wall,
+  double& t_along_wall)
+{
+  const Eigen::Vector2d edge_vec = edge_end - edge_start;
+  const Eigen::Vector2d origin_to_edge = edge_start - wall.start;
+  const double denom = wall.dir.x() * edge_vec.y() - wall.dir.y() * edge_vec.x();
+  if (std::abs(denom) < 1e-12) {
+    return false;
+  }
+  const double edge_param =
+    (wall.dir.x() * origin_to_edge.y() - wall.dir.y() * origin_to_edge.x()) / denom;
+  const double wall_param =
+    (edge_vec.x() * origin_to_edge.y() - edge_vec.y() * origin_to_edge.x()) / denom;
+  if (edge_param < -1e-9 || edge_param > 1.0 + 1e-9) {
+    return false;
+  }
+  if (wall_param < -1e-9 || wall_param > wall.length + 1e-9) {
+    return false;
+  }
+  t_along_wall = std::clamp(wall_param, 0.0, wall.length);
+  return true;
+}
+
+void collectWallSegmentIntersectionTs(
+  const geometry_msgs::msg::Polygon& polygon,
+  const EffWallFrame& wall,
+  std::vector<double>& t_values)
+{
+  t_values.clear();
+  if (polygon.points.empty()) {
+    return;
+  }
+  const std::size_t vertex_count = polygon.points.size();
+  for (std::size_t edge_index = 0; edge_index < vertex_count; ++edge_index) {
+    const auto& point_a = polygon.points[edge_index];
+    const auto& point_b = polygon.points[(edge_index + 1) % vertex_count];
+    const Eigen::Vector2d edge_start(point_a.x, point_a.y);
+    const Eigen::Vector2d edge_end(point_b.x, point_b.y);
+    double t_intersect = 0.0;
+    if (intersectEdgeWithWallSegment(edge_start, edge_end, wall, t_intersect)) {
+      t_values.push_back(t_intersect);
+    }
+  }
+  for (const auto& point : polygon.points) {
+    const Eigen::Vector2d vertex(point.x, point.y);
+    const double along = wallAlongCoord(vertex, wall);
+    const double signed_distance = wallSignedDist(vertex, wall);
+    if (along >= -1e-6 && along <= wall.length + 1e-6 && std::abs(signed_distance) < 0.03) {
+      t_values.push_back(std::clamp(along, 0.0, wall.length));
+    }
+  }
+}
+
+bool wallSegmentIntersectionSpanSufficient(
+  const std::vector<double>& t_values,
+  double intersect_min_span)
+{
+  if (t_values.size() < 2) {
+    return false;
+  }
+  const double t_min = *std::min_element(t_values.begin(), t_values.end());
+  const double t_max = *std::max_element(t_values.begin(), t_values.end());
+  return (t_max - t_min) >= intersect_min_span;
+}
+
+void dedupePolygonVertices(
+  std::vector<Eigen::Vector2d>& vertices,
+  double vertex_dedupe_dist)
+{
+  if (vertices.size() < 2) {
+    return;
+  }
+  std::vector<Eigen::Vector2d> deduped;
+  deduped.reserve(vertices.size());
+  for (const auto& vertex : vertices) {
+    if (deduped.empty() ||
+      (deduped.back() - vertex).norm() > vertex_dedupe_dist)
+    {
+      deduped.push_back(vertex);
+    }
+  }
+  if (deduped.size() >= 2 &&
+    (deduped.front() - deduped.back()).norm() < vertex_dedupe_dist)
+  {
+    deduped.pop_back();
+  }
+  vertices.swap(deduped);
+}
+
+double polygonAreaAbs(const std::vector<Eigen::Vector2d>& vertices)
+{
+  if (vertices.size() < 3) {
+    return 0.0;
+  }
+  double twice_area = 0.0;
+  for (std::size_t i = 0; i < vertices.size(); ++i) {
+    const std::size_t j = (i + 1) % vertices.size();
+    twice_area += vertices[i].x() * vertices[j].y() - vertices[j].x() * vertices[i].y();
+  }
+  return std::abs(0.5 * twice_area);
+}
+
+void orderPolygonVerticesCCW(
+  std::vector<Eigen::Vector2d>& vertices,
+  double vertex_dedupe_dist)
+{
+  if (vertices.size() < 3) {
+    return;
+  }
+  Eigen::Vector2d centroid = Eigen::Vector2d::Zero();
+  for (const auto& vertex : vertices) {
+    centroid += vertex;
+  }
+  centroid /= static_cast<double>(vertices.size());
+  std::sort(
+    vertices.begin(), vertices.end(),
+    [&centroid](const Eigen::Vector2d& a, const Eigen::Vector2d& b) {
+      return std::atan2(a.y() - centroid.y(), a.x() - centroid.x()) <
+             std::atan2(b.y() - centroid.y(), b.x() - centroid.x());
+    });
+  dedupePolygonVertices(vertices, vertex_dedupe_dist);
+}
+
+std::vector<Eigen::Vector2d> clipPolygonDeepRobotSide(
+  const std::vector<Eigen::Vector2d>& input,
+  const EffWallFrame& wall,
+  double clip_depth,
+  double vertex_dedupe_dist)
+{
+  std::vector<Eigen::Vector2d> output;
+  if (input.empty()) {
+    return output;
+  }
+  const double keep_boundary = -clip_depth;
+  const auto inside = [&](const Eigen::Vector2d& point) {
+    return wallSignedDist(point, wall) <= keep_boundary + 1e-9;
+  };
+  const std::size_t vertex_count = input.size();
+  for (std::size_t i = 0; i < vertex_count; ++i) {
+    const Eigen::Vector2d& p1 = input[i];
+    const Eigen::Vector2d& p2 = input[(i + 1) % vertex_count];
+    const double d1 = wallSignedDist(p1, wall);
+    const double d2 = wallSignedDist(p2, wall);
+    const bool in1 = inside(p1);
+    const bool in2 = inside(p2);
+    if (in1) {
+      output.push_back(p1);
+    }
+    if (in1 != in2) {
+      const double denom = d1 - d2;
+      if (std::abs(denom) > 1e-12) {
+        double alpha = d1 / denom;
+        alpha = std::clamp(alpha, 0.0, 1.0);
+        output.push_back(p1 + alpha * (p2 - p1));
+      }
+    }
+  }
+  dedupePolygonVertices(output, vertex_dedupe_dist);
+  return output;
+}
+
+void appendWallSealBetweenIntersectionTs(
+  std::vector<Eigen::Vector2d>& vertices,
+  const EffWallFrame& wall,
+  const std::vector<double>& wall_intersection_ts,
+  const WallClipGeometryParams& clip_params)
+{
+  if (wall_intersection_ts.size() < 2 || vertices.empty()) {
+    return;
+  }
+  const double t_min = *std::min_element(
+    wall_intersection_ts.begin(), wall_intersection_ts.end());
+  const double t_max = *std::max_element(
+    wall_intersection_ts.begin(), wall_intersection_ts.end());
+  if ((t_max - t_min) < clip_params.intersect_min_span) {
+    return;
+  }
+  vertices.push_back(wallPointAtT(wall, t_min));
+  vertices.push_back(wallPointAtT(wall, t_max));
+  orderPolygonVerticesCCW(vertices, clip_params.vertex_dedupe_dist);
+}
+
+void buildMinimalWallRetainedSegment(
+  const EffWallFrame& wall,
+  double t_mid,
+  double intersect_min_span,
+  std::vector<Eigen::Vector2d>& vertices)
+{
+  const double half_span = 0.5 * intersect_min_span;
+  const double t0 = std::clamp(t_mid - half_span, 0.0, wall.length);
+  const double t1 = std::clamp(t_mid + half_span, 0.0, wall.length);
+  vertices = {wallPointAtT(wall, t0), wallPointAtT(wall, t1)};
+}
+
+struct WallPolygonClipResult {
+  std::vector<Eigen::Vector2d> vertices;
+  bool use_processed_vertices{false};
+  bool exit_trigger{false};
+  Eigen::Vector2d exit_best_point{Eigen::Vector2d::Zero()};
+  double exit_best_pen{0.0};
+};
+
+WallPolygonClipResult processWallFilteredPolygon(
+  const geometry_msgs::msg::Polygon& polygon,
+  const EffWallFrame& wall,
+  const Eigen::Vector2d& robot_position,
+  double along_wall_min,
+  double along_wall_max,
+  bool have_tf_obstacles_to_base,
+  const geometry_msgs::msg::TransformStamped& tf_base_from_obstacles,
+  const std::string& obstacles_frame,
+  const TebConfig& config)
+{
+  WallPolygonClipResult result;
+  const WallClipGeometryParams clip_params = wallClipGeometryParamsFromConfig(config);
+  std::vector<Eigen::Vector2d> input_vertices;
+  input_vertices.reserve(polygon.points.size());
+  for (const auto& point : polygon.points) {
+    input_vertices.emplace_back(point.x, point.y);
+  }
+
+  double max_robot_penetration = 0.0;
+  Eigen::Vector2d max_penetration_point = input_vertices.empty() ?
+    robot_position : input_vertices.front();
+
+  const double base_d_exit = config.wall_line.wall_line_obstacle_protrusion_base_distance;
+  const double scale_k_exit = config.wall_line.wall_line_protrusion_exit_depth_min;
+  const auto eff_protrusion_for_vertex_dist = [&](double dist_robot_vertex) -> double {
+    double effective = config.wall_line.wall_line_protrusion_exit_depth_min;
+    if (dist_robot_vertex > base_d_exit) {
+      effective = std::min(
+        effective + scale_k_exit * (dist_robot_vertex - base_d_exit),
+        config.wall_line.wall_line_obstacle_filter_distance_max);
+    }
+    return effective;
+  };
+
+  const double fwd_max = config.wall_line.wall_line_protrusion_exit_forward_max;
+  const double lat_max = config.wall_line.wall_line_protrusion_exit_lateral_max;
+  const double depth_max = config.wall_line.wall_line_protrusion_exit_depth_max;
+
+  for (const auto& point : polygon.points) {
+    const Eigen::Vector2d vertex(point.x, point.y);
+    const double vertex_signed_dist = wallSignedDist(vertex, wall);
+    if (vertex_signed_dist < 0.0) {
+      const double penetration = -vertex_signed_dist;
+      if (penetration > max_robot_penetration) {
+        max_robot_penetration = penetration;
+        max_penetration_point = vertex;
+      }
+    }
+
+    const double along = wallAlongCoord(vertex, wall);
+    if (along <= along_wall_min || along >= along_wall_max) {
+      continue;
+    }
+
+    if (have_tf_obstacles_to_base) {
+      geometry_msgs::msg::PointStamped pin;
+      pin.header.frame_id = obstacles_frame;
+      pin.point.x = point.x;
+      pin.point.y = point.y;
+      pin.point.z = point.z;
+      geometry_msgs::msg::PointStamped p_base;
+      tf2::doTransform(pin, p_base, tf_base_from_obstacles);
+
+      if (p_base.point.x <= -config.wall_line.wall_line_obstacle_along_wall_rear_margin ||
+        p_base.point.x > fwd_max ||
+        std::fabs(p_base.point.y) > lat_max)
+      {
+        continue;
+      }
+    } else {
+      continue;
+    }
+
+    if (vertex_signed_dist >= 0.0) {
+      continue;
+    }
+    const double pen = -vertex_signed_dist;
+    const double dist_robot_vertex = (vertex - robot_position).norm();
+    const double eff_v = eff_protrusion_for_vertex_dist(dist_robot_vertex);
+    if (pen <= eff_v || pen > depth_max) {
+      continue;
+    }
+    if (!result.exit_trigger || pen > result.exit_best_pen) {
+      result.exit_trigger = true;
+      result.exit_best_pen = pen;
+      result.exit_best_point = vertex;
+    }
+  }
+
+  const double dist_robot_to_protrusion = (max_penetration_point - robot_position).norm();
+  const double base_d = config.wall_line.wall_line_obstacle_protrusion_base_distance;
+  const double scale_k = config.wall_line.wall_line_obstacle_filter_distance_scale;
+  double eff_clip_depth = config.wall_line.wall_line_obstacle_filter_distance;
+  if (dist_robot_to_protrusion > base_d) {
+    eff_clip_depth = std::min(
+      eff_clip_depth + scale_k * (dist_robot_to_protrusion - base_d),
+      config.wall_line.wall_line_obstacle_filter_distance_max);
+  }
+
+  std::vector<double> wall_intersection_ts;
+  collectWallSegmentIntersectionTs(polygon, wall, wall_intersection_ts);
+
+  const bool intersects_wall_segment = wallSegmentIntersectionSpanSufficient(
+    wall_intersection_ts, clip_params.intersect_min_span);
+  const bool shallow_protrusion = max_robot_penetration < eff_clip_depth;
+
+  if (intersects_wall_segment && shallow_protrusion) {
+    std::vector<Eigen::Vector2d> clipped =
+      clipPolygonDeepRobotSide(
+      input_vertices, wall, eff_clip_depth, clip_params.vertex_dedupe_dist);
+    appendWallSealBetweenIntersectionTs(clipped, wall, wall_intersection_ts, clip_params);
+    orderPolygonVerticesCCW(clipped, clip_params.vertex_dedupe_dist);
+
+    if (polygonAreaAbs(clipped) < clip_params.min_keep_area_sq) {
+      const double t_mid = 0.5 * (
+        *std::min_element(wall_intersection_ts.begin(), wall_intersection_ts.end()) +
+        *std::max_element(wall_intersection_ts.begin(), wall_intersection_ts.end()));
+      buildMinimalWallRetainedSegment(
+        wall, t_mid, clip_params.intersect_min_span, clipped);
+    }
+
+    if (clipped.size() >= 3) {
+      result.vertices = std::move(clipped);
+      result.use_processed_vertices = true;
+      return result;
+    }
+    if (clipped.size() == 2) {
+      result.vertices = std::move(clipped);
+      result.use_processed_vertices = true;
+      return result;
+    }
+    const double t_mid = wall_intersection_ts.empty() ? 0.5 * wall.length :
+      0.5 * (*std::min_element(wall_intersection_ts.begin(), wall_intersection_ts.end()) +
+             *std::max_element(wall_intersection_ts.begin(), wall_intersection_ts.end()));
+    buildMinimalWallRetainedSegment(
+      wall, t_mid, clip_params.intersect_min_span, clipped);
+    result.vertices = std::move(clipped);
+    result.use_processed_vertices = true;
+    return result;
+  }
+
+  return result;
+}
+
+void pushObstacleFromPolygonPoints(
+  std::vector<teb_local_planner::ObstaclePtr>& obstacles,
+  const std::vector<Eigen::Vector2d>& vertices)
+{
+  if (vertices.size() >= 3) {
+    PolygonObstacle* polyobst = new PolygonObstacle;
+    for (const auto& vertex : vertices) {
+      polyobst->pushBackVertex(vertex.x(), vertex.y());
+    }
+    polyobst->finalizePolygon();
+    obstacles.push_back(ObstaclePtr(polyobst));
+  } else if (vertices.size() == 2) {
+    obstacles.push_back(ObstaclePtr(new LineObstacle(
+      vertices[0].x(), vertices[0].y(),
+      vertices[1].x(), vertices[1].y())));
+  } else if (vertices.size() == 1) {
+    obstacles.push_back(ObstaclePtr(new PointObstacle(vertices[0].x(), vertices[0].y())));
+  }
+}
+
 bool footprintAxisAlignedBboxSeparateFromCostmapRect(
   const std::vector<geometry_msgs::msg::Point> & footprint,
   double map_x_min,
@@ -1572,197 +1982,110 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
     }
   }
 
-  // --- Add obstacles, filtering wall-side ones in edge-following mode ---
+  EffWallFrame eff_wall;
+  bool have_eff_wall = false;
+  double along_wall_min = 0.0;
+  double along_wall_max = 0.0;
+  if (use_wall_line_filter) {
+    eff_wall.start = eff_wall_start;
+    eff_wall.dir = eff_wall_dir;
+    eff_wall.normal = eff_wall_normal;
+    eff_wall.length = eff_wall_length;
+    have_eff_wall = true;
+    const double robot_along_wall =
+      (robot_pose_.position() - eff_wall_start).dot(eff_wall_dir);
+    along_wall_min = std::max(
+      0.0,
+      robot_along_wall - cfg_->wall_line.wall_line_obstacle_along_wall_rear_margin);
+    along_wall_max = eff_wall_length;
+  }
+
+  // --- Add obstacles; edge mode clips shallow wall-band geometry instead of skipping ---
   for (std::size_t i=0; i<obstacles->obstacles.size(); ++i)
   {
     const costmap_converter_msgs::msg::ObstacleMsg* obstacle = &obstacles->obstacles.at(i);
     const geometry_msgs::msg::Polygon* polygon = &obstacle->polygon;
 
-    if (use_wall_line_filter && !polygon->points.empty())
-    {
-      double cx = 0.0, cy = 0.0;
-      for (const auto& pt : polygon->points)
-      {
-        cx += pt.x;
-        cy += pt.y;
-      }
-      cx /= static_cast<double>(polygon->points.size());
-      cy /= static_cast<double>(polygon->points.size());
+    WallPolygonClipResult wall_result;
+    if (have_eff_wall && polygon->points.size() > 2) {
+      wall_result = processWallFilteredPolygon(
+        *polygon,
+        eff_wall,
+        robot_pose_.position(),
+        along_wall_min,
+        along_wall_max,
+        have_tf_obstacles_to_base,
+        tf_base_from_obstacles,
+        obstacles_frame,
+        *cfg_);
 
-      Eigen::Vector2d to_centroid = Eigen::Vector2d(cx, cy) - eff_wall_start;
-      double centroid_signed_dist = to_centroid.dot(eff_wall_normal);
-      double along_wall = to_centroid.dot(eff_wall_dir);
+      if (wall_result.exit_trigger) {
+        rclcpp::Time now = clock_->now();
+        protrusion_detection_timestamps_.push_back(now);
 
-      double max_robot_penetration = 0.0;
-      Eigen::Vector2d max_penetration_point(cx, cy);
-      for (const auto& pt : polygon->points)
-      {
-        Eigen::Vector2d to_vertex = Eigen::Vector2d(pt.x, pt.y) - eff_wall_start;
-        double vertex_signed_dist = to_vertex.dot(eff_wall_normal);
-        if (vertex_signed_dist < 0.0 && -vertex_signed_dist > max_robot_penetration)
+        rclcpp::Duration window_duration = rclcpp::Duration::from_seconds(
+          cfg_->wall_line.obstacle_protrusion_confirm_window);
+        while (!protrusion_detection_timestamps_.empty() &&
+          (now - protrusion_detection_timestamps_.front()) > window_duration)
         {
-          max_robot_penetration = -vertex_signed_dist;
-          max_penetration_point = Eigen::Vector2d(pt.x, pt.y);
-        }
-      }
-
-      const double dist_robot_to_protrusion =
-        (max_penetration_point - robot_pose_.position()).norm();
-      const double base_d = cfg_->wall_line.wall_line_obstacle_protrusion_base_distance;
-      const double scale_k = cfg_->wall_line.wall_line_obstacle_filter_distance;
-      double eff_protrusion_threshold = cfg_->wall_line.wall_line_obstacle_filter_distance;
-      if (dist_robot_to_protrusion > base_d) {
-        eff_protrusion_threshold = std::min(
-          eff_protrusion_threshold + scale_k * (dist_robot_to_protrusion - base_d),
-          cfg_->wall_line.wall_line_obstacle_filter_distance_max);
-      }
-
-      // Wall-side small protrusion → noise only: skip obstacle (no other continue in this block)
-      // 负数说明在墙的另一侧，不考虑；正数说明在墙的同一侧，考虑。
-      if (centroid_signed_dist >= -cfg_->wall_line.wall_line_obstacle_filter_distance && max_robot_penetration < eff_protrusion_threshold)
-      {
-        continue;
-      }
-
-      const double robot_along_wall =
-        (robot_pose_.position() - eff_wall_start).dot(eff_wall_dir);
-      const double along_wall_min = std::max(
-        0.0,
-        robot_along_wall - cfg_->wall_line.wall_line_obstacle_along_wall_rear_margin);
-
-      if (along_wall > along_wall_min && along_wall < eff_wall_length)
-      {
-        const double base_d_exit = cfg_->wall_line.wall_line_obstacle_protrusion_base_distance;
-        const double scale_k_exit = cfg_->wall_line.wall_line_protrusion_exit_depth_min;
-        auto eff_protrusion_for_vertex_dist = [&](double dist_robot_vertex) -> double {
-          double e = cfg_->wall_line.wall_line_protrusion_exit_depth_min;
-          if (dist_robot_vertex > base_d_exit) {
-            e = std::min(
-              e + scale_k_exit * (dist_robot_vertex - base_d_exit),
-              cfg_->wall_line.wall_line_obstacle_filter_distance_max);
-          }
-          return e;
-        };
-
-        bool exit_trigger = false;
-        Eigen::Vector2d exit_best_point = max_penetration_point;
-        double exit_best_pen = max_robot_penetration;
-
-        if (have_tf_obstacles_to_base) {
-          const double fwd_max = cfg_->wall_line.wall_line_protrusion_exit_forward_max;
-          const double lat_max = cfg_->wall_line.wall_line_protrusion_exit_lateral_max;
-          const double depth_max = cfg_->wall_line.wall_line_protrusion_exit_depth_max;
-
-          for (const auto& pt : polygon->points)
-          {
-            geometry_msgs::msg::PointStamped pin;
-            pin.header.frame_id = obstacles_frame;
-            pin.point.x = pt.x;
-            pin.point.y = pt.y;
-            pin.point.z = pt.z;
-            geometry_msgs::msg::PointStamped p_base;
-            tf2::doTransform(pin, p_base, tf_base_from_obstacles);
-
-            if (p_base.point.x <= -cfg_->wall_line.wall_line_obstacle_along_wall_rear_margin || 
-                p_base.point.x > fwd_max ||
-                std::fabs(p_base.point.y) > lat_max)
-            {
-              continue;
-            }
-
-            Eigen::Vector2d to_vertex = Eigen::Vector2d(pt.x, pt.y) - eff_wall_start;
-            double v_sd = to_vertex.dot(eff_wall_normal);
-            if (v_sd >= 0.0)
-            {
-              continue;
-            }
-            const double pen = -v_sd;
-            const double d_rv =
-              (Eigen::Vector2d(pt.x, pt.y) - robot_pose_.position()).norm();
-            const double eff_v = eff_protrusion_for_vertex_dist(d_rv);
-            if (pen <= eff_v || pen > depth_max)
-            {
-              continue;
-            }
-            if (!exit_trigger || pen > exit_best_pen)
-            {
-              exit_trigger = true;
-              exit_best_pen = pen;
-              exit_best_point = Eigen::Vector2d(pt.x, pt.y);
-            }
-          }
+          protrusion_detection_timestamps_.erase(protrusion_detection_timestamps_.begin());
         }
 
-        if (exit_trigger)
+        if (static_cast<int>(protrusion_detection_timestamps_.size()) >=
+          cfg_->wall_line.obstacle_protrusion_min_confirm_frames)
         {
-          rclcpp::Time now = clock_->now();
-          protrusion_detection_timestamps_.push_back(now);
-
-          rclcpp::Duration window_duration = rclcpp::Duration::from_seconds(
-            cfg_->wall_line.obstacle_protrusion_confirm_window);
-          while (!protrusion_detection_timestamps_.empty() &&
-                 (now - protrusion_detection_timestamps_.front()) > window_duration)
-          {
-            protrusion_detection_timestamps_.erase(protrusion_detection_timestamps_.begin());
+          bool is_duplicate = false;
+          for (const auto& existing : protruding_obstacles_) {
+            if ((existing.position - wall_result.exit_best_point).norm() < 0.5) {
+              is_duplicate = true;
+              break;
+            }
           }
 
-          if (static_cast<int>(protrusion_detection_timestamps_.size()) >=
-              cfg_->wall_line.obstacle_protrusion_min_confirm_frames)
-          {
-            bool is_duplicate = false;
-            for (const auto& existing : protruding_obstacles_)
+          if (!is_duplicate) {
+            while (static_cast<int>(protruding_obstacles_.size()) >=
+              cfg_->wall_line.obstacle_protrusion_max_stored)
             {
-              if ((existing.position - exit_best_point).norm() < 0.5)
-              {
-                is_duplicate = true;
-                break;
-              }
+              protruding_obstacles_.erase(protruding_obstacles_.begin());
             }
 
-            if (!is_duplicate)
-            {
-              while (static_cast<int>(protruding_obstacles_.size()) >=
-                     cfg_->wall_line.obstacle_protrusion_max_stored)
-              {
-                protruding_obstacles_.erase(protruding_obstacles_.begin());
-              }
-
-              ProtrudingObstacle protruding_obst;
-              protruding_obst.position = exit_best_point;
-              protruding_obst.influence_radius = exit_best_pen;
-              protruding_obst.detection_time = now;
-              protruding_obstacles_.push_back(protruding_obst);
-              RCLCPP_INFO(logger_, "Protruding obstacle confirmed at (%.2f, %.2f), penetration=%.2f.",
-                exit_best_point.x(), exit_best_point.y(), exit_best_pen);
-            }
-            protrusion_detection_timestamps_.clear();
+            ProtrudingObstacle protruding_obst;
+            protruding_obst.position = wall_result.exit_best_point;
+            protruding_obst.influence_radius = wall_result.exit_best_pen;
+            protruding_obst.detection_time = now;
+            protruding_obstacles_.push_back(protruding_obst);
+            RCLCPP_INFO(
+              logger_,
+              "Protruding obstacle confirmed at (%.2f, %.2f), penetration=%.2f.",
+              wall_result.exit_best_point.x(), wall_result.exit_best_point.y(),
+              wall_result.exit_best_pen);
           }
+          protrusion_detection_timestamps_.clear();
         }
       }
     }
 
-    if (polygon->points.size()==1 && obstacle->radius > 0) // Circle
+    if (wall_result.use_processed_vertices && !wall_result.vertices.empty()) {
+      pushObstacleFromPolygonPoints(obstacles_, wall_result.vertices);
+    } else if (polygon->points.size()==1 && obstacle->radius > 0) // Circle
     {
-      obstacles_.push_back(ObstaclePtr(new CircularObstacle(polygon->points[0].x, polygon->points[0].y, obstacle->radius)));
+      obstacles_.push_back(ObstaclePtr(new CircularObstacle(
+        polygon->points[0].x, polygon->points[0].y, obstacle->radius)));
     }
-    // else if (polygon->points.size()==1) // Point
-    // {
-    //   obstacles_.push_back(ObstaclePtr(new PointObstacle(polygon->points[0].x, polygon->points[0].y)));
-    // }
     else if (polygon->points.size()==2) // Line
     {
-      obstacles_.push_back(ObstaclePtr(new LineObstacle(polygon->points[0].x, polygon->points[0].y,
-                                                        polygon->points[1].x, polygon->points[1].y )));
+      obstacles_.push_back(ObstaclePtr(new LineObstacle(
+        polygon->points[0].x, polygon->points[0].y,
+        polygon->points[1].x, polygon->points[1].y)));
     }
     else if (polygon->points.size()>2) // Real polygon
     {
-        PolygonObstacle* polyobst = new PolygonObstacle;
-        for (std::size_t j=0; j<polygon->points.size(); ++j)
-        {
-            polyobst->pushBackVertex(polygon->points[j].x, polygon->points[j].y);
-        }
-        polyobst->finalizePolygon();
-        obstacles_.push_back(ObstaclePtr(polyobst));
+      PolygonObstacle* polyobst = new PolygonObstacle;
+      for (std::size_t j= 0; j < polygon->points.size(); ++j) {
+        polyobst->pushBackVertex(polygon->points[j].x, polygon->points[j].y);
+      }
+      polyobst->finalizePolygon();
+      obstacles_.push_back(ObstaclePtr(polyobst));
     }
 
     // Set velocity, if obstacle is moving
@@ -4868,6 +5191,27 @@ bool TebLocalPlannerROS::trySelectSegmentFromTwoPointPath(
   return true;
 }
 
+bool robotOnReferenceSegmentWithinDistance(
+  const Eigen::Vector2d& segment_start,
+  const Eigen::Vector2d& segment_end,
+  const Eigen::Vector2d& robot_xy,
+  double max_distance_m)
+{
+  const Eigen::Vector2d segment_vector = segment_end - segment_start;
+  const double segment_length_squared = segment_vector.squaredNorm();
+  if (segment_length_squared < 1e-12) {
+    return false;
+  }
+  const double along_parameter =
+    (robot_xy - segment_start).dot(segment_vector) / segment_length_squared;
+  if (along_parameter < 0.0 || along_parameter > 1.0) {
+    return false;
+  }
+  const Eigen::Vector2d closest_point_on_segment =
+    segment_start + along_parameter * segment_vector;
+  return (robot_xy - closest_point_on_segment).norm() <= max_distance_m;
+}
+
 bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
   const std::vector<nav_msgs::msg::Path>& reference_path_candidates,
   const nav_msgs::msg::Path& input_path,
@@ -4887,7 +5231,10 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
 
   for (const auto& raw_reference_path : reference_path_candidates) {
     if (raw_reference_path.poses.size() < 2) {
-      RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "Reference path size is less than 2, reference_path_size: %d", raw_reference_path.poses.size());
+      RCLCPP_WARN_THROTTLE(
+        logger_, *(clock_), 2000,
+        "Reference path size is less than 2, reference_path_size: %zu",
+        raw_reference_path.poses.size());
       continue;
     }
     // TF：用 TimePointZero 取缓冲区内最新可用变换，避免 now() 略超前于已发布 TF 导致外推失败。
@@ -4923,8 +5270,26 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
       reference_path_in_map_frame.poses.clear();
       reference_path_in_map_frame.poses.push_back(reference_pose_start_in_map);
       reference_path_in_map_frame.poses.push_back(reference_pose_end_in_map);
+
+      const Eigen::Vector2d segment_start_map(
+        reference_pose_start_in_map.pose.position.x,
+        reference_pose_start_in_map.pose.position.y);
+      const Eigen::Vector2d segment_end_map(
+        reference_pose_end_in_map.pose.position.x,
+        reference_pose_end_in_map.pose.position.y);
+      const Eigen::Vector2d robot_xy(
+        robot_pose.pose.position.x, robot_pose.pose.position.y);
+      if (!robotOnReferenceSegmentWithinDistance(
+            segment_start_map, segment_end_map, robot_xy, distance_tolerance_meters))
+      {
+        RCLCPP_INFO_THROTTLE(
+          logger_, *(clock_), 2000,
+          "Reference path skipped: robot not on segment or distance > %.3f m (distance_tolerance)",
+          distance_tolerance_meters);
+        continue;
+      }
     } catch (const tf2::TransformException& transform_exception) {
-      RCLCPP_DEBUG_THROTTLE(
+      RCLCPP_INFO_THROTTLE(
         logger_, *(clock_), 2000, "Reference path TF skip: %s", transform_exception.what());
       continue;
     }

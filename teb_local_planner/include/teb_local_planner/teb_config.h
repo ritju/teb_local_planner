@@ -232,6 +232,9 @@ public:
     int obstacle_protrusion_min_confirm_frames; //!< Minimum detection frames within confirm_window to trigger exit
     double obstacle_protrusion_confirm_window; //!< Sliding time window for protrusion detection confirmation [s]
     int obstacle_protrusion_max_stored; //!< Maximum number of protruding obstacles to store
+    double wall_line_obstacle_clip_intersect_min_span; //!< Min along-wall span of polygon-wall segment intersection to enable clip [m]
+    double wall_line_obstacle_clip_min_keep_area_sq; //!< If clipped polygon area below this, replace with minimal wall segment [m^2]
+    double wall_line_obstacle_clip_vertex_dedupe_dist; //!< Merge polygon clip vertices closer than this [m]
     bool switch_static_layer; //!< Whether to toggle local costmap static_layer.enabled when switching parameter mode
     bool switch_local_footprint; //!< Whether to toggle local costmap footprint when switching parameter mode
     bool switch_global_footprint; //!< Whether to toggle global costmap footprint when switching parameter mode
@@ -495,6 +498,9 @@ public:
     wall_line.obstacle_protrusion_min_confirm_frames = 3;
     wall_line.obstacle_protrusion_confirm_window = 2.0;
     wall_line.obstacle_protrusion_max_stored = 20;
+    wall_line.wall_line_obstacle_clip_intersect_min_span = 0.05;
+    wall_line.wall_line_obstacle_clip_min_keep_area_sq = 0.008;
+    wall_line.wall_line_obstacle_clip_vertex_dedupe_dist = 0.02;
     wall_line.switch_static_layer = true;
     wall_line.switch_local_footprint = true;
     wall_line.switch_global_footprint = true;
