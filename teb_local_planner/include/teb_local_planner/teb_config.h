@@ -196,6 +196,11 @@ public:
     double edge_min_obstacle_dist; //!< min_obstacle_dist parameter for edge-following mode
     double keep_wall_line_time; //!< time to keep the wall line when not detect usefull wall line
     std::string edge_reference_paths_topic; //!< LaneCenterPaths subscription (Reference / fusion modes)
+    std::string paths_near_edge_topic; //!< Mission line segments that require edge-following
+    double paths_near_edge_match_distance_threshold; //!< transformed_plan segment-to-segment max distance [m]
+    double paths_near_edge_match_angle_threshold_deg; //!< max heading difference for parallel match [deg]
+    int paths_near_edge_enter_hit_count; //!< Consecutive hits required to enter edge-following
+    int paths_near_edge_exit_miss_count; //!< Consecutive misses required to exit edge-following
     double fusion_primary_lock_duration; //!< When WALL/CURB matches Reference, lock primary for this duration [s]
     double reference_match_max_angle_deg; //!< Primary vs Reference "close": max direction angle diff [deg]
     double reference_match_max_distance_m; //!< Primary vs Reference "close": max midpoint distance [m]
@@ -463,6 +468,11 @@ public:
     wall_line.edge_min_obstacle_dist = 0.05;
     wall_line.keep_wall_line_time = 5.0;
     wall_line.edge_reference_paths_topic = "/edge_reference_paths";
+    wall_line.paths_near_edge_topic = "/paths_near_edge";
+    wall_line.paths_near_edge_match_distance_threshold = 0.6;
+    wall_line.paths_near_edge_match_angle_threshold_deg = 20.0;
+    wall_line.paths_near_edge_enter_hit_count = 2;
+    wall_line.paths_near_edge_exit_miss_count = 4;
     wall_line.fusion_primary_lock_duration = 5.0;
     wall_line.reference_match_max_angle_deg = 10.0;
     wall_line.reference_match_max_distance_m = 0.5;

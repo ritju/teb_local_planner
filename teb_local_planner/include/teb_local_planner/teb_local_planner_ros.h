@@ -265,6 +265,7 @@
      const geometry_msgs::msg::PoseStamped& robot_pose);
 
   void edgeReferencePathsCallback(const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr msg);
+  void pathsNearEdgeCallback(const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr msg);
   void updateReferenceLineVec(
     const std::vector<nav_msgs::msg::Path>& reference_path_list,
     nav_msgs::msg::Path& input_path,
@@ -274,6 +275,26 @@
   void runEdgeFollowingPathUpdate(
     std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan,
     const geometry_msgs::msg::PoseStamped& robot_pose);
+  bool shouldRunEdgeFollowingForTransformedPlan(
+    const std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan);
+  bool extractLineSegmentFromPath(
+    const nav_msgs::msg::Path& path,
+    Eigen::Vector2d& segment_start,
+    Eigen::Vector2d& segment_end) const;
+  double pointToSegmentDistance(
+    const Eigen::Vector2d& query_point,
+    const Eigen::Vector2d& segment_start,
+    const Eigen::Vector2d& segment_end) const;
+  double segmentToSegmentDistance(
+    const Eigen::Vector2d& first_segment_start,
+    const Eigen::Vector2d& first_segment_end,
+    const Eigen::Vector2d& second_segment_start,
+    const Eigen::Vector2d& second_segment_end) const;
+  double segmentDirectionAngleDifferenceDeg(
+    const Eigen::Vector2d& first_segment_start,
+    const Eigen::Vector2d& first_segment_end,
+    const Eigen::Vector2d& second_segment_start,
+    const Eigen::Vector2d& second_segment_end) const;
   bool edgeFollowingEntryGuards(
     const geometry_msgs::msg::PoseStamped& robot_pose,
     const nav_msgs::msg::Path& input_path);
@@ -602,10 +623,16 @@
    std::mutex curb_line_mutex_;
    nav_msgs::msg::Path curb_line_path_;
    rclcpp::Subscription<capella_ros_msg::msg::LaneCenterPaths>::SharedPtr edge_reference_paths_sub_;
+  rclcpp::Subscription<capella_ros_msg::msg::LaneCenterPaths>::SharedPtr paths_near_edge_sub_;
    std::mutex edge_reference_paths_mutex_;
+  std::mutex paths_near_edge_mutex_;
    capella_ros_msg::msg::LaneCenterPaths edge_reference_paths_cache_;
+  capella_ros_msg::msg::LaneCenterPaths paths_near_edge_cache_;
    rclcpp::Time edge_reference_paths_msg_time_{0};
    bool edge_reference_have_message_{false};
+  int paths_near_edge_hit_count_{0};
+  int paths_near_edge_miss_count_{0};
+  bool paths_near_edge_active_{false};
    std::vector<Eigen::Vector2d> reference_line_hold_;
    rclcpp::Time reference_line_last_success_time_{0};
    rclcpp::Time fusion_primary_lock_until_{0};

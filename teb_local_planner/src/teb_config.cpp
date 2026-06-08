@@ -182,6 +182,19 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "edge_min_obstacle_dist", rclcpp::ParameterValue(wall_line.edge_min_obstacle_dist));
   declare_parameter_if_not_declared(nh, name + "." + "keep_wall_line_time", rclcpp::ParameterValue(wall_line.keep_wall_line_time));
   declare_parameter_if_not_declared(nh, name + "." + "edge_reference_paths_topic", rclcpp::ParameterValue(wall_line.edge_reference_paths_topic));
+  declare_parameter_if_not_declared(nh, name + "." + "paths_near_edge_topic", rclcpp::ParameterValue(wall_line.paths_near_edge_topic));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "paths_near_edge_match_distance_threshold",
+    rclcpp::ParameterValue(wall_line.paths_near_edge_match_distance_threshold));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "paths_near_edge_match_angle_threshold_deg",
+    rclcpp::ParameterValue(wall_line.paths_near_edge_match_angle_threshold_deg));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "paths_near_edge_enter_hit_count",
+    rclcpp::ParameterValue(wall_line.paths_near_edge_enter_hit_count));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "paths_near_edge_exit_miss_count",
+    rclcpp::ParameterValue(wall_line.paths_near_edge_exit_miss_count));
   declare_parameter_if_not_declared(nh, name + "." + "fusion_primary_lock_duration", rclcpp::ParameterValue(wall_line.fusion_primary_lock_duration));
   declare_parameter_if_not_declared(nh, name + "." + "reference_match_max_angle_deg", rclcpp::ParameterValue(wall_line.reference_match_max_angle_deg));
   declare_parameter_if_not_declared(nh, name + "." + "reference_match_max_distance_m", rclcpp::ParameterValue(wall_line.reference_match_max_distance_m));
@@ -419,6 +432,23 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "edge_min_obstacle_dist", wall_line.edge_min_obstacle_dist, wall_line.edge_min_obstacle_dist);
   nh->get_parameter_or(name + "." + "keep_wall_line_time", wall_line.keep_wall_line_time, wall_line.keep_wall_line_time);
   nh->get_parameter_or(name + "." + "edge_reference_paths_topic", wall_line.edge_reference_paths_topic, wall_line.edge_reference_paths_topic);
+  nh->get_parameter_or(name + "." + "paths_near_edge_topic", wall_line.paths_near_edge_topic, wall_line.paths_near_edge_topic);
+  nh->get_parameter_or(
+    name + "." + "paths_near_edge_match_distance_threshold",
+    wall_line.paths_near_edge_match_distance_threshold,
+    wall_line.paths_near_edge_match_distance_threshold);
+  nh->get_parameter_or(
+    name + "." + "paths_near_edge_match_angle_threshold_deg",
+    wall_line.paths_near_edge_match_angle_threshold_deg,
+    wall_line.paths_near_edge_match_angle_threshold_deg);
+  nh->get_parameter_or(
+    name + "." + "paths_near_edge_enter_hit_count",
+    wall_line.paths_near_edge_enter_hit_count,
+    wall_line.paths_near_edge_enter_hit_count);
+  nh->get_parameter_or(
+    name + "." + "paths_near_edge_exit_miss_count",
+    wall_line.paths_near_edge_exit_miss_count,
+    wall_line.paths_near_edge_exit_miss_count);
   nh->get_parameter_or(name + "." + "fusion_primary_lock_duration", wall_line.fusion_primary_lock_duration, wall_line.fusion_primary_lock_duration);
   nh->get_parameter_or(name + "." + "reference_match_max_angle_deg", wall_line.reference_match_max_angle_deg, wall_line.reference_match_max_angle_deg);
   nh->get_parameter_or(name + "." + "reference_match_max_distance_m", wall_line.reference_match_max_distance_m, wall_line.reference_match_max_distance_m);
