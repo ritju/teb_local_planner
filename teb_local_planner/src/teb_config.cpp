@@ -89,6 +89,21 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(
     nh, name + "." + "transform_global_plan_goal_search_resolution",
     rclcpp::ParameterValue(trajectory.transform_global_plan_goal_search_resolution));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "reverse_segment_min_segment_length_m",
+    rclcpp::ParameterValue(trajectory.reverse_segment_min_segment_length_m));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "reverse_segment_min_angle_deg",
+    rclcpp::ParameterValue(trajectory.reverse_segment_min_angle_deg));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "reverse_segment_angle_check_num",
+    rclcpp::ParameterValue(trajectory.reverse_segment_angle_check_num));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "backward_check_duration",
+    rclcpp::ParameterValue(trajectory.backward_check_duration));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "backward_check_num",
+    rclcpp::ParameterValue(trajectory.backward_check_num));
   // Robot
   declare_parameter_if_not_declared(nh, name + "." + "max_vel_x", rclcpp::ParameterValue(robot.max_vel_x));
   declare_parameter_if_not_declared(nh, name + "." + "max_vel_x_backwards", rclcpp::ParameterValue(robot.max_vel_x_backwards));
@@ -148,6 +163,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "weight_acc_lim_theta", rclcpp::ParameterValue(optim.weight_acc_lim_theta));
   declare_parameter_if_not_declared(nh, name + "." + "weight_kinematics_nh", rclcpp::ParameterValue(optim.weight_kinematics_nh));
   declare_parameter_if_not_declared(nh, name + "." + "weight_kinematics_forward_drive", rclcpp::ParameterValue(optim.weight_kinematics_forward_drive));
+  declare_parameter_if_not_declared(nh, name + "." + "weight_kinematics_forward_drive_in_narrow_passages", rclcpp::ParameterValue(optim.weight_kinematics_forward_drive_in_narrow_passages));
   declare_parameter_if_not_declared(nh, name + "." + "weight_kinematics_turning_radius", rclcpp::ParameterValue(optim.weight_kinematics_turning_radius));
   declare_parameter_if_not_declared(nh, name + "." + "weight_optimaltime", rclcpp::ParameterValue(optim.weight_optimaltime));
   declare_parameter_if_not_declared(nh, name + "." + "weight_shortest_path", rclcpp::ParameterValue(optim.weight_shortest_path));
@@ -339,6 +355,26 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
     name + "." + "transform_global_plan_goal_search_resolution",
     trajectory.transform_global_plan_goal_search_resolution,
     trajectory.transform_global_plan_goal_search_resolution);
+  nh->get_parameter_or(
+    name + "." + "reverse_segment_min_segment_length_m",
+    trajectory.reverse_segment_min_segment_length_m,
+    trajectory.reverse_segment_min_segment_length_m);
+  nh->get_parameter_or(
+    name + "." + "reverse_segment_min_angle_deg",
+    trajectory.reverse_segment_min_angle_deg,
+    trajectory.reverse_segment_min_angle_deg);
+  nh->get_parameter_or(
+    name + "." + "reverse_segment_angle_check_num",
+    trajectory.reverse_segment_angle_check_num,
+    trajectory.reverse_segment_angle_check_num);
+  nh->get_parameter_or(
+    name + "." + "backward_check_duration",
+    trajectory.backward_check_duration,
+    trajectory.backward_check_duration);
+  nh->get_parameter_or(
+    name + "." + "backward_check_num",
+    trajectory.backward_check_num,
+    trajectory.backward_check_num);
   // Robot
   nh->get_parameter_or(name + "." + "max_vel_x", robot.max_vel_x, robot.max_vel_x);
   nh->get_parameter_or(name + "." + "max_vel_x_backwards", robot.max_vel_x_backwards, robot.max_vel_x_backwards);
@@ -398,6 +434,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "weight_acc_lim_theta", optim.weight_acc_lim_theta, optim.weight_acc_lim_theta);
   nh->get_parameter_or(name + "." + "weight_kinematics_nh", optim.weight_kinematics_nh, optim.weight_kinematics_nh);
   nh->get_parameter_or(name + "." + "weight_kinematics_forward_drive", optim.weight_kinematics_forward_drive, optim.weight_kinematics_forward_drive);
+  nh->get_parameter_or(name + "." + "weight_kinematics_forward_drive_in_narrow_passages", optim.weight_kinematics_forward_drive_in_narrow_passages, optim.weight_kinematics_forward_drive_in_narrow_passages);
   nh->get_parameter_or(name + "." + "weight_kinematics_turning_radius", optim.weight_kinematics_turning_radius, optim.weight_kinematics_turning_radius);
   nh->get_parameter_or(name + "." + "weight_optimaltime", optim.weight_optimaltime, optim.weight_optimaltime);
   nh->get_parameter_or(name + "." + "weight_shortest_path", optim.weight_shortest_path, optim.weight_shortest_path);
@@ -734,6 +771,16 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.transform_global_plan_goal_occupied_tolerance = parameter.as_double();
       } else if (name == node_name + ".transform_global_plan_goal_search_resolution") {
         trajectory.transform_global_plan_goal_search_resolution = parameter.as_double();
+      } else if (name == node_name + ".reverse_segment_min_segment_length_m") {
+        trajectory.reverse_segment_min_segment_length_m = parameter.as_double();
+      } else if (name == node_name + ".reverse_segment_min_angle_deg") {
+        trajectory.reverse_segment_min_angle_deg = parameter.as_double();
+      } else if (name == node_name + ".reverse_segment_angle_check_num") {
+        trajectory.reverse_segment_angle_check_num = parameter.as_int();
+      } else if (name == node_name + ".backward_check_duration") {
+        trajectory.backward_check_duration = parameter.as_double();
+      } else if (name == node_name + ".backward_check_num") {
+        trajectory.backward_check_num = parameter.as_int();
       }
       // Robot
       else if (name == node_name + ".max_vel_x") {
@@ -823,6 +870,8 @@ rcl_interfaces::msg::SetParametersResult
         optim.weight_kinematics_nh = parameter.as_double();
       } else if (name == node_name + ".weight_kinematics_forward_drive") {
         optim.weight_kinematics_forward_drive = parameter.as_double();
+      } else if (name == node_name + ".weight_kinematics_forward_drive_in_narrow_passages") {
+        optim.weight_kinematics_forward_drive_in_narrow_passages = parameter.as_double();
       } else if (name == node_name + ".weight_kinematics_turning_radius") {
         optim.weight_kinematics_turning_radius = parameter.as_double();
       } else if (name == node_name + ".weight_optimaltime") {

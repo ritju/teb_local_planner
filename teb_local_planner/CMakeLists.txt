@@ -42,6 +42,7 @@ find_package(Boost REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(dwb_core REQUIRED)
 find_package(capella_ros_msg REQUIRED)
+find_package(garage_utils_msgs REQUIRED)
 
 message(STATUS "System: ${CMAKE_SYSTEM}")
 ## System dependencies are found with CMake's conventions
@@ -120,6 +121,7 @@ set(ament_dependencies
     rclcpp_components
     dwb_core
     capella_ros_msg
+    garage_utils_msgs
 )
 ament_target_dependencies(teb_local_planner
    ${ament_dependencies}

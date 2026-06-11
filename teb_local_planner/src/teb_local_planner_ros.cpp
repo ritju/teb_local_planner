@@ -907,6 +907,53 @@ bool clippedFootprintOutlineTouchesBlockingCost(
                 std::bind(&TebLocalPlannerROS::speedLimitCallback, this, std::placeholders::_1));
     }
     {
+      // 狭窄通道多边形（与 Smac 共用 /narrow_passages）
+      rclcpp::QoS narrow_qos(rclcpp::KeepLast(1));
+      narrow_qos.transient_local();
+      narrow_qos.reliable();
+      narrow_passages_sub_ = node->create_subscription<garage_utils_msgs::msg::Polygons>(
+        "/narrow_passages",
+        narrow_qos,
+        std::bind(&TebLocalPlannerROS::narrowPassagesCallback, this, std::placeholders::_1));
+      narrow_passages_marker_pub_ =
+        node->create_publisher<visualization_msgs::msg::MarkerArray>("teb_narrow_passages_markers", 1);
+      RCLCPP_INFO(
+        logger_,
+        "狭窄通道: TEB 已订阅 /narrow_passages，"
+        "forward_drive 正常=%.2f，窄通道=%.2f，Marker 话题 teb_narrow_passages_markers",
+        cfg_->optim.weight_kinematics_forward_drive,
+        cfg_->optim.weight_kinematics_forward_drive_in_narrow_passages);
+    }
+    {
+      rclcpp::QoS enable_backward_qos(rclcpp::KeepLast(1));
+      enable_backward_qos.transient_local();
+      enable_backward_qos.reliable();
+      enable_backward_sub_ = node->create_subscription<std_msgs::msg::Bool>(
+        "/enable_backward",
+        enable_backward_qos,
+        std::bind(&TebLocalPlannerROS::enableBackwardCallback, this, std::placeholders::_1));
+      RCLCPP_INFO(logger_, "TEB 已订阅 /enable_backward，true 时强制倒车友好参数");
+    }
+    {
+      rclcpp::QoS backward_mode_qos(rclcpp::KeepLast(1));
+      backward_mode_qos.transient_local();
+      backward_mode_qos.reliable();
+      backward_mode_pub_ = node->create_publisher<std_msgs::msg::Bool>(
+        "/backward_mode", backward_mode_qos);
+      resetBackwardModePublicationState(true);
+      RCLCPP_INFO(
+        logger_,
+        "TEB 已发布 /backward_mode（几何倒车检测），"
+        "angle_check_num=%d backward_check_duration=%.2f backward_check_num=%d",
+        cfg_->trajectory.reverse_segment_angle_check_num,
+        cfg_->trajectory.backward_check_duration,
+        cfg_->trajectory.backward_check_num);
+    }
+    // 备份正常模式参数，供狭窄通道 RAII 恢复
+    normal_weight_kinematics_forward_drive_ = cfg_->optim.weight_kinematics_forward_drive;
+    normal_delete_detours_backwards_ = cfg_->hcp.delete_detours_backwards;
+    normal_allow_init_with_backwards_motion_ = cfg_->trajectory.allow_init_with_backwards_motion;
+    {
       rclcpp::QoS vehicle_scan_qos(rclcpp::KeepLast(5));
       vehicle_scan_qos.best_effort();
       vehicle_scan_cloud_sub_ = node->create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -1574,6 +1621,31 @@ void TebLocalPlannerROS::configure(
     updateViaPointsContainer(transformed_plan, cfg_->trajectory.global_plan_viapoint_sep);
   // check if we should enter any backup mode and apply settings
   configureBackupModes(transformed_plan, goal_idx);
+
+  // --- 狭窄通道 / enable_backward：更新 latch，判断是否启用倒车友好 TEB 参数 ---
+  updateNarrowPassageLatch(robot_pose);
+  bool enable_backward_cmd = false;
+  bool enable_backward_cmd_received = false;
+  {
+    std::lock_guard<std::mutex> lock(enable_backward_mutex_);
+    enable_backward_cmd = enable_backward_cmd_;
+    enable_backward_cmd_received = enable_backward_cmd_received_;
+  }
+  const bool narrow_mode = narrowPolygonsAvailable() && latched_narrow_passage_;
+  const bool reverse_segment = hasReverseSegmentInPlan(transformed_plan);
+  updateBackwardModePublication(reverse_segment);
+  const bool enable_narrow_teb = (enable_backward_cmd_received && enable_backward_cmd) ?
+    true : (narrow_mode || reverse_segment);
+  updateNarrowPassageTebSettings(enable_narrow_teb);
+  RCLCPP_INFO_THROTTLE(
+    logger_, *clock_, 2000,
+    "TEB 倒车模式: enable_backward=%s narrow_latch=%s reverse_seg=%s enable=%s forward_drive=%.2f",
+    (enable_backward_cmd_received && enable_backward_cmd) ? "是" : "否",
+    narrow_mode ? "是" : "否",
+    reverse_segment ? "是" : "否",
+    enable_narrow_teb ? "是" : "否",
+    enable_narrow_teb ? cfg_->optim.weight_kinematics_forward_drive_in_narrow_passages :
+      normal_weight_kinematics_forward_drive_);
     
   // Return false if the transformed global plan is empty
   if (transformed_plan.empty())
@@ -3711,6 +3783,377 @@ void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstS
   has_speed_limit_ = true;
 }
 
+// =============================================================================
+// 狭窄通道局部规划：订阅 /narrow_passages，按需临时放宽倒车 TEB 参数
+// =============================================================================
+
+void TebLocalPlannerROS::updateNarrowPassageTebSettings(const bool enable_narrow_teb)
+{
+  if (enable_narrow_teb) {
+    if (!narrow_teb_settings_applied_) {
+      applyNarrowPassageTebSettings();
+    }
+  } else if (narrow_teb_settings_applied_) {
+    restoreNarrowPassageTebSettings();
+  }
+}
+
+void TebLocalPlannerROS::enableBackwardCallback(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  if (!msg) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(enable_backward_mutex_);
+  enable_backward_cmd_ = msg->data;
+  enable_backward_cmd_received_ = true;
+  RCLCPP_INFO(
+    logger_,
+    "/enable_backward: %s（%s）",
+    msg->data ? "true" : "false",
+    msg->data ? "强制倒车友好 TEB 参数" : "回退窄通道/倒车段判断");
+}
+
+void TebLocalPlannerROS::narrowPassagesCallback(
+  const garage_utils_msgs::msg::Polygons::SharedPtr msg)
+{
+  {
+    std::lock_guard<std::mutex> lock(narrow_polygons_mutex_);
+    narrow_polygons_received_ = true;
+    narrow_polygons_ = msg->polygons;
+    if (narrow_polygons_.empty()) {
+      latched_narrow_passage_ = false;
+      RCLCPP_WARN(
+        logger_,
+        "狭窄通道: TEB 收到空的 /narrow_passages，切换为非窄通道模式");
+    } else {
+      RCLCPP_INFO(
+        logger_,
+        "狭窄通道: TEB 更新 /narrow_passages，多边形数量=%zu",
+        narrow_polygons_.size());
+    }
+  }
+  publishNarrowPassagesMarkers(msg->polygons);
+}
+
+void TebLocalPlannerROS::publishNarrowPassagesMarkers(
+  const std::vector<geometry_msgs::msg::Polygon> & polygons)
+{
+  if (!narrow_passages_marker_pub_) {
+    return;
+  }
+
+  visualization_msgs::msg::MarkerArray marker_array;
+  visualization_msgs::msg::Marker delete_all_marker;
+  delete_all_marker.header.frame_id = cfg_->map_frame;
+  delete_all_marker.ns = "narrow_passages";
+  delete_all_marker.action = visualization_msgs::msg::Marker::DELETEALL;
+  marker_array.markers.push_back(delete_all_marker);
+
+  const rclcpp::Time marker_stamp = clock_->now();
+  for (std::size_t polygon_index = 0; polygon_index < polygons.size(); ++polygon_index) {
+    const auto & polygon = polygons[polygon_index];
+    if (polygon.points.size() < 2) {
+      continue;
+    }
+
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = cfg_->map_frame;
+    marker.header.stamp = marker_stamp;
+    marker.ns = "narrow_passages";
+    marker.id = static_cast<int>(polygon_index);
+    marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.scale.x = 0.06;
+    marker.pose.orientation.w = 1.0;
+    marker.color.r = 1.0f;
+    marker.color.g = 0.5f;
+    marker.color.b = 0.0f;
+    marker.color.a = 0.9f;
+
+    marker.points.reserve(polygon.points.size() + 1);
+    for (const auto & polygon_point : polygon.points) {
+      geometry_msgs::msg::Point point;
+      point.x = polygon_point.x;
+      point.y = polygon_point.y;
+      point.z = 0.1;
+      marker.points.push_back(point);
+    }
+    const auto & first_point = polygon.points.front();
+    geometry_msgs::msg::Point closing_point;
+    closing_point.x = first_point.x;
+    closing_point.y = first_point.y;
+    closing_point.z = 0.1;
+    marker.points.push_back(closing_point);
+    marker_array.markers.push_back(marker);
+  }
+
+  narrow_passages_marker_pub_->publish(marker_array);
+}
+
+bool TebLocalPlannerROS::narrowPolygonsAvailable() const
+{
+  std::lock_guard<std::mutex> lock(narrow_polygons_mutex_);
+  return narrow_polygons_received_ && !narrow_polygons_.empty();
+}
+
+bool TebLocalPlannerROS::isPointInNarrowPassage(const double x, const double y) const
+{
+  std::lock_guard<std::mutex> lock(narrow_polygons_mutex_);
+  for (const auto & polygon : narrow_polygons_) {
+    if (polygon.points.size() < 3) {
+      continue;
+    }
+    bool inside = false;
+    size_t j = polygon.points.size() - 1;
+    for (size_t i = 0; i < polygon.points.size(); ++i) {
+      const auto & pi = polygon.points[i];
+      const auto & pj = polygon.points[j];
+      const bool intersect =
+        ((pi.y > y) != (pj.y > y)) &&
+        (x < (pj.x - pi.x) * (y - pi.y) / (pj.y - pi.y + 1e-9) + pi.x);
+      if (intersect) {
+        inside = !inside;
+      }
+      j = i;
+    }
+    if (inside) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool TebLocalPlannerROS::isFootprintFullyOutsideNarrowPassages(
+  const geometry_msgs::msg::PoseStamped & pose) const
+{
+  std::lock_guard<std::mutex> lock(narrow_polygons_mutex_);
+  if (!narrow_polygons_received_ || narrow_polygons_.empty()) {
+    return true;
+  }
+  const double yaw = tf2::getYaw(pose.pose.orientation);
+  const double cos_y = std::cos(yaw);
+  const double sin_y = std::sin(yaw);
+  const nav2_costmap_2d::Footprint footprint = costmap_ros_->getRobotFootprint();
+  for (const auto & pt : footprint) {
+    const double wx = pose.pose.position.x + pt.x * cos_y - pt.y * sin_y;
+    const double wy = pose.pose.position.y + pt.x * sin_y + pt.y * cos_y;
+    for (const auto & polygon : narrow_polygons_) {
+      if (polygon.points.size() < 3) {
+        continue;
+      }
+      bool inside = false;
+      size_t j = polygon.points.size() - 1;
+      for (size_t i = 0; i < polygon.points.size(); ++i) {
+        const auto & pi = polygon.points[i];
+        const auto & pj = polygon.points[j];
+        const bool intersect =
+          ((pi.y > wy) != (pj.y > wy)) &&
+          (wx < (pj.x - pi.x) * (wy - pi.y) / (pj.y - pi.y + 1e-9) + pi.x);
+        if (intersect) {
+          inside = !inside;
+        }
+        j = i;
+      }
+      if (inside) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+void TebLocalPlannerROS::updateNarrowPassageLatch(
+  const geometry_msgs::msg::PoseStamped & robot_pose)
+{
+  const bool prev_latched = latched_narrow_passage_;
+  if (!narrowPolygonsAvailable()) {
+    latched_narrow_passage_ = false;
+    if (prev_latched) {
+      RCLCPP_INFO(
+        logger_,
+        "狭窄通道: TEB 无有效多边形，Latch 由 true 置 false");
+    }
+    return;
+  }
+  if (isPointInNarrowPassage(robot_pose.pose.position.x, robot_pose.pose.position.y)) {
+    latched_narrow_passage_ = true;
+    if (!prev_latched) {
+      RCLCPP_INFO(
+        logger_,
+        "狭窄通道: TEB base_link (%.2f, %.2f) 进入窄通道，Latch 置 true",
+        robot_pose.pose.position.x, robot_pose.pose.position.y);
+    }
+    return;
+  }
+  if (isFootprintFullyOutsideNarrowPassages(robot_pose)) {
+    latched_narrow_passage_ = false;
+    if (prev_latched) {
+      RCLCPP_INFO(
+        logger_,
+        "狭窄通道: TEB footprint 完全离开窄通道，Latch 由 true 置 false");
+    }
+  }
+}
+
+bool TebLocalPlannerROS::hasReverseSegmentInPlan(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan) const
+{
+  if (plan.size() < 2) {
+    return false;
+  }
+  const int required_hits = std::max(1, cfg_->trajectory.reverse_segment_angle_check_num);
+  size_t reverse_hit_count = 0;
+  // 倒车判定：相邻路点位移方向与 pose 航向夹角接近 180°（跳过过短段与首段）
+  for (size_t i = 1; i + 1 < plan.size(); ++i) {
+    const double dx = plan[i + 1].pose.position.x - plan[i].pose.position.x;
+    const double dy = plan[i + 1].pose.position.y - plan[i].pose.position.y;
+    const double segment_length = std::hypot(dx, dy);
+    if (segment_length < cfg_->trajectory.reverse_segment_min_segment_length_m) {
+      RCLCPP_DEBUG(
+        logger_,
+        "狭窄通道: 跳过过短段 plan[%zu]->[%zu], length=%.4f",
+        i, i + 1, segment_length);
+      continue;
+    }
+    const double yaw = tf2::getYaw(plan[i].pose.orientation);
+    const double dot = dx * std::cos(yaw) + dy * std::sin(yaw);
+    const double cos_angle = std::clamp(dot / segment_length, -1.0, 1.0);
+    const double heading_segment_angle_deg = std::acos(cos_angle) * 180.0 / M_PI;
+    if (heading_segment_angle_deg >= cfg_->trajectory.reverse_segment_min_angle_deg) {
+      ++reverse_hit_count;
+      RCLCPP_DEBUG(
+        logger_,
+        "狭窄通道: 倒车段候选 plan[%zu]->[%zu], angle=%.2f deg, hits=%zu/%d",
+        i, i + 1, heading_segment_angle_deg, reverse_hit_count, required_hits);
+      if (reverse_hit_count >= static_cast<size_t>(required_hits)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void TebLocalPlannerROS::publishBackwardMode(const bool backward)
+{
+  if (!backward_mode_pub_) {
+    return;
+  }
+  if (backward_mode_has_published_ && backward_mode_published_ == backward) {
+    return;
+  }
+  std_msgs::msg::Bool msg;
+  msg.data = backward;
+  backward_mode_pub_->publish(msg);
+  backward_mode_published_ = backward;
+  backward_mode_has_published_ = true;
+  RCLCPP_INFO(
+    logger_,
+    "/backward_mode published: %s",
+    backward ? "true (backward)" : "false (forward)");
+}
+
+void TebLocalPlannerROS::resetBackwardModePublicationState(const bool publish_false)
+{
+  backward_exit_false_count_ = 0;
+  backward_exit_window_start_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  if (publish_false) {
+    publishBackwardMode(false);
+    backward_mode_initial_sent_ = true;
+  } else {
+    backward_mode_published_ = false;
+    backward_mode_has_published_ = false;
+    backward_mode_initial_sent_ = false;
+  }
+}
+
+void TebLocalPlannerROS::updateBackwardModePublication(const bool reverse_segment)
+{
+  if (!backward_mode_initial_sent_) {
+    publishBackwardMode(false);
+    backward_mode_initial_sent_ = true;
+  }
+
+  if (!backward_mode_published_) {
+    if (reverse_segment) {
+      publishBackwardMode(true);
+      backward_exit_false_count_ = 0;
+      backward_exit_window_start_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    }
+    return;
+  }
+
+  if (reverse_segment) {
+    backward_exit_false_count_ = 0;
+    backward_exit_window_start_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    return;
+  }
+
+  const rclcpp::Time now = clock_->now();
+  const int required_false_frames = std::max(1, cfg_->trajectory.backward_check_num);
+  const double check_duration_s = std::max(0.0, cfg_->trajectory.backward_check_duration);
+
+  if (backward_exit_false_count_ == 0) {
+    backward_exit_window_start_ = now;
+    backward_exit_false_count_ = 1;
+    return;
+  }
+
+  const double elapsed_s = (now - backward_exit_window_start_).seconds();
+  if (elapsed_s > check_duration_s) {
+    backward_exit_window_start_ = now;
+    backward_exit_false_count_ = 1;
+    RCLCPP_DEBUG(
+      logger_,
+      "/backward_mode 退出防抖超时 (%.3fs > %.3fs)，计数清零重来",
+      elapsed_s, check_duration_s);
+    return;
+  }
+
+  ++backward_exit_false_count_;
+  if (backward_exit_false_count_ >= static_cast<size_t>(required_false_frames)) {
+    publishBackwardMode(false);
+    backward_exit_false_count_ = 0;
+    backward_exit_window_start_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  }
+}
+
+void TebLocalPlannerROS::applyNarrowPassageTebSettings()
+{
+  if (narrow_teb_settings_applied_) {
+    return;
+  }
+  normal_weight_kinematics_forward_drive_ = cfg_->optim.weight_kinematics_forward_drive;
+  normal_delete_detours_backwards_ = cfg_->hcp.delete_detours_backwards;
+  normal_allow_init_with_backwards_motion_ = cfg_->trajectory.allow_init_with_backwards_motion;
+  cfg_->optim.weight_kinematics_forward_drive =
+    cfg_->optim.weight_kinematics_forward_drive_in_narrow_passages;
+  cfg_->hcp.delete_detours_backwards = false;
+  cfg_->trajectory.allow_init_with_backwards_motion = true;
+  narrow_teb_settings_applied_ = true;
+  RCLCPP_INFO(
+    logger_,
+    "狭窄通道: TEB 应用倒车友好参数 "
+    "(forward_drive %.2f->%.2f, delete_detours_backwards=false, "
+    "allow_init_with_backwards_motion=true)",
+    normal_weight_kinematics_forward_drive_,
+    cfg_->optim.weight_kinematics_forward_drive_in_narrow_passages);
+}
+
+void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
+{
+  if (!narrow_teb_settings_applied_) {
+    return;
+  }
+  cfg_->optim.weight_kinematics_forward_drive = normal_weight_kinematics_forward_drive_;
+  cfg_->hcp.delete_detours_backwards = normal_delete_detours_backwards_;
+  cfg_->trajectory.allow_init_with_backwards_motion = normal_allow_init_with_backwards_motion_;
+  narrow_teb_settings_applied_ = false;
+  RCLCPP_DEBUG(
+    logger_,
+    "狭窄通道: TEB 已恢复正常参数 (forward_drive=%.2f)",
+    normal_weight_kinematics_forward_drive_);
+}
+
  
  void TebLocalPlannerROS::switchParameterMode(bool enable_edge_mode)
  {
@@ -4245,7 +4688,9 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
  }
  void TebLocalPlannerROS::deactivate() {
    visualization_->on_deactivate();
- 
+   restoreNarrowPassageTebSettings();
+   resetBackwardModePublicationState(true);
+
    return;
  }
  void TebLocalPlannerROS::cleanup() {
@@ -4254,6 +4699,8 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
 
    // Cleanup static_layer client
    static_layer_client_.reset();
+   backward_mode_pub_.reset();
+   resetBackwardModePublicationState(false);
 
    return;
  }

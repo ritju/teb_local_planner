@@ -113,6 +113,16 @@ public:
     double transform_global_plan_goal_occupied_tolerance;
     //!< transformGlobalPlan: 末端位姿微调时的平面网格步长 [m]，与 SMAC Hybrid 等价的 goal_search_resolution
     double transform_global_plan_goal_search_resolution;
+    //!< hasReverseSegmentInPlan: 参与倒车判定的相邻路点最小段长 [m]
+    double reverse_segment_min_segment_length_m;
+    //!< hasReverseSegmentInPlan: 位移方向与 pose 航向夹角下限 [deg]，接近 180° 时判为倒车（如 150 表示 150°~180°）
+    double reverse_segment_min_angle_deg;
+    //!< hasReverseSegmentInPlan: 单帧 plan 内满足角度条件的相邻段最少数量
+    int reverse_segment_angle_check_num;
+    //!< /backward_mode true→false: 连续非倒车帧防抖窗口时长 [s]
+    double backward_check_duration;
+    //!< /backward_mode true→false: 窗口内连续 reverse_segment=false 帧数
+    int backward_check_num;
   } trajectory; //!< Trajectory related parameters
 
   //! Robot related parameters
@@ -265,6 +275,7 @@ public:
     double weight_acc_lim_theta; //!< Optimization weight for satisfying the maximum allowed angular acceleration
     double weight_kinematics_nh; //!< Optimization weight for satisfying the non-holonomic kinematics
     double weight_kinematics_forward_drive; //!< Optimization weight for forcing the robot to choose only forward directions (positive transl. velocities, only diffdrive robot)
+    double weight_kinematics_forward_drive_in_narrow_passages; //!< Reduced forward-drive penalty while in narrow passages or following reverse global plan segments
     double weight_kinematics_turning_radius; //!< Optimization weight for enforcing a minimum turning radius (carlike robots)
     double weight_optimaltime; //!< Optimization weight for contracting the trajectory w.r.t. transition time
     double weight_shortest_path; //!< Optimization weight for contracting the trajectory w.r.t. path length
@@ -400,7 +411,12 @@ public:
     trajectory.transform_global_plan_closest_search_max_accum_dist = 0.0;
     trajectory.transform_global_plan_goal_occupied_tolerance = 1.0;
     trajectory.transform_global_plan_goal_search_resolution = 0.2;
-    
+    trajectory.reverse_segment_min_segment_length_m = 0.05;
+    trajectory.reverse_segment_min_angle_deg = 150.0;
+    trajectory.reverse_segment_angle_check_num = 10;
+    trajectory.backward_check_duration = 1.0;
+    trajectory.backward_check_num = 2;
+
     // Robot
 
     robot.max_vel_x = 0.4;
@@ -533,6 +549,7 @@ public:
     optim.weight_acc_lim_theta = 1;
     optim.weight_kinematics_nh = 1000;
     optim.weight_kinematics_forward_drive = 1;
+    optim.weight_kinematics_forward_drive_in_narrow_passages = 0.0;
     optim.weight_kinematics_turning_radius = 1;
     optim.weight_optimaltime = 1;
     optim.weight_shortest_path = 0;

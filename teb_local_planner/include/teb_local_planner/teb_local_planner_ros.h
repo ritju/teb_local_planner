@@ -84,6 +84,7 @@
 #include "laserline/line_path_compare.hpp"
 #include "capella_ros_msg/msg/lane_center_paths.hpp"
 #include "geometry_msgs/msg/pose_array.hpp"
+#include "garage_utils_msgs/msg/polygons.hpp"
 #include <limits>
  namespace teb_local_planner
  {
@@ -514,6 +515,33 @@
     */
    void switchParameterMode(bool enable_edge_mode);
 
+   /** 窄通道/非窄通道状态切换时更新 TEB 参数 */
+   void updateNarrowPassageTebSettings(bool enable_narrow_teb);
+
+   /** /narrow_passages 回调 */
+   void narrowPassagesCallback(const garage_utils_msgs::msg::Polygons::SharedPtr msg);
+   /** /enable_backward 回调：外部指令切换倒车/前进 TEB 参数 */
+   void enableBackwardCallback(const std_msgs::msg::Bool::SharedPtr msg);
+   void publishNarrowPassagesMarkers(
+     const std::vector<geometry_msgs::msg::Polygon> & polygons);
+   /** 更新狭窄通道 latch（进入：base_link；退出：footprint 全在外） */
+   void updateNarrowPassageLatch(const geometry_msgs::msg::PoseStamped & robot_pose);
+   bool narrowPolygonsAvailable() const;
+   bool isPointInNarrowPassage(double x, double y) const;
+   bool isFootprintFullyOutsideNarrowPassages(
+     const geometry_msgs::msg::PoseStamped & pose) const;
+   /** 检测 transformed_plan 中是否存在倒车段：位移与 pose 航向夹角接近 180° */
+   bool hasReverseSegmentInPlan(
+     const std::vector<geometry_msgs::msg::PoseStamped> & plan) const;
+   /** 边沿发布 /backward_mode（仅几何倒车检测，供 controller 门控） */
+   void publishBackwardMode(bool backward);
+   void updateBackwardModePublication(bool reverse_segment);
+   void resetBackwardModePublicationState(bool publish_false);
+   /** 应用窄通道 TEB 参数（降低 forward_drive 惩罚、允许倒车初始化等） */
+   void applyNarrowPassageTebSettings();
+   /** 恢复窄通道 TEB 参数为正常模式初始值 */
+   void restoreNarrowPassageTebSettings();
+
    /**
     * @brief Set static_layer.enabled parameter via service call
     * @param enabled The desired state of static_layer.enabled
@@ -800,8 +828,33 @@
    void speedLimitCallback(const std_msgs::msg::Float64::ConstSharedPtr msg);
    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr speed_limit_sub_;
    std::mutex speed_limit_mutex_;
-   
-     
+
+   // --- 狭窄通道局部规划 ---
+   rclcpp::Subscription<garage_utils_msgs::msg::Polygons>::SharedPtr narrow_passages_sub_;
+   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr narrow_passages_marker_pub_;
+   mutable std::mutex narrow_polygons_mutex_;
+   std::vector<geometry_msgs::msg::Polygon> narrow_polygons_;
+   bool narrow_polygons_received_{false};
+   /** latch：进入宽松(base_link)，退出严格(footprint 全在外) */
+   bool latched_narrow_passage_{false};
+   /** 正常模式参数备份，窄通道周期结束后恢复 */
+   double normal_weight_kinematics_forward_drive_{1.0};
+   bool normal_delete_detours_backwards_{true};
+   bool normal_allow_init_with_backwards_motion_{false};
+   bool narrow_teb_settings_applied_{false};
+
+   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr enable_backward_sub_;
+   mutable std::mutex enable_backward_mutex_;
+   bool enable_backward_cmd_{false};
+   bool enable_backward_cmd_received_{false};
+
+   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr backward_mode_pub_;
+   bool backward_mode_published_{false};
+   bool backward_mode_has_published_{false};
+   bool backward_mode_initial_sent_{false};
+   size_t backward_exit_false_count_{0};
+   rclcpp::Time backward_exit_window_start_{0, 0, RCL_ROS_TIME};
+
  protected:
    // Dynamic parameters handler
    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler;
