@@ -240,6 +240,7 @@ struct EffWallFrame {
   Eigen::Vector2d dir;
   Eigen::Vector2d normal;
   double length{0.0};
+  int robot_side_sign{0};
 };
 
 struct WallClipGeometryParams {
@@ -260,9 +261,69 @@ WallClipGeometryParams wallClipGeometryParamsFromConfig(const TebConfig& config)
   return params;
 }
 
+Eigen::Vector2d wallClosestPointOnSegment(
+  const Eigen::Vector2d& p,
+  const Eigen::Vector2d& seg_start,
+  const Eigen::Vector2d& seg_dir,
+  double seg_length)
+{
+  const double along = (p - seg_start).dot(seg_dir);
+  const double clamped_along = std::clamp(along, 0.0, seg_length);
+  return seg_start + seg_dir * clamped_along;
+}
+
+// Signed coordinate of p relative to the infinite wall line through wall.start.
 double wallSignedDist(const Eigen::Vector2d& p, const EffWallFrame& wall)
 {
   return (p - wall.start).dot(wall.normal);
+}
+
+int wallSideSignFromCoord(double coord, double eps = 1e-9)
+{
+  if (coord > eps) {
+    return 1;
+  }
+  if (coord < -eps) {
+    return -1;
+  }
+  return 0;
+}
+
+bool isOnSameWallSideAsRobot(double point_coord, int robot_side_sign, double eps = 1e-9)
+{
+  const int point_sign = wallSideSignFromCoord(point_coord, eps);
+  if (point_sign == 0 || robot_side_sign == 0) {
+    return true;
+  }
+  return point_sign == robot_side_sign;
+}
+
+// Positive depth means farther from the wall on the robot side.
+double wallRobotSideDepth(const Eigen::Vector2d& p, const EffWallFrame& wall)
+{
+  return static_cast<double>(wall.robot_side_sign) * wallSignedDist(p, wall);
+}
+
+// Unit vector from the wall line toward the robot (for safety offset).
+Eigen::Vector2d wallTowardRobotUnit(
+  const Eigen::Vector2d& robot_pos,
+  const Eigen::Vector2d& seg_start,
+  const Eigen::Vector2d& seg_dir,
+  double seg_length)
+{
+  const Eigen::Vector2d fixed_normal(-seg_dir.y(), seg_dir.x());
+  const double robot_coord = (robot_pos - seg_start).dot(fixed_normal);
+  if (std::abs(robot_coord) > 1e-6) {
+    return (robot_coord > 0.0) ? fixed_normal.normalized() : (-fixed_normal).normalized();
+  }
+  const Eigen::Vector2d robot_on_wall =
+    wallClosestPointOnSegment(robot_pos, seg_start, seg_dir, seg_length);
+  const Eigen::Vector2d wall_to_robot = robot_pos - robot_on_wall;
+  const double wall_to_robot_dist = wall_to_robot.norm();
+  if (wall_to_robot_dist > 1e-6) {
+    return wall_to_robot / wall_to_robot_dist;
+  }
+  return fixed_normal.normalized();
 }
 
 double wallAlongCoord(const Eigen::Vector2d& p, const EffWallFrame& wall)
@@ -411,16 +472,16 @@ std::vector<Eigen::Vector2d> clipPolygonDeepRobotSide(
   if (input.empty()) {
     return output;
   }
-  const double keep_boundary = -clip_depth;
+  const double keep_boundary = clip_depth;
   const auto inside = [&](const Eigen::Vector2d& point) {
-    return wallSignedDist(point, wall) <= keep_boundary + 1e-9;
+    return wallRobotSideDepth(point, wall) >= keep_boundary - 1e-9;
   };
   const std::size_t vertex_count = input.size();
   for (std::size_t i = 0; i < vertex_count; ++i) {
     const Eigen::Vector2d& p1 = input[i];
     const Eigen::Vector2d& p2 = input[(i + 1) % vertex_count];
-    const double d1 = wallSignedDist(p1, wall);
-    const double d2 = wallSignedDist(p2, wall);
+    const double d1 = wallRobotSideDepth(p1, wall);
+    const double d2 = wallRobotSideDepth(p2, wall);
     const bool in1 = inside(p1);
     const bool in2 = inside(p2);
     if (in1) {
@@ -484,8 +545,6 @@ WallPolygonClipResult processWallFilteredPolygon(
   const geometry_msgs::msg::Polygon& polygon,
   const EffWallFrame& wall,
   const Eigen::Vector2d& robot_position,
-  double along_wall_min,
-  double along_wall_max,
   bool have_tf_obstacles_to_base,
   const geometry_msgs::msg::TransformStamped& tf_base_from_obstacles,
   const std::string& obstacles_frame,
@@ -521,18 +580,13 @@ WallPolygonClipResult processWallFilteredPolygon(
 
   for (const auto& point : polygon.points) {
     const Eigen::Vector2d vertex(point.x, point.y);
-    const double vertex_signed_dist = wallSignedDist(vertex, wall);
-    if (vertex_signed_dist < 0.0) {
-      const double penetration = -vertex_signed_dist;
+    const double vertex_wall_coord = wallSignedDist(vertex, wall);
+    if (isOnSameWallSideAsRobot(vertex_wall_coord, wall.robot_side_sign)) {
+      const double penetration = std::abs(vertex_wall_coord);
       if (penetration > max_robot_penetration) {
         max_robot_penetration = penetration;
         max_penetration_point = vertex;
       }
-    }
-
-    const double along = wallAlongCoord(vertex, wall);
-    if (along <= along_wall_min || along >= along_wall_max) {
-      continue;
     }
 
     if (have_tf_obstacles_to_base) {
@@ -554,10 +608,10 @@ WallPolygonClipResult processWallFilteredPolygon(
       continue;
     }
 
-    if (vertex_signed_dist >= 0.0) {
+    if (!isOnSameWallSideAsRobot(vertex_wall_coord, wall.robot_side_sign)) {
       continue;
     }
-    const double pen = -vertex_signed_dist;
+    const double pen = std::abs(vertex_wall_coord);
     const double dist_robot_vertex = (vertex - robot_position).norm();
     const double eff_v = eff_protrusion_for_vertex_dist(dist_robot_vertex);
     if (pen <= eff_v || pen > depth_max) {
@@ -2016,20 +2070,19 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
         eff_wall_end = base_end + base_dir * ext;
 
         // --- Safety offset: shift toward robot side for conservative distance ---
-        eff_wall_normal = Eigen::Vector2d(-base_dir.y(), base_dir.x());
-        Eigen::Vector2d robot_vec = robot_pose_.position() - base_start;
-        if (robot_vec.dot(eff_wall_normal) > 0)
-          eff_wall_normal = -eff_wall_normal;  // ensure normal points toward wall
+        const Eigen::Vector2d toward_robot_unit = wallTowardRobotUnit(
+          robot_pose_.position(), base_start, base_dir, base_len);
 
         double offset = cfg_->wall_line.wall_line_safety_offset;
-        eff_wall_start -= eff_wall_normal * offset;
-        eff_wall_end -= eff_wall_normal * offset;
+        eff_wall_start += toward_robot_unit * offset;
+        eff_wall_end += toward_robot_unit * offset;
 
         eff_wall_dir = eff_wall_end - eff_wall_start;
         eff_wall_length = eff_wall_dir.norm();
         if (eff_wall_length > 1e-6)
         {
           eff_wall_dir /= eff_wall_length;
+          eff_wall_normal = Eigen::Vector2d(-eff_wall_dir.y(), eff_wall_dir.x());
           use_wall_line_filter = true;
         }
       }
@@ -2062,20 +2115,14 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
 
   EffWallFrame eff_wall;
   bool have_eff_wall = false;
-  double along_wall_min = 0.0;
-  double along_wall_max = 0.0;
   if (use_wall_line_filter) {
     eff_wall.start = eff_wall_start;
     eff_wall.dir = eff_wall_dir;
     eff_wall.normal = eff_wall_normal;
     eff_wall.length = eff_wall_length;
+    eff_wall.robot_side_sign = wallSideSignFromCoord(
+      wallSignedDist(robot_pose_.position(), eff_wall));
     have_eff_wall = true;
-    const double robot_along_wall =
-      (robot_pose_.position() - eff_wall_start).dot(eff_wall_dir);
-    along_wall_min = std::max(
-      0.0,
-      robot_along_wall - cfg_->wall_line.wall_line_obstacle_along_wall_rear_margin);
-    along_wall_max = eff_wall_length;
   }
 
   // --- Add obstacles; edge mode clips shallow wall-band geometry instead of skipping ---
@@ -2090,8 +2137,6 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
         *polygon,
         eff_wall,
         robot_pose_.position(),
-        along_wall_min,
-        along_wall_max,
         have_tf_obstacles_to_base,
         tf_base_from_obstacles,
         obstacles_frame,
@@ -2108,7 +2153,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
         {
           protrusion_detection_timestamps_.erase(protrusion_detection_timestamps_.begin());
         }
-
+        RCLCPP_INFO(logger_, "[updateObstacleContainerWithCostmapConverter] protrusion_detection_timestamps_.size(): %ld", protrusion_detection_timestamps_.size());
         if (static_cast<int>(protrusion_detection_timestamps_.size()) >=
           cfg_->wall_line.obstacle_protrusion_min_confirm_frames)
         {
@@ -2666,7 +2711,7 @@ void TebLocalPlannerROS::updateWallLineVec(
      // Check if obstacle is expired by timeout
      if (time_elapsed > cfg_->wall_line.obstacle_protrusion_timeout)
      {
-       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+       RCLCPP_WARN(logger_,
          "[updateCurbLineVec] protruding obstacle at (%.2f, %.2f) expired (timeout)", it->position.x(), it->position.y());
        it = protruding_obstacles_.erase(it);
        continue;
@@ -2677,14 +2722,14 @@ void TebLocalPlannerROS::updateWallLineVec(
      if (dist < reenter_threshold)
      {
        has_protruding_obstacle_nearby = true;
-       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+       RCLCPP_WARN(logger_,
          "[updateCurbLineVec] protruding obstacle at (%.2f, %.2f) is nearby (dist=%.2f)", it->position.x(), it->position.y(), dist);
        ++it;
      }
      else
      {
        // Robot is far away, remove this obstacle record
-       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+       RCLCPP_WARN(logger_,
          "[updateCurbLineVec] protruding obstacle at (%.2f, %.2f) removed (dist=%.2f > %.2f)", 
          it->position.x(), it->position.y(), dist, reenter_threshold);
        it = protruding_obstacles_.erase(it);
@@ -2693,7 +2738,7 @@ void TebLocalPlannerROS::updateWallLineVec(
    
    if (has_protruding_obstacle_nearby)
    {
-     RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, 
+     RCLCPP_WARN(logger_,
        "[updateCurbLineVec] protruding obstacle nearby, prohibiting edge-following mode entry");
      if(wall_line_points_.size() > 0) wall_line_points_.clear();
      switchParameterMode(false);
@@ -3266,6 +3311,33 @@ bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
   return true;
 }
 
+namespace {
+
+int computeLastIdxAfterExtension(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const int from_idx,
+  const double extend_arc_m)
+{
+  const int goal_idx = static_cast<int>(plan.size()) - 1;
+  if (from_idx >= goal_idx || extend_arc_m <= 1e-9) {
+    return goal_idx;
+  }
+  double accum = 0.0;
+  int new_last = from_idx;
+  for (int k = from_idx; k < goal_idx; ++k) {
+    accum += teb_local_planner::distance_points2d(
+      plan[static_cast<size_t>(k)].pose.position,
+      plan[static_cast<size_t>(k + 1)].pose.position);
+    new_last = k + 1;
+    if (accum >= extend_arc_m - 1e-9) {
+      break;
+    }
+  }
+  return new_last;
+}
+
+}  // namespace
+
 bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::msg::PoseStamped>& global_plan,
                    const geometry_msgs::msg::PoseStamped& global_pose, const nav2_costmap_2d::Costmap2D& costmap, const std::string& global_frame, double max_plan_length,
                    std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan, int* current_goal_idx, geometry_msgs::msg::TransformStamped* tf_plan_to_global) const
@@ -3395,76 +3467,78 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
     }
  
     const int n_plan = static_cast<int>(global_plan.size());
-    const int last_idx = n_plan - 1;
+    const int global_goal_idx = n_plan - 1;
+    int last_idx = global_goal_idx;
     geometry_msgs::msg::PoseStamped effective_last_plan_pose = global_plan.back();
     auto planPoseAt = [&](int idx) -> const geometry_msgs::msg::PoseStamped & {
-      return (idx == last_idx) ? effective_last_plan_pose :
-                               global_plan[static_cast<size_t>(idx)];
+      if (idx == global_goal_idx) {
+        return effective_last_plan_pose;
+      }
+      return global_plan[static_cast<size_t>(idx)];
     };
 
      geometry_msgs::msg::PoseStamped newer_pose;
      
-     double plan_length = 0; // check cumulative Euclidean distance along the plan
-     
+     const int segment_start_idx = i;
+     double arc_from_segment_start = 0.0;
+
      //now we'll transform until points are outside of our distance threshold
      cfg_->optim.weight_viapoint = weight_via_point_;
-     while(i < (int)global_plan.size() && (max_plan_length<=0 || plan_length <= max_plan_length))
+     while (i < n_plan && i <= last_idx &&
+       (max_plan_length <= 0 || arc_from_segment_start <= max_plan_length))
      {
-       //const geometry_msgs::msg::PoseStamped& pose = global_plan[i];
-       //tf::poseStampedMsgToTF(pose, tf_pose);
-       //tf_pose.setData(plan_to_global_transform * tf_pose);
        tf2::doTransform(planPoseAt(i), newer_pose, plan_to_global_transform);
- 
- //      tf_pose.stamp_ = plan_to_global_transform.stamp_;
- //      tf_pose.frame_id_ = global_frame;
- //      tf::poseStampedTFToMsg(tf_pose, newer_pose);
- 
        transformed_plan.push_back(newer_pose);
- 
-       
-       
-       // caclulate distance to previous pose
-       if (i>0 && max_plan_length>0)
-         plan_length += distance_points2d(
+
+       if (i > segment_start_idx && max_plan_length > 0) {
+         arc_from_segment_start += distance_points2d(
            planPoseAt(i - 1).pose.position, planPoseAt(i).pose.position);
-       if (plan_length > max_plan_length || i == last_idx) {
-          const bool pose_free = globalPlanPoseFootprintFreeInControllerFrame(
-            planPoseAt(i), plan_to_global_transform, nullptr);
-          if (!pose_free && (int)global_plan.size() > 0) {
-            if (i == last_idx) {
-              if (!transformed_plan.empty()) {
-                transformed_plan.pop_back();
-              }
-              RCLCPP_WARN(
-                logger_,
-                "transformGlobalPlan: last path point footprint not free in local costmap; "
-                "running plan-frame goal search (no PlannerException).");
-              const bool adjusted_ok = adjustOccupiedGlobalPlanGoalInPlace(
-                global_plan.back(), plan_to_global_transform, effective_last_plan_pose);
-              if (!adjusted_ok) {
-                RCLCPP_ERROR(
-                  logger_,
-                  "transformGlobalPlan: last goal search did not find a free pose; keeping last plan pose.");
-              }
-              tf2::doTransform(planPoseAt(last_idx), newer_pose, plan_to_global_transform);
-              transformed_plan.push_back(newer_pose);
-              if (!globalPlanPoseFootprintFreeInControllerFrame(
-                  planPoseAt(last_idx), plan_to_global_transform, nullptr))
-              {
-                cfg_->optim.weight_viapoint = 1.0;
-              }
-            }
-            RCLCPP_WARN(
-              logger_,
-              "transformGlobalPlan: trajectory footprint not free under globalPlanPose check, extending plan length to %f",
-              max_plan_length + cfg_->trajectory.max_plan_length_extend_on_trajectory_obstacle_m);
-            max_plan_length = std::min(
-              max_plan_length + cfg_->trajectory.max_plan_length_extend_on_trajectory_obstacle_m, costmap_->getSizeInMetersX());
-            cfg_->optim.weight_viapoint = 1.0;
-          }
-        }
+       }
+
+       const bool pose_free = globalPlanPoseFootprintFreeInControllerFrame(
+         planPoseAt(i), plan_to_global_transform, nullptr);
+       if (!pose_free && n_plan > 0 && max_plan_length > 0) {
+         const double remaining_budget = max_plan_length - arc_from_segment_start;
+         const double near_end_thresh =
+           cfg_->trajectory.transformed_plan_collision_pose_to_end_distance;
+         if (near_end_thresh > 1e-9 && remaining_budget < near_end_thresh) {
+           const double target_max_plan_length = arc_from_segment_start + near_end_thresh;
+           max_plan_length = std::min(target_max_plan_length, costmap.getSizeInMetersX());
+           const double extend_arc_along_plan = max_plan_length - arc_from_segment_start;
+           const int new_last_idx = computeLastIdxAfterExtension(
+             global_plan, i, extend_arc_along_plan);
+           last_idx = std::max(last_idx, new_last_idx);
+           last_idx = std::min(last_idx, global_goal_idx);
+           cfg_->optim.weight_viapoint = 1.0;
+
+           if (last_idx == global_goal_idx && i == global_goal_idx) {
+             if (!transformed_plan.empty()) {
+               transformed_plan.pop_back();
+             }
+             RCLCPP_WARN(
+               logger_,
+               "transformGlobalPlan: last path point footprint not free in local costmap; "
+               "running plan-frame goal search (no PlannerException).");
+             const bool adjusted_ok = adjustOccupiedGlobalPlanGoalInPlace(
+               global_plan.back(), plan_to_global_transform, effective_last_plan_pose);
+             if (!adjusted_ok) {
+               RCLCPP_ERROR(
+                 logger_,
+                 "transformGlobalPlan: last goal search did not find a free pose; keeping last plan pose.");
+             }
+             tf2::doTransform(planPoseAt(global_goal_idx), newer_pose, plan_to_global_transform);
+             transformed_plan.push_back(newer_pose);
+             if (!globalPlanPoseFootprintFreeInControllerFrame(
+                 planPoseAt(global_goal_idx), plan_to_global_transform, nullptr))
+             {
+               cfg_->optim.weight_viapoint = 1.0;
+             }
+           }
+         }
+       }
        ++i;
      }
+     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[transformGlobalPlan]: transformed look forward distance: %.3f", max_plan_length);
          
      // if we are really close to the goal (<sq_dist_threshold) and the goal is not yet reached (e.g. orientation error >>0)
      // the resulting transformed plan can be empty. In that case we explicitly inject the global goal.
@@ -3505,8 +3579,9 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
      }
      else
      {
-       // Return the index of the current goal point (inside the distance threshold)
-       if (current_goal_idx) *current_goal_idx = i-1; // subtract 1, since i was increased once before leaving the loop
+       if (current_goal_idx) {
+         *current_goal_idx = std::min(i - 1, last_idx);
+       }
      }
      
      // Return the transformation from the global plan to the global planning frame if desired
@@ -5333,11 +5408,29 @@ void TebLocalPlannerROS::edgeReferencePathsCallback(
   edge_reference_have_message_ = true;
 }
 
+void TebLocalPlannerROS::clearEdgeFollowingFromEmptyPathsNearEdge()
+{
+  paths_near_edge_active_ = false;
+  paths_near_edge_hit_count_ = 0;
+  paths_near_edge_miss_count_ = 0;
+  if (wall_line_points_.size() > 0) {
+    wall_line_points_.clear();
+  }
+  reference_line_hold_.clear();
+  switchParameterMode(false);
+  RCLCPP_INFO(
+    logger_,
+    "Empty paths_near_edge received: cleared edge-following state immediately");
+}
+
 void TebLocalPlannerROS::pathsNearEdgeCallback(
   const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr paths_near_edge_message)
 {
   std::lock_guard<std::mutex> paths_near_edge_mutex_lock(paths_near_edge_mutex_);
   paths_near_edge_cache_ = *paths_near_edge_message;
+  if (paths_near_edge_cache_.paths.empty()) {
+    clearEdgeFollowingFromEmptyPathsNearEdge();
+  }
 }
 
 bool TebLocalPlannerROS::extractLineSegmentFromPath(
@@ -6102,7 +6195,7 @@ void TebLocalPlannerROS::updateReferenceLineVec(
   const geometry_msgs::msg::PoseStamped& robot_pose)
 {
   if (!edgeFollowingEntryGuards(robot_pose, input_path)) {
-    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[updateReferenceLineVec] edge following entry guards failed");
+    RCLCPP_WARN(logger_, "[updateReferenceLineVec] edge following entry guards failed");
     return;
   }
   Eigen::Vector2d selected_reference_segment_start;

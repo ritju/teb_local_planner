@@ -267,6 +267,7 @@
 
   void edgeReferencePathsCallback(const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr msg);
   void pathsNearEdgeCallback(const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr msg);
+  void clearEdgeFollowingFromEmptyPathsNearEdge();
   void updateReferenceLineVec(
     const std::vector<nav_msgs::msg::Path>& reference_path_list,
     nav_msgs::msg::Path& input_path,

@@ -107,6 +107,8 @@ public:
     double cut_path_before_corner_inscribed_dist;
     //! transformGlobalPlan: when scorePose throws "Trajectory Hits Obstacle.", extend max plan length by this (m), capped by local costmap size
     double max_plan_length_extend_on_trajectory_obstacle_m;
+    //!< transformGlobalPlan: 碰撞点距全局终点直线距离小于此值时，延长 max_plan_length 并前移 last_idx（m）
+    double transformed_plan_collision_pose_to_end_distance;
     //!< transformGlobalPlan: max cumulative path length from plan[0] while searching for the pose closest to the robot [m]; <=0 = no limit (entire plan)
     double transform_global_plan_closest_search_max_accum_dist;
     //!< transformGlobalPlan: 若末端路径点在局部代价地图上 footprint 碰撞，在全局路径(plan 系)上以该值为半宽做网格偏移搜索可调位姿 [m]；<=0 关闭微调
@@ -408,6 +410,7 @@ public:
     trajectory.min_resolution_collision_check_angular = M_PI;
     trajectory.control_look_ahead_poses = 1;
     trajectory.max_plan_length_extend_on_trajectory_obstacle_m = 3.0;
+    trajectory.transformed_plan_collision_pose_to_end_distance = 1.0;
     trajectory.transform_global_plan_closest_search_max_accum_dist = 0.0;
     trajectory.transform_global_plan_goal_occupied_tolerance = 1.0;
     trajectory.transform_global_plan_goal_search_resolution = 0.2;
