@@ -798,6 +798,18 @@
      double omega_direction_sign,
      double rotation_magnitude_rad,
      double initial_omega_z) const;
+
+   /** 与 isRotationCollisionFreeDecel 相同 yaw 采样；xy 固定，仅 orientation 变化 */
+   std::vector<geometry_msgs::msg::PoseStamped> buildInPlaceRotationPredictedPath(
+     const geometry_msgs::msg::PoseStamped & pose,
+     double omega_direction_sign,
+     double rotation_magnitude_rad) const;
+
+   /** 原地转时发布 local_plan 供 collision_monitor；path header.stamp = clock_->now() */
+   void publishInPlaceRotationLocalPlan(
+     const geometry_msgs::msg::PoseStamped & pose,
+     double omega_direction_sign,
+     double rotation_magnitude_rad) const;
    
    /**
     * @brief Compute rotation command for in-place rotation

@@ -1709,7 +1709,7 @@ void TebLocalPlannerROS::configure(
     );
   }
 
-   // Check if in-place rotation should be performed before TEB planning
+  // Check if in-place rotation should be performed before TEB planning
   const bool use_inplace_rotation =
     shouldRotateInPlace(velocity, transformed_plan, robot_pose);
   if (use_inplace_rotation)
@@ -5172,6 +5172,60 @@ bool TebLocalPlannerROS::isRotationCollisionFreeDecel(
   return true;
 }
 
+std::vector<geometry_msgs::msg::PoseStamped> TebLocalPlannerROS::buildInPlaceRotationPredictedPath(
+  const geometry_msgs::msg::PoseStamped & pose,
+  double omega_direction_sign,
+  double rotation_magnitude_rad) const
+{
+  std::vector<geometry_msgs::msg::PoseStamped> path;
+  if (rotation_magnitude_rad < 1e-9) {
+    path.push_back(pose);
+    path.front().header.stamp = clock_->now();
+    return path;
+  }
+
+  const double dir = (omega_direction_sign >= 0.0) ? 1.0 : -1.0;
+  const double yaw0 = tf2::getYaw(pose.pose.orientation);
+  constexpr double kSampleStepRad = M_PI / 36.0;  // 5°，与 isRotationCollisionFreeDecel 一致
+  const int n_samples =
+    std::min(256, std::max(8, static_cast<int>(std::ceil(rotation_magnitude_rad / kSampleStepRad)) + 1));
+
+  path.reserve(static_cast<size_t>(n_samples) + 1);
+  const rclcpp::Time now = clock_->now();
+  for (int i = 0; i <= n_samples; ++i) {
+    const double fraction = static_cast<double>(i) / static_cast<double>(n_samples);
+    double y = yaw0 + dir * fraction * rotation_magnitude_rad;
+    while (y > M_PI) {
+      y -= 2.0 * M_PI;
+    }
+    while (y < -M_PI) {
+      y += 2.0 * M_PI;
+    }
+
+    geometry_msgs::msg::PoseStamped p = pose;
+    p.header.stamp = now;
+    p.pose.orientation = tf2::toMsg(tf2::Quaternion(tf2::Vector3(0, 0, 1), y));
+    path.push_back(p);
+  }
+  return path;
+}
+
+void TebLocalPlannerROS::publishInPlaceRotationLocalPlan(
+  const geometry_msgs::msg::PoseStamped & pose,
+  double omega_direction_sign,
+  double rotation_magnitude_rad) const
+{
+  if (!visualization_) {
+    return;
+  }
+  const auto path =
+    buildInPlaceRotationPredictedPath(pose, omega_direction_sign, rotation_magnitude_rad);
+  if (path.empty()) {
+    return;
+  }
+  visualization_->publishLocalPlan(path);
+}
+
 bool TebLocalPlannerROS::checkRotateToHeadingCollisionNominal(
   const double & angular_distance_to_heading,
   const geometry_msgs::msg::PoseStamped & pose,
@@ -5272,6 +5326,7 @@ bool TebLocalPlannerROS::computeRotateToHeadingCommand(
   if (isRotationCollisionFreeDecel(pose, angular_vel_sign, test_angular_distance, velocity.angular.z))
   {
     fill_cmd(angular_vel_sign, test_angular_distance);
+    publishInPlaceRotationLocalPlan(pose, angular_vel_sign, test_angular_distance);
     return true;
   }
 
@@ -5280,6 +5335,7 @@ bool TebLocalPlannerROS::computeRotateToHeadingCommand(
   if (isRotationCollisionFreeDecel(pose, angular_vel_sign, test_angular_distance, velocity.angular.z))
   {
     fill_cmd(angular_vel_sign, test_angular_distance);
+    publishInPlaceRotationLocalPlan(pose, angular_vel_sign, test_angular_distance);
     // RCLCPP_INFO_THROTTLE(
     //   logger_, *clock_, 500,
     //   "原地转: computeRotate 首选 sign=%.0f、rot_mag=%.3f rad 未通过，备选 sign=%.0f、rot_mag=%.3f rad 已填 cmd "
@@ -5517,6 +5573,7 @@ bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
     if (paths_near_edge_miss_count_ >= cfg_->wall_line.paths_near_edge_exit_miss_count) {
       paths_near_edge_active_ = false;
     }
+    RCLCPP_WARN_THROTTLE(logger_, *clock_, 2000, "No transformed segment");
     return paths_near_edge_active_;
   }
 
@@ -5537,6 +5594,7 @@ bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
   {
     std::lock_guard<std::mutex> paths_near_edge_mutex_lock(paths_near_edge_mutex_);
     candidate_paths_near_edge = paths_near_edge_cache_.paths;
+    RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000, "candidate_paths_near_edge size: %d", candidate_paths_near_edge.size());
   }
 
   bool has_matching_paths_near_edge = false;
@@ -5651,6 +5709,7 @@ bool TebLocalPlannerROS::edgeFollowingEntryGuards(
     }
     switchParameterMode(false);
     fusion_primary_lock_until_ = rclcpp::Time(0, 0, clock_->get_clock_type());
+    RCLCPP_WARN_THROTTLE(logger_, *clock_, 2000, "has_near_vehicles, exit edge following");
     return false;
   }
 
@@ -5684,6 +5743,7 @@ bool TebLocalPlannerROS::edgeFollowingEntryGuards(
     }
     switchParameterMode(false);
     fusion_primary_lock_until_ = rclcpp::Time(0, 0, clock_->get_clock_type());
+    RCLCPP_WARN_THROTTLE(logger_, *clock_, 2000, "has_protruding_obstacle_nearby, exit edge following");
     return false;
   }
   return true;

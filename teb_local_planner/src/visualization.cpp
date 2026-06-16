@@ -472,7 +472,7 @@ void TebVisualization::publishFeedbackMessage(const std::vector< std::shared_ptr
     obstacles[i]->toTwistWithCovarianceMsg(msg.obstacles_msg.obstacles[i].velocities);
   }
   
-  // feedback_pub_->publish(msg);
+  feedback_pub_->publish(msg);
 }
 
 void TebVisualization::publishFeedbackMessage(const TebOptimalPlanner& teb_planner, const ObstContainer& obstacles)
@@ -506,7 +506,7 @@ void TebVisualization::publishFeedbackMessage(const TebOptimalPlanner& teb_plann
     obstacles[i]->toTwistWithCovarianceMsg(msg.obstacles_msg.obstacles[i].velocities);
   }
   
-  // feedback_pub_->publish(msg);
+  feedback_pub_->publish(msg);
 }
 
 std_msgs::msg::ColorRGBA TebVisualization::toColorMsg(double a, double r, double g, double b)
