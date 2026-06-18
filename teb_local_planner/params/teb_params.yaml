@@ -17,6 +17,9 @@ controller_server:
       max_global_plan_lookahead_dist: 3.0
       cut_path_before_corner_lethal_dist: 1.0
       cut_path_before_corner_inscribed_dist: 1.5
+      prune_before_corner_distance: 4.0   # max path length to search for last corner [m]; <=0: no limit
+      prune_corner_residual_distance: 0.5  # min remaining path length after corner to allow prune [m]
+      prune_before_corner_linear_x_threshold: 0.1  # |linear.x| must be below this to prune at corner obstacle [m/s]
       global_plan_viapoint_sep: 0.3
       global_plan_prune_distance: 1.0
       global_plan_prune_max_accum_dist: 8.0   # <=0: search full path for prune point

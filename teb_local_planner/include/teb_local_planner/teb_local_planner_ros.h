@@ -274,6 +274,7 @@
     const double parallel_tolerance_degrees,
     const double distance_tolerance_meters,
     const geometry_msgs::msg::PoseStamped& robot_pose);
+  void applyReferenceLineHoldFallbackOrExit(const nav_msgs::msg::Path& input_path);
   void runEdgeFollowingPathUpdate(
     std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan,
     const geometry_msgs::msg::PoseStamped& robot_pose);

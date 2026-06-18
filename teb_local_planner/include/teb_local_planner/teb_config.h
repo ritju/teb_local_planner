@@ -105,6 +105,12 @@ public:
     double cut_path_before_corner_lethal_dist;
     //!< 角点不可达时裁剪 global_plan：INSCRIBED_INFLATED_OBSTACLE 下允许裁剪的机器人到角点横向距离上限 [m]
     double cut_path_before_corner_inscribed_dist;
+    //!< 在 global_plan 中搜索 last_corner_pose_ 的最大累积路径长度 [m]; <=0 表示不限制
+    double prune_before_corner_distance;
+    //!< 匹配到角点后，角点至路径终点剩余累积路径长度须大于该值才执行裁剪 [m]
+    double prune_corner_residual_distance;
+    //!< 角点有障碍时裁剪 global_plan：|linear.x| 须小于该阈值才执行裁剪 [m/s]
+    double prune_before_corner_linear_x_threshold;
     //! transformGlobalPlan: when scorePose throws "Trajectory Hits Obstacle.", extend max plan length by this (m), capped by local costmap size
     double max_plan_length_extend_on_trajectory_obstacle_m;
     //!< transformGlobalPlan: 碰撞点距全局终点直线距离小于此值时，延长 max_plan_length 并前移 last_idx（m）
@@ -215,7 +221,7 @@ public:
     int paths_near_edge_exit_miss_count; //!< Consecutive misses required to exit edge-following
     double fusion_primary_lock_duration; //!< When WALL/CURB matches Reference, lock primary for this duration [s]
     double reference_match_max_angle_deg; //!< Primary vs Reference "close": max direction angle diff [deg]
-    double reference_match_max_distance_m; //!< Primary vs Reference "close": max midpoint distance [m]
+    double reference_match_max_distance_m; //!< Primary vs Reference "close": max segment-to-segment distance [m]
     double reference_no_valid_path_timeout; //!< No valid Reference path: keep last segment until this timeout since last success [s]
     double new_vehicle_distance_threshold;
     double erase_vehicle_distance_threshold;
@@ -387,6 +393,9 @@ public:
     trajectory.corner_dist_threshold = 1.5;
     trajectory.cut_path_before_corner_lethal_dist = 1.0;
     trajectory.cut_path_before_corner_inscribed_dist = 1.5;
+    trajectory.prune_before_corner_distance = 4.0;
+    trajectory.prune_corner_residual_distance = 0.5;
+    trajectory.prune_before_corner_linear_x_threshold = 0.1;
     trajectory.teb_autosize = true;
     trajectory.dt_ref = 0.3;
     trajectory.dt_hysteresis = 0.1;

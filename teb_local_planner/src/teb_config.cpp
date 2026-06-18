@@ -79,6 +79,15 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(
     nh, name + "." + "cut_path_before_corner_inscribed_dist",
     rclcpp::ParameterValue(trajectory.cut_path_before_corner_inscribed_dist));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "prune_before_corner_distance",
+    rclcpp::ParameterValue(trajectory.prune_before_corner_distance));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "prune_corner_residual_distance",
+    rclcpp::ParameterValue(trajectory.prune_corner_residual_distance));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "prune_before_corner_linear_x_threshold",
+    rclcpp::ParameterValue(trajectory.prune_before_corner_linear_x_threshold));
   declare_parameter_if_not_declared(nh, name + "." + "max_plan_length_extend_on_trajectory_obstacle_m", rclcpp::ParameterValue(trajectory.max_plan_length_extend_on_trajectory_obstacle_m));
   declare_parameter_if_not_declared(
     nh, name + "." + "transformed_plan_collision_pose_to_end_distance",
@@ -345,6 +354,18 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
     name + "." + "cut_path_before_corner_inscribed_dist",
     trajectory.cut_path_before_corner_inscribed_dist,
     trajectory.cut_path_before_corner_inscribed_dist);
+  nh->get_parameter_or(
+    name + "." + "prune_before_corner_distance",
+    trajectory.prune_before_corner_distance,
+    trajectory.prune_before_corner_distance);
+  nh->get_parameter_or(
+    name + "." + "prune_corner_residual_distance",
+    trajectory.prune_corner_residual_distance,
+    trajectory.prune_corner_residual_distance);
+  nh->get_parameter_or(
+    name + "." + "prune_before_corner_linear_x_threshold",
+    trajectory.prune_before_corner_linear_x_threshold,
+    trajectory.prune_before_corner_linear_x_threshold);
   nh->get_parameter_or(name + "." + "max_plan_length_extend_on_trajectory_obstacle_m", trajectory.max_plan_length_extend_on_trajectory_obstacle_m, trajectory.max_plan_length_extend_on_trajectory_obstacle_m);
   nh->get_parameter_or(
     name + "." + "transformed_plan_collision_pose_to_end_distance",
@@ -770,6 +791,12 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.cut_path_before_corner_lethal_dist = parameter.as_double();
       } else if (name == node_name + ".cut_path_before_corner_inscribed_dist") {
         trajectory.cut_path_before_corner_inscribed_dist = parameter.as_double();
+      } else if (name == node_name + ".prune_before_corner_distance") {
+        trajectory.prune_before_corner_distance = parameter.as_double();
+      } else if (name == node_name + ".prune_corner_residual_distance") {
+        trajectory.prune_corner_residual_distance = parameter.as_double();
+      } else if (name == node_name + ".prune_before_corner_linear_x_threshold") {
+        trajectory.prune_before_corner_linear_x_threshold = parameter.as_double();
       } else if (name == node_name + ".max_plan_length_extend_on_trajectory_obstacle_m") {
         trajectory.max_plan_length_extend_on_trajectory_obstacle_m = parameter.as_double();
       } else if (name == node_name + ".transformed_plan_collision_pose_to_end_distance") {
