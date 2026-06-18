@@ -1114,18 +1114,23 @@ bool clippedFootprintOutlineTouchesBlockingCost(
         rclcpp::QoS reference_paths_subscription_qos(rclcpp::KeepLast(10));
         reference_paths_subscription_qos.transient_local();
         reference_paths_subscription_qos.reliable();
-        edge_reference_paths_sub_ = node->create_subscription<capella_ros_msg::msg::LaneCenterPaths>(
-          cfg_->wall_line.edge_reference_paths_topic,
+        paired_mission_and_reference_path_sub_ =
+          node->create_subscription<capella_ros_msg::msg::LaneCenterPaths>(
+          cfg_->wall_line.paired_mission_and_reference_path_topic,
           reference_paths_subscription_qos,
-          std::bind(&TebLocalPlannerROS::edgeReferencePathsCallback, this, std::placeholders::_1));
-        RCLCPP_INFO(logger_, "TEB 订阅边缘参考路径，话题：%s (transient_local)",
-          cfg_->wall_line.edge_reference_paths_topic.c_str());
-        paths_near_edge_sub_ = node->create_subscription<capella_ros_msg::msg::LaneCenterPaths>(
-          cfg_->wall_line.paths_near_edge_topic,
-          reference_paths_subscription_qos,
-          std::bind(&TebLocalPlannerROS::pathsNearEdgeCallback, this, std::placeholders::_1));
-        RCLCPP_INFO(logger_, "TEB 订阅边缘路径，话题：%s (transient_local)",
-          cfg_->wall_line.paths_near_edge_topic.c_str());
+          std::bind(
+            &TebLocalPlannerROS::pairedMissionAndReferencePathCallback, this,
+            std::placeholders::_1));
+        RCLCPP_INFO(
+          logger_, "TEB 订阅成对 mission/reference 路径，话题：%s (transient_local)",
+          cfg_->wall_line.paired_mission_and_reference_path_topic.c_str());
+        removed_plan_sub_ = node->create_subscription<nav_msgs::msg::Path>(
+          cfg_->wall_line.removed_plan_topic,
+          rclcpp::QoS(rclcpp::KeepLast(5)),
+          std::bind(&TebLocalPlannerROS::removedPlanCallback, this, std::placeholders::_1));
+        RCLCPP_INFO(
+          logger_, "TEB 订阅 removed_plan，话题：%s",
+          cfg_->wall_line.removed_plan_topic.c_str());
       }
     }
 
@@ -5570,39 +5575,103 @@ bool TebLocalPlannerROS::isRotationCollisionFree(
   return true;  // No collision detected
 }
 
-void TebLocalPlannerROS::edgeReferencePathsCallback(
+void TebLocalPlannerROS::clearActiveReferencePair()
+{
+  active_pair_index_ = -1;
+  has_active_reference_pair_ = false;
+  active_mission_segment_ = nav_msgs::msg::Path();
+  active_reference_path_ = nav_msgs::msg::Path();
+  RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000, "未找到匹配的贴边参考路径，清空贴边参考路径");
+}
+
+void TebLocalPlannerROS::refreshActiveReferencePair()
+{
+  if (paired_mission_and_reference_path_cache_.paths.size() < 2 ||
+    removed_plan_cache_.poses.empty())
+  {
+    RCLCPP_INFO(logger_, "贴边参考路径缓存或多点路径为空，清空贴边参考路径");
+    clearActiveReferencePair();
+    return;
+  }
+
+  const geometry_msgs::msg::PoseStamped & front_pose = removed_plan_cache_.poses.front();
+  const Eigen::Vector2d front_xy(front_pose.pose.position.x, front_pose.pose.position.y);
+  int best_pair_index = -1;
+  const double match_threshold_m = cfg_->wall_line.mission_segment_front_pose_match_threshold_m;
+
+  for (std::size_t pair_index = 0;
+    2 * pair_index + 1 < paired_mission_and_reference_path_cache_.paths.size();
+    ++pair_index)
+  {
+    const auto & mission_segment = paired_mission_and_reference_path_cache_.paths[2 * pair_index];
+    bool segment_matched = false;
+    for (const auto & pose_stamped : mission_segment.poses) {
+      const double dx = front_xy.x() - pose_stamped.pose.position.x;
+      const double dy = front_xy.y() - pose_stamped.pose.position.y;
+      if (std::hypot(dx, dy) < match_threshold_m) {
+        segment_matched = true;
+        break;
+      }
+    }
+    if (segment_matched) {
+      best_pair_index = static_cast<int>(pair_index);
+      break;
+    }
+  }
+
+  if (best_pair_index < 0) {
+    clearActiveReferencePair();
+    return;
+  }
+
+  const std::size_t mission_path_index = static_cast<std::size_t>(best_pair_index) * 2;
+  active_pair_index_ = best_pair_index;
+  active_mission_segment_ = paired_mission_and_reference_path_cache_.paths[mission_path_index];
+  active_reference_path_ = paired_mission_and_reference_path_cache_.paths[mission_path_index + 1];
+  has_active_reference_pair_ = true;
+}
+
+void TebLocalPlannerROS::pairedMissionAndReferencePathCallback(
   const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr lane_center_paths_message)
 {
-  std::lock_guard<std::mutex> edge_reference_paths_mutex_lock(edge_reference_paths_mutex_);
-  // 新消息整包覆盖旧缓存；不在本节点内对 paths 做超时清空（与上层单次发布语义一致）。
-  edge_reference_paths_cache_ = *lane_center_paths_message;
-  edge_reference_paths_msg_time_ = clock_->now();
-  edge_reference_have_message_ = true;
+  std::lock_guard<std::mutex> edge_mission_pair_mutex_lock(edge_mission_pair_mutex_);
+  paired_mission_and_reference_path_cache_ = *lane_center_paths_message;
+  if (paired_mission_and_reference_path_cache_.paths.empty()) {
+    clearActiveReferencePair();
+    RCLCPP_INFO(
+      logger_,
+      "Empty paired_mission_and_reference_path received: cleared active reference pair");
+    return;
+  }
+  refreshActiveReferencePair();
 }
 
-void TebLocalPlannerROS::clearEdgeFollowingFromEmptyPathsNearEdge()
+void TebLocalPlannerROS::removedPlanCallback(const nav_msgs::msg::Path::ConstSharedPtr removed_plan_message)
 {
-  paths_near_edge_active_ = false;
-  paths_near_edge_hit_count_ = 0;
-  paths_near_edge_miss_count_ = 0;
-  if (wall_line_points_.size() > 0) {
-    wall_line_points_.clear();
-  }
-  reference_line_hold_.clear();
-  switchParameterMode(false);
-  RCLCPP_INFO(
-    logger_,
-    "Empty paths_near_edge received: cleared edge-following state immediately");
+  std::lock_guard<std::mutex> edge_mission_pair_mutex_lock(edge_mission_pair_mutex_);
+  removed_plan_cache_ = *removed_plan_message;
+  refreshActiveReferencePair();
 }
 
-void TebLocalPlannerROS::pathsNearEdgeCallback(
-  const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr paths_near_edge_message)
+bool TebLocalPlannerROS::snapshotHasActiveReferencePair() const
 {
-  std::lock_guard<std::mutex> paths_near_edge_mutex_lock(paths_near_edge_mutex_);
-  paths_near_edge_cache_ = *paths_near_edge_message;
-  if (paths_near_edge_cache_.paths.empty()) {
-    clearEdgeFollowingFromEmptyPathsNearEdge();
+  std::lock_guard<std::mutex> edge_mission_pair_mutex_lock(edge_mission_pair_mutex_);
+  return has_active_reference_pair_;
+}
+
+nav_msgs::msg::Path TebLocalPlannerROS::snapshotActiveMissionSegment() const
+{
+  std::lock_guard<std::mutex> edge_mission_pair_mutex_lock(edge_mission_pair_mutex_);
+  return active_mission_segment_;
+}
+
+std::vector<nav_msgs::msg::Path> TebLocalPlannerROS::snapshotActiveReferencePathList() const
+{
+  std::lock_guard<std::mutex> edge_mission_pair_mutex_lock(edge_mission_pair_mutex_);
+  if (!has_active_reference_pair_) {
+    return {};
   }
+  return {active_reference_path_};
 }
 
 bool TebLocalPlannerROS::extractLineSegmentFromPath(
@@ -5706,52 +5775,62 @@ bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
     return false;
   }
 
-  std::vector<nav_msgs::msg::Path> candidate_paths_near_edge;
-  {
-    std::lock_guard<std::mutex> paths_near_edge_mutex_lock(paths_near_edge_mutex_);
-    candidate_paths_near_edge = paths_near_edge_cache_.paths;
-    RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000, "Edge following: 候选贴边参考线数量: %zu", candidate_paths_near_edge.size());
+  if (!snapshotHasActiveReferencePair()) {
+    paths_near_edge_hit_count_ = 0;
+    paths_near_edge_miss_count_++;
+    if (paths_near_edge_miss_count_ >= cfg_->wall_line.paths_near_edge_exit_miss_count) {
+      paths_near_edge_active_ = false;
+    }
+    RCLCPP_INFO_THROTTLE(
+      logger_, *clock_, 2000,
+      "Edge following: removed_plan front_pose 未匹配到 mission 段, miss=%d",
+      paths_near_edge_miss_count_);
+    return paths_near_edge_active_;
   }
+
+  const nav_msgs::msg::Path active_mission_segment = snapshotActiveMissionSegment();
+  Eigen::Vector2d candidate_segment_start;
+  Eigen::Vector2d candidate_segment_end;
+  if (!extractLineSegmentFromPath(
+      active_mission_segment,
+      candidate_segment_start,
+      candidate_segment_end))
+  {
+    paths_near_edge_hit_count_ = 0;
+    paths_near_edge_miss_count_++;
+    if (paths_near_edge_miss_count_ >= cfg_->wall_line.paths_near_edge_exit_miss_count) {
+      paths_near_edge_active_ = false;
+    }
+    RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000, "Edge following: 激活 mission 段长度太短");
+    return paths_near_edge_active_;
+  }
+
+  const double segment_distance =
+    segmentToSegmentDistance(
+      transformed_segment_start,
+      transformed_segment_end,
+      candidate_segment_start,
+      candidate_segment_end);
+  const double heading_difference_deg =
+    segmentDirectionAngleDifferenceDeg(
+      transformed_segment_start,
+      transformed_segment_end,
+      candidate_segment_start,
+      candidate_segment_end);
+  RCLCPP_INFO_THROTTLE(
+    logger_, *clock_, 2000,
+    "Edge following: 当前路径与激活 mission 段距离: %.2f, 夹角: %.2f 度",
+    segment_distance,
+    heading_difference_deg);
 
   bool has_matching_paths_near_edge = false;
   bool has_close_but_not_parallel_candidate = false;
-  for (const auto& candidate_path_near_edge : candidate_paths_near_edge) {
-    Eigen::Vector2d candidate_segment_start;
-    Eigen::Vector2d candidate_segment_end;
-    if (!extractLineSegmentFromPath(
-          candidate_path_near_edge,
-          candidate_segment_start,
-          candidate_segment_end))
-    {
-      RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000, "Edge following: 候选贴边参考线长度太短");
-      continue;
-    }
-    const double segment_distance =
-      segmentToSegmentDistance(
-        transformed_segment_start,
-        transformed_segment_end,
-        candidate_segment_start,
-        candidate_segment_end);
-    const double heading_difference_deg =
-      segmentDirectionAngleDifferenceDeg(
-        transformed_segment_start,
-        transformed_segment_end,
-        candidate_segment_start,
-        candidate_segment_end);
-    RCLCPP_INFO_THROTTLE(
-      logger_, *clock_, 2000,
-      "Edge following: 当前路径与候选贴边参考线距离: %.2f, 夹角: %.2f 度",
-      segment_distance,
-      heading_difference_deg);
-    if (segment_distance > cfg_->wall_line.paths_near_edge_match_distance_threshold) {
-      continue;
-    }
-    if (heading_difference_deg > cfg_->wall_line.paths_near_edge_match_angle_threshold_deg) {
+  if (segment_distance <= cfg_->wall_line.paths_near_edge_match_distance_threshold) {
+    if (heading_difference_deg <= cfg_->wall_line.paths_near_edge_match_angle_threshold_deg) {
+      has_matching_paths_near_edge = true;
+    } else {
       has_close_but_not_parallel_candidate = true;
-      continue;
     }
-    has_matching_paths_near_edge = true;
-    break;
   }
 
   if (has_close_but_not_parallel_candidate && !has_matching_paths_near_edge) {
@@ -6093,11 +6172,6 @@ bool TebLocalPlannerROS::trySelectSegmentFromTwoPointPath(
     Eigen::Vector2d(edge_line_end_position.x, edge_line_end_position.y);
   minimum_average_distance_to_plan = average_distance_path_to_edge_line;
   robot_perpendicular_distance_to_edge_line = robot_perpendicular_distance_to_edge_line_value;
-  RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[trySelectSegmentFromTwoPointPath] Edge following:"
-                       "选择的墙线起点: (%.2f, %.2f), 终点: (%.2f, %.2f), 平均距离: %.2f, 机器人到墙线距离: %.2f", 
-                       selected_edge_segment_start.x(), 
-                       selected_edge_segment_start.y(), selected_edge_segment_end.x(), selected_edge_segment_end.y(), 
-                       minimum_average_distance_to_plan, robot_perpendicular_distance_to_edge_line);
   return true;
 }
 
@@ -6556,7 +6630,7 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
     }
   }
 
-  // /edge_reference_paths：上层仅在进入导航行为树前发布一次（TRANSIENT_LOCAL 覆盖旧消息），
+  // paired_mission_and_reference_path：上层在进入导航前发布（TRANSIENT_LOCAL），
   // 此处不得因超时而清空缓存；几何与 TF 使用在 trySelectBestReferencePathFromList 中按当前时间刷新。
 
   if (normalized_edge_mode_string == "wall") {
@@ -6593,13 +6667,10 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
     return;
   }
   if (normalized_edge_mode_string == "reference") {
-    std::vector<nav_msgs::msg::Path> reference_paths_snapshot;
-    {
-      std::lock_guard<std::mutex> edge_reference_paths_mutex_lock(edge_reference_paths_mutex_);
-      reference_paths_snapshot = edge_reference_paths_cache_.paths;
-    }
+    const std::vector<nav_msgs::msg::Path> active_reference_path_list =
+      snapshotActiveReferencePathList();
     updateReferenceLineVec(
-      reference_paths_snapshot,
+      active_reference_path_list,
       input_path,
       cfg_->wall_line.parallel_tolerance,
       cfg_->wall_line.distance_tolerance,
@@ -6608,7 +6679,8 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
   }
   if (edge_mode_includes_wall && edge_mode_includes_reference && !edge_mode_includes_curb) {
     if (!wall_line_ptr_) {
-      std::vector<nav_msgs::msg::Path> reference_paths_list_snapshot;
+      std::vector<nav_msgs::msg::Path> active_reference_path_list =
+        snapshotActiveReferencePathList();
       Eigen::Vector2d selected_reference_segment_start;
       Eigen::Vector2d selected_reference_segment_end;
       double reference_minimum_average_distance_to_plan = 0.0;
@@ -6616,12 +6688,8 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
       if (!edgeFollowingEntryGuards(robot_pose, input_path)) {
         return;
       }
-      {
-        std::lock_guard<std::mutex> edge_reference_paths_mutex_lock(edge_reference_paths_mutex_);
-        reference_paths_list_snapshot = edge_reference_paths_cache_.paths;
-      }
       const bool reference_segment_selection_succeeded = trySelectBestReferencePathFromList(
-        reference_paths_list_snapshot,
+        active_reference_path_list,
         input_path,
         robot_pose,
         cfg_->wall_line.parallel_tolerance,
@@ -6667,17 +6735,13 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
       fusion_primary_segment_end,
       fusion_primary_minimum_average_distance_to_plan,
       fusion_primary_robot_perpendicular_distance_to_edge);
-    std::vector<nav_msgs::msg::Path> reference_paths_for_fusion;
-    {
-      std::lock_guard<std::mutex> edge_reference_paths_mutex_lock(edge_reference_paths_mutex_);
-      reference_paths_for_fusion = edge_reference_paths_cache_.paths;
-    }
+    std::vector<nav_msgs::msg::Path> active_reference_path_list = snapshotActiveReferencePathList();
     Eigen::Vector2d fusion_reference_segment_start;
     Eigen::Vector2d fusion_reference_segment_end;
     double fusion_reference_minimum_average_distance_to_plan = 0.0;
     double fusion_reference_robot_perpendicular_distance_to_edge = 0.0;
     const bool fusion_reference_segment_valid = trySelectBestReferencePathFromList(
-      reference_paths_for_fusion,
+      active_reference_path_list,
       input_path,
       robot_pose,
       cfg_->wall_line.parallel_tolerance,
@@ -6735,17 +6799,13 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
       fusion_primary_curb_segment_end,
       fusion_primary_curb_minimum_average_distance_to_plan,
       fusion_primary_curb_robot_perpendicular_distance_to_edge);
-    std::vector<nav_msgs::msg::Path> reference_paths_for_curb_fusion;
-    {
-      std::lock_guard<std::mutex> edge_reference_paths_mutex_lock(edge_reference_paths_mutex_);
-      reference_paths_for_curb_fusion = edge_reference_paths_cache_.paths;
-    }
+    std::vector<nav_msgs::msg::Path> active_reference_path_list = snapshotActiveReferencePathList();
     Eigen::Vector2d curb_fusion_reference_segment_start;
     Eigen::Vector2d curb_fusion_reference_segment_end;
     double curb_fusion_reference_minimum_average_distance_to_plan = 0.0;
     double curb_fusion_reference_robot_perpendicular_distance_to_edge = 0.0;
     const bool curb_fusion_reference_segment_valid = trySelectBestReferencePathFromList(
-      reference_paths_for_curb_fusion,
+      active_reference_path_list,
       input_path,
       robot_pose,
       cfg_->wall_line.parallel_tolerance,

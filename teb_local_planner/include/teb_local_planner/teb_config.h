@@ -213,8 +213,9 @@ public:
     double edge_weight_optimaltime; //!< weight_optimaltime parameter for edge-following mode
     double edge_min_obstacle_dist; //!< min_obstacle_dist parameter for edge-following mode
     double keep_wall_line_time; //!< time to keep the wall line when not detect usefull wall line
-    std::string edge_reference_paths_topic; //!< LaneCenterPaths subscription (Reference / fusion modes)
-    std::string paths_near_edge_topic; //!< Mission line segments that require edge-following
+    std::string paired_mission_and_reference_path_topic; //!< Paired mission segment + edge reference paths
+    std::string removed_plan_topic; //!< Remaining mission goals; front pose selects active reference pair
+    double mission_segment_front_pose_match_threshold_m; //!< front_pose to mission segment max distance [m]
     double paths_near_edge_match_distance_threshold; //!< transformed_plan segment-to-segment max distance [m]
     double paths_near_edge_match_angle_threshold_deg; //!< max heading difference for parallel match [deg]
     int paths_near_edge_enter_hit_count; //!< Consecutive hits required to enter edge-following
@@ -495,8 +496,9 @@ public:
     wall_line.edge_weight_optimaltime = 10.0;
     wall_line.edge_min_obstacle_dist = 0.05;
     wall_line.keep_wall_line_time = 5.0;
-    wall_line.edge_reference_paths_topic = "/edge_reference_paths";
-    wall_line.paths_near_edge_topic = "/paths_near_edge";
+    wall_line.paired_mission_and_reference_path_topic = "paired_mission_and_reference_path";
+    wall_line.removed_plan_topic = "/removed_plan";
+    wall_line.mission_segment_front_pose_match_threshold_m = 0.1;
     wall_line.paths_near_edge_match_distance_threshold = 0.6;
     wall_line.paths_near_edge_match_angle_threshold_deg = 20.0;
     wall_line.paths_near_edge_enter_hit_count = 2;

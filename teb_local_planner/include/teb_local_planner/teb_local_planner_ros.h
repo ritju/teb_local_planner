@@ -265,9 +265,14 @@
      const double distance_tolerance,
      const geometry_msgs::msg::PoseStamped& robot_pose);
 
-  void edgeReferencePathsCallback(const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr msg);
-  void pathsNearEdgeCallback(const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr msg);
-  void clearEdgeFollowingFromEmptyPathsNearEdge();
+  void pairedMissionAndReferencePathCallback(
+    const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr msg);
+  void removedPlanCallback(const nav_msgs::msg::Path::ConstSharedPtr msg);
+  void clearActiveReferencePair();
+  void refreshActiveReferencePair();
+  std::vector<nav_msgs::msg::Path> snapshotActiveReferencePathList() const;
+  nav_msgs::msg::Path snapshotActiveMissionSegment() const;
+  bool snapshotHasActiveReferencePair() const;
   void updateReferenceLineVec(
     const std::vector<nav_msgs::msg::Path>& reference_path_list,
     nav_msgs::msg::Path& input_path,
@@ -652,14 +657,16 @@
    void curb_line_callback(const nav_msgs::msg::Path::ConstSharedPtr msg);
    std::mutex curb_line_mutex_;
    nav_msgs::msg::Path curb_line_path_;
-   rclcpp::Subscription<capella_ros_msg::msg::LaneCenterPaths>::SharedPtr edge_reference_paths_sub_;
-  rclcpp::Subscription<capella_ros_msg::msg::LaneCenterPaths>::SharedPtr paths_near_edge_sub_;
-   std::mutex edge_reference_paths_mutex_;
-  std::mutex paths_near_edge_mutex_;
-   capella_ros_msg::msg::LaneCenterPaths edge_reference_paths_cache_;
-  capella_ros_msg::msg::LaneCenterPaths paths_near_edge_cache_;
-   rclcpp::Time edge_reference_paths_msg_time_{0};
-   bool edge_reference_have_message_{false};
+   rclcpp::Subscription<capella_ros_msg::msg::LaneCenterPaths>::SharedPtr
+    paired_mission_and_reference_path_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr removed_plan_sub_;
+   mutable std::mutex edge_mission_pair_mutex_;
+   capella_ros_msg::msg::LaneCenterPaths paired_mission_and_reference_path_cache_;
+  nav_msgs::msg::Path removed_plan_cache_;
+  int active_pair_index_{-1};
+  nav_msgs::msg::Path active_mission_segment_;
+  nav_msgs::msg::Path active_reference_path_;
+  bool has_active_reference_pair_{false};
   int paths_near_edge_hit_count_{0};
   int paths_near_edge_miss_count_{0};
   bool paths_near_edge_active_{false};

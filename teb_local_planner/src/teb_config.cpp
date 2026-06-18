@@ -209,8 +209,15 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "edge_weight_optimaltime", rclcpp::ParameterValue(wall_line.edge_weight_optimaltime));
   declare_parameter_if_not_declared(nh, name + "." + "edge_min_obstacle_dist", rclcpp::ParameterValue(wall_line.edge_min_obstacle_dist));
   declare_parameter_if_not_declared(nh, name + "." + "keep_wall_line_time", rclcpp::ParameterValue(wall_line.keep_wall_line_time));
-  declare_parameter_if_not_declared(nh, name + "." + "edge_reference_paths_topic", rclcpp::ParameterValue(wall_line.edge_reference_paths_topic));
-  declare_parameter_if_not_declared(nh, name + "." + "paths_near_edge_topic", rclcpp::ParameterValue(wall_line.paths_near_edge_topic));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "paired_mission_and_reference_path_topic",
+    rclcpp::ParameterValue(wall_line.paired_mission_and_reference_path_topic));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "removed_plan_topic",
+    rclcpp::ParameterValue(wall_line.removed_plan_topic));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "mission_segment_front_pose_match_threshold_m",
+    rclcpp::ParameterValue(wall_line.mission_segment_front_pose_match_threshold_m));
   declare_parameter_if_not_declared(
     nh, name + "." + "paths_near_edge_match_distance_threshold",
     rclcpp::ParameterValue(wall_line.paths_near_edge_match_distance_threshold));
@@ -496,8 +503,18 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "edge_weight_optimaltime", wall_line.edge_weight_optimaltime, wall_line.edge_weight_optimaltime);
   nh->get_parameter_or(name + "." + "edge_min_obstacle_dist", wall_line.edge_min_obstacle_dist, wall_line.edge_min_obstacle_dist);
   nh->get_parameter_or(name + "." + "keep_wall_line_time", wall_line.keep_wall_line_time, wall_line.keep_wall_line_time);
-  nh->get_parameter_or(name + "." + "edge_reference_paths_topic", wall_line.edge_reference_paths_topic, wall_line.edge_reference_paths_topic);
-  nh->get_parameter_or(name + "." + "paths_near_edge_topic", wall_line.paths_near_edge_topic, wall_line.paths_near_edge_topic);
+  nh->get_parameter_or(
+    name + "." + "paired_mission_and_reference_path_topic",
+    wall_line.paired_mission_and_reference_path_topic,
+    wall_line.paired_mission_and_reference_path_topic);
+  nh->get_parameter_or(
+    name + "." + "removed_plan_topic",
+    wall_line.removed_plan_topic,
+    wall_line.removed_plan_topic);
+  nh->get_parameter_or(
+    name + "." + "mission_segment_front_pose_match_threshold_m",
+    wall_line.mission_segment_front_pose_match_threshold_m,
+    wall_line.mission_segment_front_pose_match_threshold_m);
   nh->get_parameter_or(
     name + "." + "paths_near_edge_match_distance_threshold",
     wall_line.paths_near_edge_match_distance_threshold,
@@ -968,8 +985,12 @@ rcl_interfaces::msg::SetParametersResult
         wall_line.edge_min_obstacle_dist = parameter.as_double();
       } else if (name == node_name + ".keep_wall_line_time") {
         wall_line.keep_wall_line_time = parameter.as_double();
-      } else if (name == node_name + ".edge_reference_paths_topic") {
-        wall_line.edge_reference_paths_topic = parameter.as_string();
+      } else if (name == node_name + ".paired_mission_and_reference_path_topic") {
+        wall_line.paired_mission_and_reference_path_topic = parameter.as_string();
+      } else if (name == node_name + ".removed_plan_topic") {
+        wall_line.removed_plan_topic = parameter.as_string();
+      } else if (name == node_name + ".mission_segment_front_pose_match_threshold_m") {
+        wall_line.mission_segment_front_pose_match_threshold_m = parameter.as_double();
       } else if (name == node_name + ".fusion_primary_lock_duration") {
         wall_line.fusion_primary_lock_duration = parameter.as_double();
       } else if (name == node_name + ".reference_match_max_angle_deg") {
