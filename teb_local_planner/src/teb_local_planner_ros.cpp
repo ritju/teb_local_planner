@@ -2633,7 +2633,7 @@ void TebLocalPlannerROS::updateWallLineVec(
     double min_distance = std::numeric_limits<double>::max();
     nav_msgs::msg::Path best_wall_path;
     geometry_msgs::msg::Point best_wall_start, best_wall_end;
-    double robot_to_edge_distance = std::numeric_limits<double>::max();
+    double best_robot_to_edge_distance = std::numeric_limits<double>::max();
     for(const auto& wall_path : wall_line) 
     {
       if(wall_path.poses.size() < 2) continue; // 无效墙线
@@ -2669,12 +2669,11 @@ void TebLocalPlannerROS::updateWallLineVec(
       const double numerator = std::fabs(A * start_pose.x + B * start_pose.y + C);
       const double denominator = std::hypot(A, B);
       const double avg_distance = numerator / denominator;
-      robot_to_edge_distance = std::fabs(A * robot_pose.pose.position.x + B * robot_pose.pose.position.y + C) / std::hypot(A, B);
+      const double robot_to_edge_distance =
+        std::fabs(A * robot_pose.pose.position.x + B * robot_pose.pose.position.y + C) / denominator;
       
       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 墙线与路径平行度: %.2f, 距离: %.2f", 
                            cos_theta * 180.0 / M_PI, avg_distance);
-
-      double robot_to_edge_distance = std::fabs(A * robot_pose.pose.position.x + B * robot_pose.pose.position.y + C) / denominator;
       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 机器人到墙线距离: %.2f", 
                            robot_to_edge_distance);
       
@@ -2683,6 +2682,7 @@ void TebLocalPlannerROS::updateWallLineVec(
       {
         found_valid_wall = true;
         min_distance = avg_distance;
+        best_robot_to_edge_distance = robot_to_edge_distance;
         best_wall_path = wall_path;
         best_wall_start = wall_start;
         best_wall_end = wall_end;
@@ -2695,13 +2695,11 @@ void TebLocalPlannerROS::updateWallLineVec(
       if(wall_line_points_.size() > 0) wall_line_points_.clear();
       wall_line_points_.emplace_back(Eigen::Vector2d(best_wall_start.x, best_wall_start.y));
       wall_line_points_.emplace_back(Eigen::Vector2d(best_wall_end.x, best_wall_end.y));
-      cfg_->optim.weight_wall_line_dist = weight_wall_line_dist_;
-      if (fabs(cfg_->wall_line.distance_tolerance - cfg_->wall_line.min_wall_dist) > 1e-5){
-        cfg_->optim.weight_wall_line_dist = std::min(weight_wall_line_dist_, std::max(weight_wall_line_dist_ / 2.0, std::fabs((weight_wall_line_dist_ / 2.0 - weight_wall_line_dist_) / (cfg_->wall_line.distance_tolerance - cfg_->wall_line.min_wall_dist) * (min_distance - cfg_->wall_line.min_wall_dist) + weight_wall_line_dist_)));
-      }
+      cfg_->optim.weight_wall_line_dist =
+        computeWallLineDistWeightFromRobotDistance(best_robot_to_edge_distance);
       wall_line_update_time_ = clock_->now();
       std_msgs::msg::Float32 distance;
-      distance.data = robot_to_edge_distance;
+      distance.data = static_cast<float>(best_robot_to_edge_distance);
       edge_distance_publisher_->publish(distance);
       
       // Switch to edge-following mode parameters
@@ -2907,6 +2905,7 @@ void TebLocalPlannerROS::updateWallLineVec(
    double min_distance = std::numeric_limits<double>::max();
    nav_msgs::msg::Path best_wall_path;
    geometry_msgs::msg::Point best_wall_start, best_wall_end;
+   double best_robot_to_edge_distance = std::numeric_limits<double>::max();
    if(curb_line.poses.size() > 1)
    {
      // 4. 提取墙线端点
@@ -2946,7 +2945,8 @@ void TebLocalPlannerROS::updateWallLineVec(
          RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 墙线与路径夹角: %.2f, 平均距离: %.2f",
                               cos_theta * 180.0 / M_PI, avg_distance);
 
-         double robot_to_edge_distance = std::fabs(A * robot_pose.pose.position.x + B * robot_pose.pose.position.y + C) / denominator;
+         const double robot_to_edge_distance =
+           std::fabs(A * robot_pose.pose.position.x + B * robot_pose.pose.position.y + C) / denominator;
          RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 机器人与贴边线的距离: %.2f", 
                               robot_to_edge_distance);
          
@@ -2955,6 +2955,7 @@ void TebLocalPlannerROS::updateWallLineVec(
          {
            found_valid_wall = true;
            min_distance = avg_distance;
+           best_robot_to_edge_distance = robot_to_edge_distance;
            best_wall_path = curb_line;
            best_wall_start = wall_start;
            best_wall_end = wall_end;
@@ -2970,11 +2971,12 @@ void TebLocalPlannerROS::updateWallLineVec(
      wall_line_points_.emplace_back(Eigen::Vector2d(best_wall_start.x, best_wall_start.y));
      wall_line_points_.emplace_back(Eigen::Vector2d(best_wall_end.x, best_wall_end.y));
      
-     cfg_->optim.weight_wall_line_dist = weight_wall_line_dist_;
-     if (fabs(cfg_->wall_line.distance_tolerance - cfg_->wall_line.min_wall_dist) > 1e-5){
-      cfg_->optim.weight_wall_line_dist = std::min(weight_wall_line_dist_, std::max(weight_wall_line_dist_ / 2.0, std::fabs((weight_wall_line_dist_ / 2.0 - weight_wall_line_dist_) / (cfg_->wall_line.distance_tolerance - cfg_->wall_line.min_wall_dist) * (min_distance - cfg_->wall_line.min_wall_dist) + weight_wall_line_dist_)));
-     }
+     cfg_->optim.weight_wall_line_dist =
+       computeWallLineDistWeightFromRobotDistance(best_robot_to_edge_distance);
      wall_line_update_time_ = clock_->now();
+     std_msgs::msg::Float32 distance;
+     distance.data = static_cast<float>(best_robot_to_edge_distance);
+     edge_distance_publisher_->publish(distance);
      
      // Switch to edge-following mode parameters
      switchParameterMode(true);
@@ -5589,7 +5591,7 @@ void TebLocalPlannerROS::refreshActiveReferencePair()
   if (paired_mission_and_reference_path_cache_.paths.size() < 2 ||
     removed_plan_cache_.poses.empty())
   {
-    RCLCPP_INFO(logger_, "贴边参考路径缓存或多点路径为空，清空贴边参考路径");
+    RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000, "贴边参考路径缓存或多点路径为空，清空贴边参考路径");
     clearActiveReferencePair();
     return;
   }
@@ -6311,6 +6313,47 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
   return true;
 }
 
+double TebLocalPlannerROS::computeWallLineDistWeightFromRobotDistance(
+  const double robot_perpendicular_distance_to_edge_line) const
+{
+  const double base_weight = weight_wall_line_dist_;
+  const double min_dist = cfg_->wall_line.min_wall_dist;
+  const double tolerance = cfg_->wall_line.distance_tolerance;
+  const double delta = robot_perpendicular_distance_to_edge_line - min_dist;
+  constexpr double k_eps = 1e-5;
+
+  if (delta < -k_eps) {
+    const double scale_lower = cfg_->wall_line.wall_line_dist_weight_scale_under_min_lower;
+    const double scale_upper = cfg_->wall_line.wall_line_dist_weight_scale_under_min_upper;
+    const double clamp_lo = std::min(scale_lower, scale_upper);
+    const double clamp_hi = std::max(scale_lower, scale_upper);
+    if (min_dist < k_eps) {
+      return base_weight * clamp_lo;
+    }
+    const double ratio = robot_perpendicular_distance_to_edge_line / min_dist;
+    const double scale = std::max(clamp_lo, std::min(clamp_hi, ratio));
+    return base_weight * scale;
+  }
+
+  if (delta <= k_eps) {
+    return base_weight;
+  }
+
+  const double band = tolerance - min_dist;
+  if (std::fabs(band) <= k_eps) {
+    return base_weight;
+  }
+
+  const double scale_at_tolerance = cfg_->wall_line.wall_line_dist_weight_scale_at_distance_tolerance;
+  const double weight_at_tolerance = base_weight * scale_at_tolerance;
+  const double weight_at_min = base_weight;
+  const double interpolated =
+    (weight_at_tolerance - weight_at_min) / band * delta + weight_at_min;
+  const double weight_lo = std::min(weight_at_min, weight_at_tolerance);
+  const double weight_hi = std::max(weight_at_min, weight_at_tolerance);
+  return std::min(weight_hi, std::max(weight_lo, interpolated));
+}
+
 void TebLocalPlannerROS::applyWallLineSegmentAndVisual(
   const Eigen::Vector2d& wall_line_segment_start,
   const Eigen::Vector2d& wall_line_segment_end,
@@ -6323,20 +6366,13 @@ void TebLocalPlannerROS::applyWallLineSegmentAndVisual(
   }
   wall_line_points_.push_back(wall_line_segment_start);
   wall_line_points_.push_back(wall_line_segment_end);
-  cfg_->optim.weight_wall_line_dist = weight_wall_line_dist_;
-  if (std::fabs(cfg_->wall_line.distance_tolerance - cfg_->wall_line.min_wall_dist) > 1e-5) {
-    cfg_->optim.weight_wall_line_dist = std::min(
-      weight_wall_line_dist_,
-      std::max(
-        weight_wall_line_dist_ / 2.0,
-        std::fabs(
-          (weight_wall_line_dist_ / 2.0 - weight_wall_line_dist_) /
-            (cfg_->wall_line.distance_tolerance - cfg_->wall_line.min_wall_dist) *
-            (minimum_average_distance_to_plan - cfg_->wall_line.min_wall_dist) +
-          weight_wall_line_dist_)));
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[applyWallLineSegmentAndVisual] Edge following:"
-                        "贴边权重: %.2f", cfg_->optim.weight_wall_line_dist);
-  }
+  cfg_->optim.weight_wall_line_dist =
+    computeWallLineDistWeightFromRobotDistance(robot_perpendicular_distance_to_edge_line);
+  RCLCPP_INFO_THROTTLE(
+    logger_, *(clock_), 2000,
+    "[applyWallLineSegmentAndVisual] Edge following: 机器人到贴边线距离 %.3f m, 贴边权重: %.2f",
+    robot_perpendicular_distance_to_edge_line, cfg_->optim.weight_wall_line_dist);
+  (void)minimum_average_distance_to_plan;
   wall_line_update_time_ = clock_->now();
   std_msgs::msg::Float32 edge_distance_message;
   edge_distance_message.data = static_cast<float>(robot_perpendicular_distance_to_edge_line);

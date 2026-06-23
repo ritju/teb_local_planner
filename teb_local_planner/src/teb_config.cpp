@@ -203,6 +203,15 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "wall_line_dist_robot_weight_radius", rclcpp::ParameterValue(wall_line.wall_line_dist_robot_weight_radius));
   declare_parameter_if_not_declared(nh, name + "." + "wall_line_dist_weight_scale_at_robot", rclcpp::ParameterValue(wall_line.wall_line_dist_weight_scale_at_robot));
   declare_parameter_if_not_declared(nh, name + "." + "wall_line_dist_weight_scale_far", rclcpp::ParameterValue(wall_line.wall_line_dist_weight_scale_far));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "wall_line_dist_weight_scale_under_min_lower",
+    rclcpp::ParameterValue(wall_line.wall_line_dist_weight_scale_under_min_lower));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "wall_line_dist_weight_scale_under_min_upper",
+    rclcpp::ParameterValue(wall_line.wall_line_dist_weight_scale_under_min_upper));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "wall_line_dist_weight_scale_at_distance_tolerance",
+    rclcpp::ParameterValue(wall_line.wall_line_dist_weight_scale_at_distance_tolerance));
   declare_parameter_if_not_declared(nh, name + "." + "edge_acc_lim_theta", rclcpp::ParameterValue(wall_line.edge_acc_lim_theta));
   declare_parameter_if_not_declared(nh, name + "." + "edge_max_vel_theta", rclcpp::ParameterValue(wall_line.edge_max_vel_theta));
   declare_parameter_if_not_declared(nh, name + "." + "edge_max_vel_x", rclcpp::ParameterValue(wall_line.edge_max_vel_x));
@@ -494,6 +503,18 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "wall_line_dist_robot_weight_radius", wall_line.wall_line_dist_robot_weight_radius, wall_line.wall_line_dist_robot_weight_radius);
   nh->get_parameter_or(name + "." + "wall_line_dist_weight_scale_at_robot", wall_line.wall_line_dist_weight_scale_at_robot, wall_line.wall_line_dist_weight_scale_at_robot);
   nh->get_parameter_or(name + "." + "wall_line_dist_weight_scale_far", wall_line.wall_line_dist_weight_scale_far, wall_line.wall_line_dist_weight_scale_far);
+  nh->get_parameter_or(
+    name + "." + "wall_line_dist_weight_scale_under_min_lower",
+    wall_line.wall_line_dist_weight_scale_under_min_lower,
+    wall_line.wall_line_dist_weight_scale_under_min_lower);
+  nh->get_parameter_or(
+    name + "." + "wall_line_dist_weight_scale_under_min_upper",
+    wall_line.wall_line_dist_weight_scale_under_min_upper,
+    wall_line.wall_line_dist_weight_scale_under_min_upper);
+  nh->get_parameter_or(
+    name + "." + "wall_line_dist_weight_scale_at_distance_tolerance",
+    wall_line.wall_line_dist_weight_scale_at_distance_tolerance,
+    wall_line.wall_line_dist_weight_scale_at_distance_tolerance);
   nh->get_parameter_or(name + "." + "min_wall_line_length", wall_line.min_wall_line_length, wall_line.min_wall_line_length);
   nh->get_parameter_or(name + "." + "min_path_line_length", wall_line.min_path_line_length, wall_line.min_path_line_length);
   nh->get_parameter_or(name + "." + "transform_path_line_length", wall_line.transform_path_line_length, wall_line.transform_path_line_length);
@@ -973,6 +994,12 @@ rcl_interfaces::msg::SetParametersResult
         wall_line.wall_line_dist_weight_scale_at_robot = parameter.as_double();
       } else if (name == node_name + ".wall_line_dist_weight_scale_far") {
         wall_line.wall_line_dist_weight_scale_far = parameter.as_double();
+      } else if (name == node_name + ".wall_line_dist_weight_scale_under_min_lower") {
+        wall_line.wall_line_dist_weight_scale_under_min_lower = parameter.as_double();
+      } else if (name == node_name + ".wall_line_dist_weight_scale_under_min_upper") {
+        wall_line.wall_line_dist_weight_scale_under_min_upper = parameter.as_double();
+      } else if (name == node_name + ".wall_line_dist_weight_scale_at_distance_tolerance") {
+        wall_line.wall_line_dist_weight_scale_at_distance_tolerance = parameter.as_double();
       } else if (name == node_name + ".edge_acc_lim_theta") {
         wall_line.edge_acc_lim_theta = parameter.as_double();
       } else if (name == node_name + ".edge_max_vel_theta") {

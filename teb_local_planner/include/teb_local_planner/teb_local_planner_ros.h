@@ -342,6 +342,8 @@
     const nav_msgs::msg::Path& input_path,
     double minimum_average_distance_to_plan,
     double robot_perpendicular_distance_to_edge_line);
+  double computeWallLineDistWeightFromRobotDistance(
+    double robot_perpendicular_distance_to_edge_line) const;
   void mergeFusionPrimaryWithReference(
     const Eigen::Vector2d& fusion_primary_segment_start,
     const Eigen::Vector2d& fusion_primary_segment_end,

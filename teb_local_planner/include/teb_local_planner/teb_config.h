@@ -207,6 +207,11 @@ public:
     double wall_line_dist_robot_weight_radius;
     double wall_line_dist_weight_scale_at_robot; //!< 距离起点 0m 时的系数（通常较小，减轻起点附近贴边/倒退）
     double wall_line_dist_weight_scale_far;      //!< 距离 >= R 时的系数（通常为 1.0）
+    //!< 机器人距贴边线 < min_wall_dist 时：weight *= clamp(robot_dist/min_wall_dist, lower, upper)
+    double wall_line_dist_weight_scale_under_min_lower;
+    double wall_line_dist_weight_scale_under_min_upper;
+    //!< 机器人在 [min_wall_dist, distance_tolerance] 内：远端（distance_tolerance）处的 weight 系数
+    double wall_line_dist_weight_scale_at_distance_tolerance;
     double edge_acc_lim_theta;
     double edge_max_vel_theta;
     double edge_max_vel_x;
@@ -547,6 +552,9 @@ public:
     wall_line.wall_line_dist_robot_weight_radius = 0.0;
     wall_line.wall_line_dist_weight_scale_at_robot = 0.15;
     wall_line.wall_line_dist_weight_scale_far = 1.0;
+    wall_line.wall_line_dist_weight_scale_under_min_lower = 0.1;
+    wall_line.wall_line_dist_weight_scale_under_min_upper = 1.0;
+    wall_line.wall_line_dist_weight_scale_at_distance_tolerance = 0.5;
 
     // Optimization
 
