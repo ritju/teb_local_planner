@@ -86,6 +86,7 @@
 #include "geometry_msgs/msg/pose_array.hpp"
 #include <limits>
 #include "capella_ros_msg/msg/multi_curve.hpp"
+#include "teb_local_planner/polygon_cutter.hpp"
  namespace teb_local_planner
  {
  using TFBufferPtr = std::shared_ptr<tf2_ros::Buffer>;

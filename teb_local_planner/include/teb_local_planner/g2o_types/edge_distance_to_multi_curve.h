@@ -11,6 +11,7 @@
 #include "capella_ros_msg/msg/curve_segment.hpp"
 #include "capella_ros_msg/msg/line_segment.hpp"
 #include "capella_ros_msg/msg/ellipse_arc_segment.hpp"
+#include "capella_ros_msg/msg/b_spline_segment.hpp"
 
 #include "teb_local_planner/g2o_types/vertex_pose.h"
 #include "teb_local_planner/g2o_types/base_teb_edges.h"
@@ -192,6 +193,363 @@ inline void sampleEllipseArcSegment(
   }
 }
 
+// ============================================================
+// B 样条核心实现（de Boor + 解析导数 + Newton 最近点）
+// ============================================================
+
+/**
+ * @brief 在节点向量中二分查找区间索引 k，满足 knots[k] <= u < knots[k+1]
+ *
+ * 边界处理：
+ *   - u <= u_min  → k = degree
+ *   - u >= u_max  → k = knots.size() - degree - 2   （最后有效区间）
+ *
+ * @param knots   节点向量
+ * @param degree  B 样条次数
+ * @param u       查询参数
+ * @return        区间索引 k
+ */
+inline int bsplineFindSpan(
+    const std::vector<float>& knots,
+    int degree,
+    double u)
+{
+  const int n  = static_cast<int>(knots.size()) - 1;
+  const int lo = degree;
+  const int hi = n - degree - 1;   // 最后一个有效区间左端索引
+
+  if (u >= knots[hi + 1]) return hi;
+  if (u <= knots[lo])     return lo;
+
+  // 标准二分
+  int left = lo, right = hi + 1;
+  while (right - left > 1)
+  {
+    const int mid = (left + right) / 2;
+    if (u < knots[mid]) right = mid;
+    else                left  = mid;
+  }
+  return left;
+}
+
+/**
+ * @brief de Boor 算法：同时求曲线点 C(u) 和解析一阶导 C'(u)
+ *
+ * 一阶导公式（NURBS Book §2.3）：
+ *   C'(u) = degree * Σ_{j=k-degree+1}^{k}
+ *               [(P_j - P_{j-1}) / (knots[j+degree] - knots[j])] * N_{j,degree-1}(u)
+ *
+ * 实现上等价于对差商控制点 Q_j = degree*(P_j - P_{j-1}) / denom_j
+ * 做 (degree-1) 次 de Boor 递推。
+ *
+ * @param cps     控制点（取 XY）
+ * @param knots   节点向量（float，内部转 double 计算）
+ * @param degree  B 样条次数
+ * @param k       find_span 返回的区间索引
+ * @param u       求值参数
+ * @param C       [out] 曲线点
+ * @param dC      [out] 一阶导向量（未归一化）
+ */
+inline void deBoorWithDeriv(
+    const std::vector<geometry_msgs::msg::Point>& cps,
+    const std::vector<float>& knots,
+    int degree,
+    int k,
+    double u,
+    Eigen::Vector2d& C,
+    Eigen::Vector2d& dC)
+{
+  const int n = static_cast<int>(cps.size()) - 1;
+
+  // ── 求曲线点 C(u)：标准 de Boor ──────────────────────────────────────────
+  std::vector<Eigen::Vector2d> d(degree + 1);
+  for (int j = 0; j <= degree; ++j)
+  {
+    const int idx = std::clamp(k - degree + j, 0, n);
+    d[j] = Eigen::Vector2d(cps[idx].x, cps[idx].y);
+  }
+  for (int r = 1; r <= degree; ++r)
+  {
+    for (int j = degree; j >= r; --j)
+    {
+      const int li = k - degree + j;
+      const int ri = k + 1 - r + j;
+      const double denom = knots[ri] - knots[li];
+      const double alpha = (denom < 1e-12) ? 0.0 : (u - knots[li]) / denom;
+      d[j] = (1.0 - alpha) * d[j - 1] + alpha * d[j];
+    }
+  }
+  C = d[degree];
+
+  // ── 求一阶导 C'(u)：对差商控制点做 (degree-1) 次 de Boor ────────────────
+  if (degree < 1)
+  {
+    dC = Eigen::Vector2d::Zero();
+    return;
+  }
+
+  // 差商控制点 Q_j = degree * (P_j - P_{j-1}) / (knots[j+degree] - knots[j])
+  // j 的范围：[k-degree+1 .. k]，共 degree 个
+  std::vector<Eigen::Vector2d> q(degree);
+  for (int j = 0; j < degree; ++j)
+  {
+    const int pi  = k - degree + 1 + j;          // 对应原控制点索引 pi, pi-1
+    const int idx1 = std::clamp(pi,     0, n);
+    const int idx0 = std::clamp(pi - 1, 0, n);
+    const double kl = knots[std::clamp(pi,           0, (int)knots.size()-1)];
+    const double kr = knots[std::clamp(pi + degree,  0, (int)knots.size()-1)];
+    const double denom = kr - kl;
+    const Eigen::Vector2d dp(cps[idx1].x - cps[idx0].x,
+                             cps[idx1].y - cps[idx0].y);
+    if (denom < 1e-12)
+    {
+      q[j].setZero();
+    }
+    else
+    {
+      q[j] = (degree * dp) / denom;
+    }
+  }
+
+  // 对 q[] 做 (degree-1) 次 de Boor 递推（用相同的 k 和 u）
+  for (int r = 1; r <= degree - 1; ++r)
+  {
+    for (int j = degree - 1; j >= r; --j)
+    {
+      const int li = k - degree + 1 + j;
+      const int ri = k + 2 - r + j;
+      const double denom = knots[std::clamp(ri, 0, (int)knots.size()-1)]
+                         - knots[std::clamp(li, 0, (int)knots.size()-1)];
+      const double alpha = (denom < 1e-12) ? 0.0 : (u - knots[li]) / denom;
+      q[j] = (1.0 - alpha) * q[j - 1] + alpha * q[j];
+    }
+  }
+  dC = q[degree - 1];
+}
+
+/**
+ * @brief 仅求曲线点（不需要导数时的简化接口，复用 deBoorWithDeriv）
+ */
+inline Eigen::Vector2d deBoor(
+    const std::vector<geometry_msgs::msg::Point>& cps,
+    const std::vector<float>& knots,
+    int degree,
+    double u)
+{
+  const int k = bsplineFindSpan(knots, degree, u);
+  Eigen::Vector2d C, dC;
+  deBoorWithDeriv(cps, knots, degree, k, u, C, dC);
+  return C;
+}
+
+/**
+ * @brief 等弧长采样 B 样条线段
+ *
+ * 流程：
+ *   1. 粗采样（64段）估算总弧长
+ *   2. 沿粗采样折线做等步长重采样，弦长插值得参数初值
+ *   3. 用解析导 dC 做一步 Newton 修正（弧长参数化近似）
+ */
+inline void sampleBSplineSegment(
+    const capella_ros_msg::msg::BSplineSegment& seg,
+    double step,
+    std::vector<Eigen::Vector2d>& out)
+{
+  if (seg.control_points.empty() || seg.knot_vector.empty())
+    return;
+
+  const int degree   = std::max(1, static_cast<int>(seg.order) - 1);
+  const auto& knots  = seg.knot_vector;
+  const auto& cps    = seg.control_points;
+
+  const double u_min = knots[degree];
+  const double u_max = knots[static_cast<int>(knots.size()) - 1 - degree];
+
+  if (u_max - u_min < 1e-9)
+  {
+    out.push_back(deBoor(cps, knots, degree, u_min));
+    return;
+  }
+
+  // 步骤 1：粗采样
+  constexpr int kCoarse = 64;
+  std::vector<double> coarse_u(kCoarse + 1);
+  std::vector<Eigen::Vector2d> coarse_pts(kCoarse + 1);
+  for (int i = 0; i <= kCoarse; ++i)
+  {
+    coarse_u[i]   = u_min + (u_max - u_min) * i / kCoarse;
+    coarse_pts[i] = deBoor(cps, knots, degree, coarse_u[i]);
+  }
+
+  double total_len = 0.0;
+  for (int i = 0; i < kCoarse; ++i)
+    total_len += (coarse_pts[i + 1] - coarse_pts[i]).norm();
+
+  const int reserve_num = std::max(1, static_cast<int>(std::ceil(total_len / step)));
+  out.reserve(out.size() + reserve_num + 2);
+
+  // 步骤 2+3：弦长插值初值 → Newton 一步修正 → deBoor 求精确点
+  double target_s = 0.0;
+  double accum_s  = 0.0;
+  out.push_back(coarse_pts[0]);
+  target_s += step;
+
+  Eigen::Vector2d last_pt = coarse_pts[0];   // ← 记录上一个实际采样点
+
+  for (int i = 0; i < kCoarse; ++i)
+  {
+    const double chord = (coarse_pts[i + 1] - coarse_pts[i]).norm();
+    if (chord < 1e-12) continue;
+
+    while (target_s <= accum_s + chord)
+    {
+      const double t_lin = (target_s - accum_s) / chord;
+      double u = coarse_u[i] + t_lin * (coarse_u[i + 1] - coarse_u[i]);
+      u = std::clamp(u, u_min, u_max);
+
+      // Newton 修正：参考点换成上一个实际采样点
+      {
+        const int kk = bsplineFindSpan(knots, degree, u);
+        Eigen::Vector2d Cu, dCu;
+        deBoorWithDeriv(cps, knots, degree, kk, u, Cu, dCu);
+
+        const double speed = dCu.norm();
+        if (speed > 1e-9)
+        {
+          const double s_cur  = (Cu - last_pt).norm();  // ← 到上一采样点的距离
+          const double du_corr = (step - s_cur) / speed; // ← 目标始终是走 step
+          u = std::clamp(u + du_corr, u_min, u_max);
+        }
+        const Eigen::Vector2d final_pt = deBoor(cps, knots, degree, u);
+        out.push_back(final_pt);
+        last_pt = final_pt;   // ← 更新参考点
+      }
+
+      target_s += step;
+    }
+
+    accum_s += chord;
+  }
+
+  out.push_back(coarse_pts[kCoarse]);
+}
+
+/**
+ * @brief 点到 B 样条线段的最近距离及最近点、解析切线方向
+ *
+ * 流程：
+ *   1. 粗采样（64段）→ 找距离最小的索引 best_i
+ *   2. Newton 迭代求精确最近参数 u*
+ *      目标方程：f(u) = (C(u) - p) · C'(u) = 0
+ *      牛顿步：  Δu = -f(u) / f'(u)
+ *              f'(u) = ‖C'(u)‖² + (C(u)-p)·C''(u)
+ *      C''(u) 用二阶中心差分近似（仅 Newton 收敛判断用，精度够）
+ *   3. deBoor + deBoorWithDeriv 求最近点坐标和解析切线
+ */
+inline double distToBSplineWithDir(
+    const Eigen::Vector2d& p,
+    const capella_ros_msg::msg::BSplineSegment& seg,
+    Eigen::Vector2d& out_closest,
+    Eigen::Vector2d& out_dir)
+{
+  if (seg.control_points.empty() || seg.knot_vector.empty())
+    return std::numeric_limits<double>::max();
+
+  const int degree   = std::max(1, static_cast<int>(seg.order) - 1);
+  const auto& knots  = seg.knot_vector;
+  const auto& cps    = seg.control_points;
+
+  const double u_min = knots[degree];
+  const double u_max = knots[static_cast<int>(knots.size()) - 1 - degree];
+
+  if (u_max - u_min < 1e-9)
+  {
+    out_closest = deBoor(cps, knots, degree, u_min);
+    out_dir     = Eigen::Vector2d(1.0, 0.0);
+    return (p - out_closest).norm();
+  }
+
+  // ── 步骤 1：粗采样找初值 ─────────────────────────────────────────────────
+  constexpr int kCoarse = 64;
+  double best_u   = u_min;
+  double best_dsq = std::numeric_limits<double>::max();
+  int    best_i   = 0;
+
+  std::vector<double> us(kCoarse + 1);
+  std::vector<Eigen::Vector2d> coarse_pts(kCoarse + 1);
+  for (int i = 0; i <= kCoarse; ++i)
+  {
+    us[i]         = u_min + (u_max - u_min) * i / kCoarse;
+    coarse_pts[i] = deBoor(cps, knots, degree, us[i]);
+    const double dsq = (p - coarse_pts[i]).squaredNorm();
+    if (dsq < best_dsq) { best_dsq = dsq; best_u = us[i]; best_i = i; }
+  }
+
+  // 缩窄搜索区间（粗采样相邻段）
+  const double u_lo0 = (best_i > 0)       ? us[best_i - 1] : u_min;
+  const double u_hi0 = (best_i < kCoarse) ? us[best_i + 1] : u_max;
+
+  // ── 步骤 2：Newton 迭代求 u* ─────────────────────────────────────────────
+  // f(u)  = (C(u) - p) · C'(u)  = 0
+  // f'(u) = ‖C'(u)‖² + (C(u) - p) · C''(u)
+  // C''(u) 用中心差分近似
+  double u = best_u;
+  constexpr int    kNewton  = 10;
+  constexpr double kNewtonTol = 1e-7;
+  constexpr double kDu2 = 1e-5;   // 二阶差分步长
+
+  for (int iter = 0; iter < kNewton; ++iter)
+  {
+    const int kk = bsplineFindSpan(knots, degree, u);
+    Eigen::Vector2d Cu, dCu;
+    deBoorWithDeriv(cps, knots, degree, kk, u, Cu, dCu);
+
+    const Eigen::Vector2d diff = Cu - p;
+    const double f = diff.dot(dCu);
+
+    // 二阶中心差分估算 C''(u)
+    const double ua = std::clamp(u - kDu2, u_min, u_max);
+    const double ub = std::clamp(u + kDu2, u_min, u_max);
+    Eigen::Vector2d Ca, dCa, Cb, dCb;
+    deBoorWithDeriv(cps, knots, degree, bsplineFindSpan(knots, degree, ua), ua, Ca, dCa);
+    deBoorWithDeriv(cps, knots, degree, bsplineFindSpan(knots, degree, ub), ub, Cb, dCb);
+    const Eigen::Vector2d d2Cu = (Cb - 2.0 * Cu + Ca) / (kDu2 * kDu2);
+
+    const double fp = dCu.squaredNorm() + diff.dot(d2Cu);
+
+    // 防止除零
+    if (std::abs(fp) < 1e-14) break;
+
+    const double du = -f / fp;
+    u = std::clamp(u + du, u_lo0, u_hi0);
+
+    if (std::abs(du) < kNewtonTol) break;
+  }
+
+  // ── 步骤 3：deBoor + 解析导数 → 最近点 + 切线 ───────────────────────────
+  {
+    const int kk = bsplineFindSpan(knots, degree, u);
+    Eigen::Vector2d Cu, dCu;
+    deBoorWithDeriv(cps, knots, degree, kk, u, Cu, dCu);
+
+    out_closest = Cu;
+
+    const double tlen = dCu.norm();
+    out_dir = (tlen > 1e-12) ? (dCu / tlen) : Eigen::Vector2d(1.0, 0.0);
+  }
+
+  return (p - out_closest).norm();
+}
+
+/// 点到 B 样条段的最近距离（仅距离，无方向输出）
+inline double distToBSpline(
+    const Eigen::Vector2d& p,
+    const capella_ros_msg::msg::BSplineSegment& seg)
+{
+  Eigen::Vector2d dummy_closest, dummy_dir;
+  return distToBSplineWithDir(p, seg, dummy_closest, dummy_dir);
+}
+
 inline std::vector<Eigen::Vector2d> sampleMultiCurve(
     const capella_ros_msg::msg::MultiCurve& curve,
     double step = 0.1)
@@ -216,6 +574,15 @@ inline std::vector<Eigen::Vector2d> sampleMultiCurve(
     {
       sampleEllipseArcSegment(
           seg.ellipse_arc_segment,
+          step,
+          pts);
+    }
+    else if (
+        seg.type ==
+        capella_ros_msg::msg::CurveSegment::B_SPLINE)
+    {
+      sampleBSplineSegment(
+          seg.bspline_segment,
           step,
           pts);
     }
@@ -406,6 +773,9 @@ inline double minDistToMultiCurve(
     } else if (seg.type == capella_ros_msg::msg::CurveSegment::ELLIPSE_ARC) {
       const double d = distToEllipseArc(p, seg.ellipse_arc_segment);
       if (d < best_arc) best_arc = d;
+    } else if (seg.type == capella_ros_msg::msg::CurveSegment::B_SPLINE) {
+      const double d = distToBSpline(p, seg.bspline_segment);
+      if (d * d < best_sq) best_sq = d * d;
     }
   }
 
@@ -415,7 +785,7 @@ inline double minDistToMultiCurve(
   return std::min(best_line, best_arc);
 }
 
-/// 计算点到 MultiCurve 最小距离，及返回的运行切线方向 dir,最近点 out_closet_pt 距离无穷大时未获取到
+/// 计算点到 MultiCurve 最小距离，及返回的运行切线方向 dir(单位向量),最近点 out_closet_pt 距离无穷大时未获取到
 inline double minDistToMultiCurveWithDir(
     const Eigen::Vector2d& input_pt,
     Eigen::Vector2d& out_closet_pt, 
@@ -504,6 +874,18 @@ inline double minDistToMultiCurveWithDir(
         const double tlen = tangent_world.norm();
         dir = (tlen > 1e-12) ? (tangent_world / tlen) : Eigen::Vector2d(1.0, 0.0);
       }
+    // ── B 样条 ─────────────────────────────────────────────────────────────
+    } else if (seg.type == capella_ros_msg::msg::CurveSegment::B_SPLINE) {
+      Eigen::Vector2d closest, tangent_dir;
+      const double d = distToBSplineWithDir(
+          input_pt, seg.bspline_segment, closest, tangent_dir);
+      const double dsq = d * d;
+      if (dsq < min_path_dist_sq) {
+        min_path_dist_sq = dsq;
+        out_closet_pt    = closest;
+        dir              = tangent_dir;
+        found            = true;
+      }
     }
   }
   return found ? std::sqrt(min_path_dist_sq) : std::numeric_limits<double>::infinity();
@@ -560,6 +942,23 @@ inline capella_ros_msg::msg::MultiCurve extendMultiCurve(const capella_ros_msg::
       Eigen::Vector2d world_tangent = safeNormalize(R * local_tangent);
       tangent = arc.is_ccw ? world_tangent : -world_tangent;
     }
+    else if (first_seg.type == capella_ros_msg::msg::CurveSegment::B_SPLINE)
+    {
+      const auto& bsp = first_seg.bspline_segment;
+      start_pt = Eigen::Vector2d(bsp.start_point.x, bsp.start_point.y);
+
+      // 利用前两个控制点估算起点切线方向
+      if (bsp.control_points.size() >= 2)
+      {
+        const Eigen::Vector2d cp0(bsp.control_points[0].x, bsp.control_points[0].y);
+        const Eigen::Vector2d cp1(bsp.control_points[1].x, bsp.control_points[1].y);
+        tangent = safeNormalize(cp1 - cp0);
+      }
+      else
+      {
+        tangent = Eigen::Vector2d(1.0, 0.0);
+      }
+    }
     else
     {
       tangent = Eigen::Vector2d(1.0, 0.0);
@@ -601,6 +1000,24 @@ inline capella_ros_msg::msg::MultiCurve extendMultiCurve(const capella_ros_msg::
 
       Eigen::Vector2d world_tangent = safeNormalize(R * local_tangent);
       tangent = arc.is_ccw ? world_tangent : -world_tangent;
+    }
+    else if (last_seg.type == capella_ros_msg::msg::CurveSegment::B_SPLINE)
+    {
+      const auto& bsp = last_seg.bspline_segment;
+      end_pt = Eigen::Vector2d(bsp.end_point.x, bsp.end_point.y);
+
+      // 利用最后两个控制点估算终点切线方向
+      const int ncp = static_cast<int>(bsp.control_points.size());
+      if (ncp >= 2)
+      {
+        const Eigen::Vector2d cp_n1(bsp.control_points[ncp - 2].x, bsp.control_points[ncp - 2].y);
+        const Eigen::Vector2d cp_n(bsp.control_points[ncp - 1].x,  bsp.control_points[ncp - 1].y);
+        tangent = safeNormalize(cp_n - cp_n1);
+      }
+      else
+      {
+        tangent = Eigen::Vector2d(1.0, 0.0);
+      }
     }
     else
     {
