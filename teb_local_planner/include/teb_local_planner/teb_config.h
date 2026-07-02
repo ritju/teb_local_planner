@@ -66,12 +66,12 @@ public:
   std::string map_frame; //!< Global planning frame
   std::string node_name; //!< node name used for parameter event callback
 
-  RobotFootprintModelPtr robot_model;
-  std::string model_name;
-  double radius;
-  std::vector<double> line_start, line_end;
-  double front_offset, front_radius, rear_offset, rear_radius;
-  std::string footprint_string;
+  RobotFootprintModelPtr robot_model; //!< 机器人碰撞模型（点/圆/线段/多圆/多边形）
+  std::string model_name; //!< 足迹模型名称（point/circular/line/two_circles/polygon）
+  double radius; //!< 圆形模型半径 [m]
+  std::vector<double> line_start, line_end; //!< 线段模型起点/终点 [x, y]
+  double front_offset, front_radius, rear_offset, rear_radius; //!< 双圆模型参数（前后圆心偏移与半径）
+  std::string footprint_string; //!< 多边形足迹字符串（通常来自参数服务器）
 
 
   //! Trajectory related parameters
@@ -99,38 +99,38 @@ public:
     bool publish_feedback; //!< Publish planner feedback containing the full trajectory and a list of active obstacles (should be enabled only for evaluation or debugging purposes)
     double min_resolution_collision_check_angular; //! Min angular resolution used during the costmap collision check. If not respected, intermediate samples are added. [rad]
     int control_look_ahead_poses; //! Index of the pose used to extract the velocity command
-    int theta_threshold;
+    int theta_threshold; //!< 角点判定阈值 [deg]，用于识别路径急转角
     double corner_dist_threshold; //!< Distance threshold to consider a point a corner
     //!< 角点不可达时裁剪 global_plan：LETHAL_OBSTACLE 下允许裁剪的机器人到角点横向距离上限 [m]
-    double cut_path_before_corner_lethal_dist;
+    double cut_path_before_corner_lethal_dist; //!< LETHAL 障碍下角点裁剪横向阈值 [m]
     //!< 角点不可达时裁剪 global_plan：INSCRIBED_INFLATED_OBSTACLE 下允许裁剪的机器人到角点横向距离上限 [m]
-    double cut_path_before_corner_inscribed_dist;
+    double cut_path_before_corner_inscribed_dist; //!< INSCRIBED 障碍下角点裁剪横向阈值 [m]
     //!< 在 global_plan 中搜索 last_corner_pose_ 的最大累积路径长度 [m]; <=0 表示不限制
-    double prune_before_corner_distance;
+    double prune_before_corner_distance; //!< 搜索角点的累计路径长度上限 [m]
     //!< 匹配到角点后，角点至路径终点剩余累积路径长度须大于该值才执行裁剪 [m]
-    double prune_corner_residual_distance;
+    double prune_corner_residual_distance; //!< 角点到终点剩余长度需大于该值才裁剪 [m]
     //!< 角点有障碍时裁剪 global_plan：|linear.x| 须小于该阈值才执行裁剪 [m/s]
-    double prune_before_corner_linear_x_threshold;
+    double prune_before_corner_linear_x_threshold; //!< 仅当线速度绝对值高于该阈值时允许角点裁剪 [m/s]
     //! transformGlobalPlan: when scorePose throws "Trajectory Hits Obstacle.", extend max plan length by this (m), capped by local costmap size
-    double max_plan_length_extend_on_trajectory_obstacle_m;
+    double max_plan_length_extend_on_trajectory_obstacle_m; //!< 末端碰障时允许扩展的 transformed_plan 长度 [m]
     //!< transformGlobalPlan: 碰撞点距全局终点直线距离小于此值时，延长 max_plan_length 并前移 last_idx（m）
-    double transformed_plan_collision_pose_to_end_distance;
+    double transformed_plan_collision_pose_to_end_distance; //!< 碰撞点到终点小于该距离时触发末端前移策略 [m]
     //!< transformGlobalPlan: max cumulative path length from plan[0] while searching for the pose closest to the robot [m]; <=0 = no limit (entire plan)
-    double transform_global_plan_closest_search_max_accum_dist;
+    double transform_global_plan_closest_search_max_accum_dist; //!< 搜索“距机器人最近路径点”的累计长度上限 [m]
     //!< transformGlobalPlan: 若末端路径点在局部代价地图上 footprint 碰撞，在全局路径(plan 系)上以该值为半宽做网格偏移搜索可调位姿 [m]；<=0 关闭微调
-    double transform_global_plan_goal_occupied_tolerance;
+    double transform_global_plan_goal_occupied_tolerance; //!< 末端被占据时，平面偏移搜索半径 [m]
     //!< transformGlobalPlan: 末端位姿微调时的平面网格步长 [m]，与 SMAC Hybrid 等价的 goal_search_resolution
-    double transform_global_plan_goal_search_resolution;
+    double transform_global_plan_goal_search_resolution; //!< 末端偏移搜索网格步长 [m]
     //!< hasReverseSegmentInPlan: 参与倒车判定的相邻路点最小段长 [m]
-    double reverse_segment_min_segment_length_m;
+    double reverse_segment_min_segment_length_m; //!< 倒车判定的最小相邻段长度 [m]
     //!< hasReverseSegmentInPlan: 位移方向与 pose 航向夹角下限 [deg]，接近 180° 时判为倒车（如 150 表示 150°~180°）
-    double reverse_segment_min_angle_deg;
+    double reverse_segment_min_angle_deg; //!< 倒车判定最小夹角阈值 [deg]
     //!< hasReverseSegmentInPlan: 单帧 plan 内满足角度条件的相邻段最少数量
-    int reverse_segment_angle_check_num;
+    int reverse_segment_angle_check_num; //!< 单帧内参与倒车角度判定的最少段数
     //!< /backward_mode true→false: 连续非倒车帧防抖窗口时长 [s]
-    double backward_check_duration;
+    double backward_check_duration; //!< backward_mode 退出防抖窗口时长 [s]
     //!< /backward_mode true→false: 窗口内连续 reverse_segment=false 帧数
-    int backward_check_num;
+    int backward_check_num; //!< 防抖窗口内需要的连续“非倒车”帧数
   } trajectory; //!< Trajectory related parameters
 
   //! Robot related parameters
@@ -154,7 +154,7 @@ public:
     bool use_proportional_saturation; //<! If true, reduce all twists components (linear x and y, and angular z) proportionally if any exceed its corresponding bounds, instead of saturating each one individually
     double transform_tolerance = 0.5; //<! Tolerance when querying the TF Tree for a transformation (seconds)
     //!< 若大于 0：当 map_frame→基底坐标系 TF 最新消息时间戳早于当前时钟超过该值 [s] 时，控制器输出零速度；<=0 关闭
-    double map_to_base_transform_max_age;
+    double map_to_base_transform_max_age; //!< map->base TF 最大允许延迟 [s]，超时则抑制输出
     double safe_linear_speed_limit; //!< Maximum linear speed limit for the robot
   } robot; //!< Robot related parameters
 
@@ -201,20 +201,20 @@ public:
   {
     double min_wall_dist; //!< Minimum desired separation from obstacles
     double min_wall_direction; //!< buffer zone around obstacles with non-zero penalty costs (should be larger than min_obstacle_dist in order to take effect)
-    double parallel_tolerance;
-    double distance_tolerance;
+    double parallel_tolerance; //!< 路径与边线平行度阈值（通常为 cos 夹角）
+    double distance_tolerance; //!< 路径与边线匹配的最大允许距离 [m]
     //!< 贴墙距离项：路径点距轨迹起点（机器人）欧氏距离在 [0,R] 内时，信息权重系数由 min 线性过渡到 max；R<=0 表示关闭（恒为 max）
-    double wall_line_dist_robot_weight_radius;
+    double wall_line_dist_robot_weight_radius; //!< 距离分段权重半径 R（0~R 线性插值）[m]
     double wall_line_dist_weight_scale_at_robot; //!< 距离起点 0m 时的系数（通常较小，减轻起点附近贴边/倒退）
     double wall_line_dist_weight_scale_far;      //!< 距离 >= R 时的系数（通常为 1.0）
     //!< 机器人距贴边线 < min_wall_dist 时：weight *= clamp(robot_dist/min_wall_dist, lower, upper)
-    double wall_line_dist_weight_scale_under_min_lower;
-    double wall_line_dist_weight_scale_under_min_upper;
+    double wall_line_dist_weight_scale_under_min_lower; //!< 小于 min_wall_dist 时比例缩放下限
+    double wall_line_dist_weight_scale_under_min_upper; //!< 小于 min_wall_dist 时比例缩放上限
     //!< 机器人在 [min_wall_dist, distance_tolerance] 内：远端（distance_tolerance）处的 weight 系数
-    double wall_line_dist_weight_scale_at_distance_tolerance;
-    double edge_acc_lim_theta;
-    double edge_max_vel_theta;
-    double edge_max_vel_x;
+    double wall_line_dist_weight_scale_at_distance_tolerance; //!< 在 distance_tolerance 处的权重系数
+    double edge_acc_lim_theta; //!< 贴边模式角加速度限制 [rad/s^2]
+    double edge_max_vel_theta; //!< 贴边模式角速度上限 [rad/s]
+    double edge_max_vel_x; //!< 贴边模式线速度上限 [m/s]
     double edge_weight_optimaltime; //!< weight_optimaltime parameter for edge-following mode
     double edge_min_obstacle_dist; //!< min_obstacle_dist parameter for edge-following mode
     double keep_wall_line_time; //!< time to keep the wall line when not detect usefull wall line
@@ -229,18 +229,18 @@ public:
     double reference_match_max_angle_deg; //!< Primary vs Reference "close": max direction angle diff [deg]
     double reference_match_max_distance_m; //!< Primary vs Reference "close": max segment-to-segment distance [m]
     double reference_no_valid_path_timeout; //!< No valid Reference path: keep last segment until this timeout since last success [s]
-    double new_vehicle_distance_threshold;
-    double erase_vehicle_distance_threshold;
-    double close_vehicle_distance_threshold;
+    double new_vehicle_distance_threshold; //!< 车辆新建/更新关联距离阈值 [m]
+    double erase_vehicle_distance_threshold; //!< 车辆擦除距离阈值 [m]
+    double close_vehicle_distance_threshold; //!< 近邻车辆判定阈值 [m]
     //!< 贴边时车辆检测：机器人航向后方/前方距离 [m]，与墙法向内侧/机器人侧带宽 [m] 构成的平行条带（与航向组合为实际检测区）
-    double vehicle_exit_corridor_rear_m;
-    double vehicle_exit_corridor_front_m;
+    double vehicle_exit_corridor_rear_m; //!< 贴边退出检测区：机器人后向长度 [m]
+    double vehicle_exit_corridor_front_m; //!< 贴边退出检测区：机器人前向长度 [m]
     double vehicle_exit_corridor_wall_inner_m;   //!< 墙线沿法向“内侧”扩展（与指向机器人的法向相反一侧）[m]
     double vehicle_exit_corridor_wall_robot_side_m; //!< 墙线沿法向朝机器人侧扩展 [m]
-    double min_wall_line_length;
-    double min_path_line_length;
-    double transform_path_line_length;
-    double static_layer_enable_delay;
+    double min_wall_line_length; //!< 候选墙线最小长度 [m]
+    double min_path_line_length; //!< 输入路径最小长度 [m]
+    double transform_path_line_length; //!< transformed_plan 截取用于贴边匹配的长度 [m]
+    double static_layer_enable_delay; //!< 切换 static_layer 的延时 [s]
     std::string edge_footprint_vertices; //!< footprint vertices parameter for edge-following mode
     double wall_line_safety_offset; //!< Offset the wall line toward the wall side for safety margin [m]
     double wall_line_extension_distance; //!< Extend the wall line segment on both ends [m]
@@ -264,6 +264,11 @@ public:
     double wall_line_obstacle_clip_intersect_min_span; //!< Min along-wall span of polygon-wall segment intersection to enable clip [m]
     double wall_line_obstacle_clip_min_keep_area_sq; //!< If clipped polygon area below this, replace with minimal wall segment [m^2]
     double wall_line_obstacle_clip_vertex_dedupe_dist; //!< Merge polygon clip vertices closer than this [m]
+    //!< 贴边时前向 2D 激光 protrusion 退出检测（与障碍物轮廓顶点判定一致）
+    bool enable_front_scan_protrusion_check; //!< 是否启用 /front_scan 贴边 protrusion 退出检测
+    std::string front_scan_topic; //!< 前向 2D 激光雷达话题（LaserScan）
+    double front_scan_min_range_base_footprint; //!< 距离裁剪：costmap base_frame 下径向最近距离 [m]
+    double front_scan_max_range_base_footprint; //!< 距离裁剪：costmap base_frame 下径向最远距离 [m]
     bool switch_static_layer; //!< Whether to toggle local costmap static_layer.enabled when switching parameter mode
     bool switch_local_footprint; //!< Whether to toggle local costmap footprint when switching parameter mode
     bool switch_global_footprint; //!< Whether to toggle global costmap footprint when switching parameter mode
@@ -302,8 +307,8 @@ public:
     double weight_prefer_rotdir; //!< Optimization weight for preferring a specific turning direction (-> currently only activated if an oscillation is detected, see 'oscillation_recovery'
     double weight_adapt_factor; //!< Some special weights (currently 'weight_obstacle') are repeatedly scaled by this factor in each outer TEB iteration (weight_new = weight_old*factor); Increasing weights iteratively instead of setting a huge value a-priori leads to better numerical conditions of the underlying optimization problem.
     double obstacle_cost_exponent; //!< Exponent for nonlinear obstacle cost (cost = linear_cost * obstacle_cost_exponent). Set to 1 to disable nonlinear cost (default)
-    double weight_wall_line_dist;
-    double weight_wall_line_direction;
+    double weight_wall_line_dist; //!< 贴边距离代价权重
+    double weight_wall_line_direction; //!< 贴边方向一致性代价权重
   } optim; //!< Optimization related parameters
 
 
@@ -365,10 +370,10 @@ public:
     double simulate_ahead_time; //!< Time to simulate ahead for collision checking during rotation [s] (deprecated, not used)
     double forward_lookahead_distance; //!< Forward lookahead distance to select target pose for rotation [m]
     //!< 原地转路径 footprint 碰障采样间距 [m]（沿 transformed_plan 弧长）
-    double path_footprint_sample_spacing;
+    double path_footprint_sample_spacing; //!< 沿路径做 footprint 碰撞采样的间距 [m]
     double rotate_min_angular_vel; //!< Minimum angular velocity for in-place rotation [rad/s]
     //!< >0：手动 blend(rad)，标称上界 wn*r/blend；<=0：由 wn、wm、max_angular_accel 与当前|ω|自动算 blend
-    double decel_blend_start_rad;
+    double decel_blend_start_rad; //!< 原地转减速 blend 角度阈值 [rad]（<=0 自动计算）
     double rotation_limit_duration; //!< Duration window to suppress repeated in-place rotation [s], <=0 disables
     double rotation_limit_distance; //!< Distance threshold to suppress repeated in-place rotation [m], <=0 disables
   } rotation; //!< Parameters related to in-place rotation
@@ -546,6 +551,10 @@ public:
     wall_line.wall_line_obstacle_clip_intersect_min_span = 0.05;
     wall_line.wall_line_obstacle_clip_min_keep_area_sq = 0.008;
     wall_line.wall_line_obstacle_clip_vertex_dedupe_dist = 0.02;
+    wall_line.enable_front_scan_protrusion_check = true;
+    wall_line.front_scan_topic = "/front_scan";
+    wall_line.front_scan_min_range_base_footprint = 0.3;
+    wall_line.front_scan_max_range_base_footprint = 5.0;
     wall_line.switch_static_layer = true;
     wall_line.switch_local_footprint = true;
     wall_line.switch_global_footprint = true;
@@ -644,37 +653,39 @@ public:
     rotation.rotation_limit_distance = 0.2;
   }
   
+  /**
+   * @brief 声明 teb_local_planner 相关参数及默认值。
+   */
   void declareParameters(const nav2_util::LifecycleNode::SharedPtr, const std::string name);
 
   /**
-   * @brief Load parmeters from the ros param server.
-   * @param nh const reference to the local rclcpp::Node::SharedPtr
+   * @brief 从参数服务器加载并覆盖当前配置。
+   * @param nh 生命周期节点指针
    */
   void loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::SharedPtr nh, const std::string name);
   
   /**
-   * @brief Callback executed when a paramter change is detected
-   * @param parameters list of changed parameters
+   * @brief 动态参数回调：接收参数变更并更新内部配置。
+   * @param parameters 发生变化的参数列表
    */
   rcl_interfaces::msg::SetParametersResult
     dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
   
   /**
-   * @brief Check parameters and print warnings in case of discrepancies
+   * @brief 校验参数合法性并输出告警。
    *
-   * Call this method whenever parameters are changed using public interfaces to inform the user
-   * about some improper uses.
+   * 当通过公开接口修改配置后，应调用该函数检查不合理组合。
    */
   void checkParameters() const;
   
   /**
-   * @brief Check if some deprecated parameters are found and print warnings
-   * @param nh const reference to the local rclcpp::Node::SharedPtr
+   * @brief 检查是否使用了已废弃参数并输出提示。
+   * @param nh 生命周期节点指针
    */
   void checkDeprecated(const nav2_util::LifecycleNode::SharedPtr nh, const std::string name) const;
   
   /**
-   * @brief Return the internal config mutex
+   * @brief 返回配置互斥锁（用于线程安全访问）。
    */
   std::mutex& configMutex() {return config_mutex_;}
 

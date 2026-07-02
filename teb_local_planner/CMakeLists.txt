@@ -89,6 +89,8 @@ add_library(teb_local_planner SHARED
    src/homotopy_class_planner.cpp
    src/teb_local_planner_ros.cpp
    src/vehicle_scan_grid.cpp
+   src/front_scan_protrusion.cpp
+   src/wall_protrusion_check.cpp
    src/graph_search.cpp
 )
 

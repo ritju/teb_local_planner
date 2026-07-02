@@ -51,12 +51,14 @@
  #include "teb_local_planner/homotopy_class_planner.h"
  #include "teb_local_planner/visualization.h"
  #include "teb_local_planner/recovery_behaviors.h"
+ #include "teb_local_planner/wall_protrusion_check.hpp"
  
  // message types
  #include <nav_msgs/msg/path.hpp>
  #include <nav_msgs/msg/odometry.hpp>
  #include <geometry_msgs/msg/pose_stamped.hpp>
  #include <sensor_msgs/msg/point_cloud2.hpp>
+ #include <sensor_msgs/msg/laser_scan.hpp>
  #include <nav_msgs/msg/occupancy_grid.hpp>
  #include <visualization_msgs/msg/marker_array.hpp>
  #include <visualization_msgs/msg/marker.hpp>
@@ -265,47 +267,64 @@
      const double distance_tolerance,
      const geometry_msgs::msg::PoseStamped& robot_pose);
 
+  /** @brief 接收“任务段 + 参考路径”成对消息并缓存。 */
   void pairedMissionAndReferencePathCallback(
     const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr msg);
+  /** @brief 接收剩余任务路径，用于刷新当前激活参考线对。 */
   void removedPlanCallback(const nav_msgs::msg::Path::ConstSharedPtr msg);
+  /** @brief 清空当前激活的任务段/参考线对状态。 */
   void clearActiveReferencePair();
+  /** @brief 基于 removed_plan front pose 刷新激活参考线对。 */
   void refreshActiveReferencePair();
+  /** @brief 返回当前激活参考路径列表。 */
   std::vector<nav_msgs::msg::Path> snapshotActiveReferencePathList() const;
+  /** @brief 返回当前激活任务段。 */
   nav_msgs::msg::Path snapshotActiveMissionSegment() const;
+  /** @brief 当前是否存在激活参考线对。 */
   bool snapshotHasActiveReferencePair() const;
+  /** @brief 仅使用参考路径源更新贴边线。 */
   void updateReferenceLineVec(
     const std::vector<nav_msgs::msg::Path>& reference_path_list,
     nav_msgs::msg::Path& input_path,
     const double parallel_tolerance_degrees,
     const double distance_tolerance_meters,
     const geometry_msgs::msg::PoseStamped& robot_pose);
+  /** @brief 参考线不可用时尝试使用缓存，否则退出贴边模式。 */
   void applyReferenceLineHoldFallbackOrExit(const nav_msgs::msg::Path& input_path);
+  /** @brief 贴边主入口：根据 edge_mode 分派墙线/路沿/参考线更新逻辑。 */
   void runEdgeFollowingPathUpdate(
     std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan,
     const geometry_msgs::msg::PoseStamped& robot_pose);
+  /** @brief 判断当前 transformed_plan 是否满足进入/维持贴边模式。 */
   bool shouldRunEdgeFollowingForTransformedPlan(
     const std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan);
+  /** @brief 从路径中提取可用于拟合的线段（通常取首尾）。 */
   bool extractLineSegmentFromPath(
     const nav_msgs::msg::Path& path,
     Eigen::Vector2d& segment_start,
     Eigen::Vector2d& segment_end) const;
+  /** @brief 计算点到线段的最短欧氏距离。 */
   double pointToSegmentDistance(
     const Eigen::Vector2d& query_point,
     const Eigen::Vector2d& segment_start,
     const Eigen::Vector2d& segment_end) const;
+  /** @brief 计算两条线段的最短欧氏距离。 */
   double segmentToSegmentDistance(
     const Eigen::Vector2d& first_segment_start,
     const Eigen::Vector2d& first_segment_end,
     const Eigen::Vector2d& second_segment_start,
     const Eigen::Vector2d& second_segment_end) const;
+  /** @brief 计算两条线段方向夹角（度），用于平行度约束。 */
   double segmentDirectionAngleDifferenceDeg(
     const Eigen::Vector2d& first_segment_start,
     const Eigen::Vector2d& first_segment_end,
     const Eigen::Vector2d& second_segment_start,
     const Eigen::Vector2d& second_segment_end) const;
+  /** @brief 进入贴边前统一检查（路径长度、模式状态、几何可用性等）。 */
   bool edgeFollowingEntryGuards(
     const geometry_msgs::msg::PoseStamped& robot_pose,
     const nav_msgs::msg::Path& input_path);
+  /** @brief 从墙线候选集中选择最优贴边线段。 */
   bool trySelectWallSegmentFromCandidates(
     const std::vector<nav_msgs::msg::Path>& wall_candidates,
     const nav_msgs::msg::Path& input_path,
@@ -316,6 +335,7 @@
     Eigen::Vector2d& selected_edge_segment_end,
     double& minimum_average_distance_to_plan,
     double& robot_perpendicular_distance_to_edge_line);
+  /** @brief 从两点路径（典型路沿）中提取并验证可用线段。 */
   bool trySelectSegmentFromTwoPointPath(
     const nav_msgs::msg::Path& two_point_line_path,
     const nav_msgs::msg::Path& input_path,
@@ -326,6 +346,7 @@
     Eigen::Vector2d& selected_edge_segment_end,
     double& minimum_average_distance_to_plan,
     double& robot_perpendicular_distance_to_edge_line);
+  /** @brief 在参考路径列表中搜索最优线段并输出评估结果。 */
   bool trySelectBestReferencePathFromList(
     const std::vector<nav_msgs::msg::Path>& reference_path_candidates,
     const nav_msgs::msg::Path& input_path,
@@ -336,14 +357,23 @@
     Eigen::Vector2d& selected_edge_segment_end,
     double& minimum_average_distance_to_plan,
     double& robot_perpendicular_distance_to_edge_line);
+  /**
+   * @brief 应用贴边线并更新可视化、权重与缓存发布时间。
+   */
   void applyWallLineSegmentAndVisual(
     const Eigen::Vector2d& wall_line_segment_start,
     const Eigen::Vector2d& wall_line_segment_end,
     const nav_msgs::msg::Path& input_path,
     double minimum_average_distance_to_plan,
     double robot_perpendicular_distance_to_edge_line);
+  /**
+   * @brief 根据机器人到贴边线垂距，计算贴边权重。
+   */
   double computeWallLineDistWeightFromRobotDistance(
     double robot_perpendicular_distance_to_edge_line) const;
+  /**
+   * @brief 融合主来源（墙线/路沿）与参考路径，按优先级与锁定策略选择最终贴边线。
+   */
   void mergeFusionPrimaryWithReference(
     const Eigen::Vector2d& fusion_primary_segment_start,
     const Eigen::Vector2d& fusion_primary_segment_end,
@@ -356,6 +386,23 @@
     double reference_minimum_average_distance_to_plan,
     double reference_robot_perpendicular_distance_to_edge,
     const nav_msgs::msg::Path& input_path);
+  /**
+   * @brief 统一退出贴边模式流程：清理缓存并输出节流日志。
+   */
+  void exitEdgeFollowingMode(const char * log_context, const char * reason);
+  /**
+   * @brief 缓存当前选中的贴边线段及其评估结果。
+   */
+  void cacheReferenceLineHold(
+    const Eigen::Vector2d& segment_start,
+    const Eigen::Vector2d& segment_end,
+    double minimum_average_distance_to_plan,
+    double robot_perpendicular_distance_to_edge_line,
+    const rclcpp::Time& cache_time);
+  /**
+   * @brief 清理超过时效的路沿路径缓存（线程安全）。
+   */
+  void pruneExpiredCurbLinePath();
 
   /**
    * @brief Callback for surrounding vehicle poses
@@ -364,6 +411,24 @@
   void vehiclePosesCallback(const geometry_msgs::msg::PoseArray::ConstSharedPtr msg);
 
   void vehicleScanCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg);
+
+  void frontScanCallback(const sensor_msgs::msg::LaserScan::ConstSharedPtr msg);
+
+  /**
+   * @brief 贴边模式下检测 /front_scan 点是否触发 protrusion 退出（与障碍物轮廓一致）
+   */
+  void checkFrontScanProtrusionExit(
+    const EffWallFrame& wall,
+    const Eigen::Vector2d& robot_position,
+    const std::string& map_frame);
+
+  /**
+   * @brief 记录一次 protrusion 命中并执行滑动窗口确认（polygon / front_scan 共用）
+   */
+  void recordProtrusionDetection(
+    const Eigen::Vector2d& best_point,
+    double best_pen,
+    const char * log_context);
 
   /**
    * @brief 维护车身激光 + converter 多边形滚动栅格（map 对齐）；OccupancyGrid 在 updateObstacleContainerWithCostmapConverter 末尾发布
@@ -614,9 +679,12 @@
   // Vehicle poses around the robot (in map frame)
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr vehicle_poses_sub_; //!< Subscriber for /vehicle_poses_around
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr vehicle_scan_cloud_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr front_scan_sub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr vehicle_scan_grid_pub_;
   std::mutex vehicle_scan_cloud_mutex_;
+  std::mutex front_scan_mutex_;
   sensor_msgs::msg::PointCloud2::SharedPtr latest_vehicle_cloud_;
+  sensor_msgs::msg::LaserScan::SharedPtr latest_front_scan_;
   //!< 滚动栅格：255 自由，0 车相关占据；全局格索引 (ix,iy) 对齐 map
   std::vector<uint8_t> vehicle_scan_grid_;
   std::vector<uint8_t> vehicle_scan_stale_;

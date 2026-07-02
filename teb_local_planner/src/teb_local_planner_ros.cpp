@@ -85,8 +85,17 @@
    const char* use_curb_or_wall = std::getenv("USE_CURB_OR_WALL");
 
 namespace {
+using teb_local_planner::EffWallFrame;
+using teb_local_planner::WallProtrusionHit;
+using teb_local_planner::checkWallProtrusionPoint;
+using teb_local_planner::isOnSameWallSideAsRobot;
+using teb_local_planner::wallSideSignFromCoord;
+using teb_local_planner::wallSignedDist;
+
+// 统一规范 USE_CURB_OR_WALL：去空白、转小写，便于后续模式匹配。
 std::string normalizeEdgeModeEnv(const char* environment_string)
 {
+  
   if (environment_string == nullptr) {
     RCLCPP_WARN(rclcpp::get_logger("controller_server"), "USE_CURB_OR_WALL 环境变量为空");
     return "";
@@ -106,6 +115,7 @@ namespace {
 
 rclcpp::Clock & edgeFollowingLogClock()
 {
+  
   static rclcpp::Clock clock(RCL_STEADY_TIME);
   return clock;
 }
@@ -115,6 +125,8 @@ double pointToSegmentDistance2d(
   const Eigen::Vector2d& segment_start,
   const Eigen::Vector2d& segment_end)
 {
+  
+  // 退化线段直接退化为点距；非退化则做投影并裁剪到 [0,1]。
   const Eigen::Vector2d segment_vector = segment_end - segment_start;
   const double segment_length_squared = segment_vector.squaredNorm();
   if (segment_length_squared < 1e-12) {
@@ -133,6 +145,8 @@ double segmentToSegmentDistance2d(
   const Eigen::Vector2d& second_segment_start,
   const Eigen::Vector2d& second_segment_end)
 {
+  
+  // 采用“端点到对侧线段最短距离”的近似，满足当前贴边几何筛选需求。
   const double first_to_second_start =
     pointToSegmentDistance2d(first_segment_start, second_segment_start, second_segment_end);
   const double first_to_second_end =
@@ -156,6 +170,8 @@ bool segmentsCloseForFusion(
   const double maximum_angle_degrees,
   const double maximum_segment_separation_meters)
 {
+  
+  // 融合判定分三步：长度有效 -> 方向夹角 -> 段间距离。
   const Eigen::Vector2d primary_direction = fusion_primary_segment_end - fusion_primary_segment_start;
   const Eigen::Vector2d reference_direction = reference_segment_end - reference_segment_start;
   const double primary_segment_length = primary_direction.norm();
@@ -202,6 +218,7 @@ int computeCohenSutherlandOutCode(
   double x, double y,
   double xmin, double ymin, double xmax, double ymax)
 {
+  
   constexpr int LEFT = 1;
   constexpr int RIGHT = 2;
   constexpr int BOTTOM = 4;
@@ -230,6 +247,8 @@ bool clipWorldSegmentToAlignedRect(
   double xmax,
   double ymax)
 {
+  
+  // Cohen-Sutherland 线段裁剪：将世界系线段裁到轴对齐矩形窗口内。
   constexpr double kEpsilonSeg = 1e-14;
   int out_code0 =
     computeCohenSutherlandOutCode(x0, y0, xmin, ymin, xmax, ymax);
@@ -303,14 +322,6 @@ bool clipWorldSegmentToAlignedRect(
   return false;
 }
 
-struct EffWallFrame {
-  Eigen::Vector2d start;
-  Eigen::Vector2d dir;
-  Eigen::Vector2d normal;
-  double length{0.0};
-  int robot_side_sign{0};
-};
-
 struct WallClipGeometryParams {
   double intersect_min_span{0.05};
   double min_keep_area_sq{0.008};
@@ -319,6 +330,7 @@ struct WallClipGeometryParams {
 
 WallClipGeometryParams wallClipGeometryParamsFromConfig(const TebConfig& config)
 {
+  
   WallClipGeometryParams params;
   params.intersect_min_span =
     config.wall_line.wall_line_obstacle_clip_intersect_min_span;
@@ -335,40 +347,16 @@ Eigen::Vector2d wallClosestPointOnSegment(
   const Eigen::Vector2d& seg_dir,
   double seg_length)
 {
+  
   const double along = (p - seg_start).dot(seg_dir);
   const double clamped_along = std::clamp(along, 0.0, seg_length);
   return seg_start + seg_dir * clamped_along;
 }
 
-// Signed coordinate of p relative to the infinite wall line through wall.start.
-double wallSignedDist(const Eigen::Vector2d& p, const EffWallFrame& wall)
-{
-  return (p - wall.start).dot(wall.normal);
-}
-
-int wallSideSignFromCoord(double coord, double eps = 1e-9)
-{
-  if (coord > eps) {
-    return 1;
-  }
-  if (coord < -eps) {
-    return -1;
-  }
-  return 0;
-}
-
-bool isOnSameWallSideAsRobot(double point_coord, int robot_side_sign, double eps = 1e-9)
-{
-  const int point_sign = wallSideSignFromCoord(point_coord, eps);
-  if (point_sign == 0 || robot_side_sign == 0) {
-    return true;
-  }
-  return point_sign == robot_side_sign;
-}
-
 // Positive depth means farther from the wall on the robot side.
 double wallRobotSideDepth(const Eigen::Vector2d& p, const EffWallFrame& wall)
 {
+  
   return static_cast<double>(wall.robot_side_sign) * wallSignedDist(p, wall);
 }
 
@@ -379,6 +367,7 @@ Eigen::Vector2d wallTowardRobotUnit(
   const Eigen::Vector2d& seg_dir,
   double seg_length)
 {
+  
   const Eigen::Vector2d fixed_normal(-seg_dir.y(), seg_dir.x());
   const double robot_coord = (robot_pos - seg_start).dot(fixed_normal);
   if (std::abs(robot_coord) > 1e-6) {
@@ -396,11 +385,13 @@ Eigen::Vector2d wallTowardRobotUnit(
 
 double wallAlongCoord(const Eigen::Vector2d& p, const EffWallFrame& wall)
 {
+  
   return (p - wall.start).dot(wall.dir);
 }
 
 Eigen::Vector2d wallPointAtT(const EffWallFrame& wall, double t)
 {
+  
   return wall.start + wall.dir * t;
 }
 
@@ -410,6 +401,7 @@ bool intersectEdgeWithWallSegment(
   const EffWallFrame& wall,
   double& t_along_wall)
 {
+  
   const Eigen::Vector2d edge_vec = edge_end - edge_start;
   const Eigen::Vector2d origin_to_edge = edge_start - wall.start;
   const double denom = wall.dir.x() * edge_vec.y() - wall.dir.y() * edge_vec.x();
@@ -435,6 +427,7 @@ void collectWallSegmentIntersectionTs(
   const EffWallFrame& wall,
   std::vector<double>& t_values)
 {
+  
   t_values.clear();
   if (polygon.points.empty()) {
     return;
@@ -464,6 +457,7 @@ bool wallSegmentIntersectionSpanSufficient(
   const std::vector<double>& t_values,
   double intersect_min_span)
 {
+  
   if (t_values.size() < 2) {
     return false;
   }
@@ -476,6 +470,7 @@ void dedupePolygonVertices(
   std::vector<Eigen::Vector2d>& vertices,
   double vertex_dedupe_dist)
 {
+  
   if (vertices.size() < 2) {
     return;
   }
@@ -498,6 +493,7 @@ void dedupePolygonVertices(
 
 double polygonAreaAbs(const std::vector<Eigen::Vector2d>& vertices)
 {
+  
   if (vertices.size() < 3) {
     return 0.0;
   }
@@ -513,6 +509,7 @@ void orderPolygonVerticesCCW(
   std::vector<Eigen::Vector2d>& vertices,
   double vertex_dedupe_dist)
 {
+  
   if (vertices.size() < 3) {
     return;
   }
@@ -536,6 +533,7 @@ std::vector<Eigen::Vector2d> clipPolygonDeepRobotSide(
   double clip_depth,
   double vertex_dedupe_dist)
 {
+  
   std::vector<Eigen::Vector2d> output;
   if (input.empty()) {
     return output;
@@ -574,6 +572,7 @@ void appendWallSealBetweenIntersectionTs(
   const std::vector<double>& wall_intersection_ts,
   const WallClipGeometryParams& clip_params)
 {
+  
   if (wall_intersection_ts.size() < 2 || vertices.empty()) {
     return;
   }
@@ -595,6 +594,7 @@ void buildMinimalWallRetainedSegment(
   double intersect_min_span,
   std::vector<Eigen::Vector2d>& vertices)
 {
+  
   const double half_span = 0.5 * intersect_min_span;
   const double t0 = std::clamp(t_mid - half_span, 0.0, wall.length);
   const double t1 = std::clamp(t_mid + half_span, 0.0, wall.length);
@@ -618,6 +618,7 @@ WallPolygonClipResult processWallFilteredPolygon(
   const std::string& obstacles_frame,
   const TebConfig& config)
 {
+  
   WallPolygonClipResult result;
   const WallClipGeometryParams clip_params = wallClipGeometryParamsFromConfig(config);
   std::vector<Eigen::Vector2d> input_vertices;
@@ -630,22 +631,6 @@ WallPolygonClipResult processWallFilteredPolygon(
   Eigen::Vector2d max_penetration_point = input_vertices.empty() ?
     robot_position : input_vertices.front();
 
-  const double base_d_exit = config.wall_line.wall_line_obstacle_protrusion_base_distance;
-  const double scale_k_exit = config.wall_line.wall_line_protrusion_exit_depth_min;
-  const auto eff_protrusion_for_vertex_dist = [&](double dist_robot_vertex) -> double {
-    double effective = config.wall_line.wall_line_protrusion_exit_depth_min;
-    if (dist_robot_vertex > base_d_exit) {
-      effective = std::min(
-        effective + scale_k_exit * (dist_robot_vertex - base_d_exit),
-        config.wall_line.wall_line_obstacle_filter_distance_max);
-    }
-    return effective;
-  };
-
-  const double fwd_max = config.wall_line.wall_line_protrusion_exit_forward_max;
-  const double lat_max = config.wall_line.wall_line_protrusion_exit_lateral_max;
-  const double depth_max = config.wall_line.wall_line_protrusion_exit_depth_max;
-
   for (const auto& point : polygon.points) {
     const Eigen::Vector2d vertex(point.x, point.y);
     const double vertex_wall_coord = wallSignedDist(vertex, wall);
@@ -657,38 +642,28 @@ WallPolygonClipResult processWallFilteredPolygon(
       }
     }
 
+    Eigen::Vector2d p_base = Eigen::Vector2d::Zero();
+    bool have_p_base = false;
     if (have_tf_obstacles_to_base) {
       geometry_msgs::msg::PointStamped pin;
       pin.header.frame_id = obstacles_frame;
       pin.point.x = point.x;
       pin.point.y = point.y;
       pin.point.z = point.z;
-      geometry_msgs::msg::PointStamped p_base;
-      tf2::doTransform(pin, p_base, tf_base_from_obstacles);
-
-      if (p_base.point.x <= -config.wall_line.wall_line_obstacle_along_wall_rear_margin ||
-        p_base.point.x > fwd_max ||
-        std::fabs(p_base.point.y) > lat_max)
-      {
-        continue;
-      }
-    } else {
-      continue;
+      geometry_msgs::msg::PointStamped p_base_stamped;
+      tf2::doTransform(pin, p_base_stamped, tf_base_from_obstacles);
+      p_base = Eigen::Vector2d(p_base_stamped.point.x, p_base_stamped.point.y);
+      have_p_base = true;
     }
 
-    if (!isOnSameWallSideAsRobot(vertex_wall_coord, wall.robot_side_sign)) {
-      continue;
-    }
-    const double pen = std::abs(vertex_wall_coord);
-    const double dist_robot_vertex = (vertex - robot_position).norm();
-    const double eff_v = eff_protrusion_for_vertex_dist(dist_robot_vertex);
-    if (pen <= eff_v || pen > depth_max) {
-      continue;
-    }
-    if (!result.exit_trigger || pen > result.exit_best_pen) {
+    const WallProtrusionHit point_hit = checkWallProtrusionPoint(
+      vertex, p_base, have_p_base, wall, robot_position, config);
+    if (point_hit.exit_trigger &&
+      (!result.exit_trigger || point_hit.exit_best_pen > result.exit_best_pen))
+    {
       result.exit_trigger = true;
-      result.exit_best_pen = pen;
-      result.exit_best_point = vertex;
+      result.exit_best_pen = point_hit.exit_best_pen;
+      result.exit_best_point = point_hit.exit_best_point;
     }
   }
 
@@ -751,6 +726,7 @@ void pushObstacleFromPolygonPoints(
   std::vector<teb_local_planner::ObstaclePtr>& obstacles,
   const std::vector<Eigen::Vector2d>& vertices)
 {
+  
   if (vertices.size() >= 3) {
     PolygonObstacle* polyobst = new PolygonObstacle;
     for (const auto& vertex : vertices) {
@@ -774,6 +750,7 @@ bool footprintAxisAlignedBboxSeparateFromCostmapRect(
   double map_x_max_ex,
   double map_y_max_ex)
 {
+  
   if (footprint.empty()) {
     return true;
   }
@@ -803,6 +780,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
   double clip_x_max,
   double clip_y_max)
 {
+  
   if (footprint.size() < 2) {
     return false;
   }
@@ -880,10 +858,12 @@ bool clippedFootprintOutlineTouchesBlockingCost(
  
  TebLocalPlannerROS::~TebLocalPlannerROS()
  {
+   
  }
  
  void TebLocalPlannerROS::initialize(nav2_util::LifecycleNode::SharedPtr node)
  {
+   
    // check if the plugin is already initialized
    if(!initialized_)
    {	
@@ -1085,6 +1065,18 @@ bool clippedFootprintOutlineTouchesBlockingCost(
         vehicle_scan_qos,
         std::bind(&TebLocalPlannerROS::vehicleScanCloudCallback, this, std::placeholders::_1));
     }
+    if (cfg_->wall_line.enable_front_scan_protrusion_check) {
+      rclcpp::QoS front_scan_qos(rclcpp::KeepLast(5));
+      front_scan_qos.best_effort();
+      front_scan_sub_ = node->create_subscription<sensor_msgs::msg::LaserScan>(
+        cfg_->wall_line.front_scan_topic,
+        front_scan_qos,
+        std::bind(&TebLocalPlannerROS::frontScanCallback, this, std::placeholders::_1));
+      RCLCPP_INFO(
+        logger_,
+        "TEB 订阅前向 LaserScan 贴边 protrusion 检测，话题：%s",
+        cfg_->wall_line.front_scan_topic.c_str());
+    }
     {
       // volatile + reliable：与 RViz / 默认 echo 的 QoS 易匹配
       rclcpp::QoS grid_qos(rclcpp::KeepLast(1));
@@ -1269,6 +1261,7 @@ void TebLocalPlannerROS::configure(
      std::string name,
      std::shared_ptr<tf2_ros::Buffer> tf,
      std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros) {
+       
    nh_ = parent;
  
    auto node = nh_.lock();
@@ -1289,6 +1282,7 @@ void TebLocalPlannerROS::configure(
  
  void TebLocalPlannerROS::setPlan(const nav_msgs::msg::Path & orig_global_plan)
  {
+   
    // check if plugin is initialized
    if(!initialized_)
    {
@@ -1325,6 +1319,7 @@ void TebLocalPlannerROS::configure(
  geometry_msgs::msg::TwistStamped TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::msg::PoseStamped &pose,
    const geometry_msgs::msg::Twist &velocity, nav2_core::GoalChecker *goal_checker)
  {
+   
    // check if plugin initialized
    if(!initialized_)
    {
@@ -2054,7 +2049,8 @@ void TebLocalPlannerROS::configure(
  }
  
  void TebLocalPlannerROS::updateObstacleContainerWithCostmap()
- {  
+ {
+     
    // Add costmap obstacles if desired
    if (cfg_->obstacles.include_costmap_obstacles)
    {
@@ -2085,6 +2081,7 @@ void TebLocalPlannerROS::configure(
  
 void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
 {
+  
   if (!costmap_converter_)
     return;
     
@@ -2097,7 +2094,10 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
   if (cfg_->obstacles.enable_vehicle_scan_grid) {
     updateVehicleScanOccupancyGrid(obstacles, obstacles_frame);
   }
-  if (!obstacles) {
+  const bool run_front_scan_only = (!obstacles &&
+    cfg_->wall_line.enable_front_scan_protrusion_check &&
+    is_edge_following_mode_);
+  if (!obstacles && !run_front_scan_only) {
     if (cfg_->obstacles.enable_vehicle_scan_grid) {
       appendVehicleScanInflatedHullObstacles();
     }
@@ -2222,7 +2222,6 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
   }
 
   EffWallFrame eff_wall;
-  bool have_eff_wall = false;
   if (use_wall_line_filter) {
     eff_wall.start = eff_wall_start;
     eff_wall.dir = eff_wall_dir;
@@ -2230,17 +2229,17 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
     eff_wall.length = eff_wall_length;
     eff_wall.robot_side_sign = wallSideSignFromCoord(
       wallSignedDist(robot_pose_.position(), eff_wall));
-    have_eff_wall = true;
   }
 
   // --- Add obstacles; edge mode clips shallow wall-band geometry instead of skipping ---
+  if (obstacles) {
   for (std::size_t i=0; i<obstacles->obstacles.size(); ++i)
   {
     const costmap_converter_msgs::msg::ObstacleMsg* obstacle = &obstacles->obstacles.at(i);
     const geometry_msgs::msg::Polygon* polygon = &obstacle->polygon;
 
     WallPolygonClipResult wall_result;
-    if (have_eff_wall && polygon->points.size() > 2) {
+    if (polygon->points.size() > 2) {
       wall_result = processWallFilteredPolygon(
         *polygon,
         eff_wall,
@@ -2251,48 +2250,10 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
         *cfg_);
 
       if (wall_result.exit_trigger) {
-        rclcpp::Time now = clock_->now();
-        protrusion_detection_timestamps_.push_back(now);
-
-        rclcpp::Duration window_duration = rclcpp::Duration::from_seconds(
-          cfg_->wall_line.obstacle_protrusion_confirm_window);
-        while (!protrusion_detection_timestamps_.empty() &&
-          (now - protrusion_detection_timestamps_.front()) > window_duration)
-        {
-          protrusion_detection_timestamps_.erase(protrusion_detection_timestamps_.begin());
-        }
-        RCLCPP_INFO(logger_, "[updateObstacleContainerWithCostmapConverter] protrusion_detection_timestamps_.size(): %ld", protrusion_detection_timestamps_.size());
-        if (static_cast<int>(protrusion_detection_timestamps_.size()) >=
-          cfg_->wall_line.obstacle_protrusion_min_confirm_frames)
-        {
-          bool is_duplicate = false;
-          for (const auto& existing : protruding_obstacles_) {
-            if ((existing.position - wall_result.exit_best_point).norm() < 0.5) {
-              is_duplicate = true;
-              break;
-            }
-          }
-
-          if (!is_duplicate) {
-            while (static_cast<int>(protruding_obstacles_.size()) >=
-              cfg_->wall_line.obstacle_protrusion_max_stored)
-            {
-              protruding_obstacles_.erase(protruding_obstacles_.begin());
-            }
-
-            ProtrudingObstacle protruding_obst;
-            protruding_obst.position = wall_result.exit_best_point;
-            protruding_obst.influence_radius = wall_result.exit_best_pen;
-            protruding_obst.detection_time = now;
-            protruding_obstacles_.push_back(protruding_obst);
-            RCLCPP_INFO(
-              logger_,
-              "Protruding obstacle confirmed at (%.2f, %.2f), penetration=%.2f.",
-              wall_result.exit_best_point.x(), wall_result.exit_best_point.y(),
-              wall_result.exit_best_pen);
-          }
-          protrusion_detection_timestamps_.clear();
-        }
+        recordProtrusionDetection(
+          wall_result.exit_best_point,
+          wall_result.exit_best_pen,
+          "updateObstacleContainerWithCostmapConverter");
       }
     }
 
@@ -2323,6 +2284,12 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
     if(!obstacles_.empty())
       obstacles_.back()->setCentroidVelocity(obstacles->obstacles[i].velocities, obstacles->obstacles[i].orientation);
   }
+  }
+
+  checkFrontScanProtrusionExit(
+    eff_wall,
+    robot_pose_.position(),
+    obstacles_frame);
 
   if (cfg_->obstacles.enable_vehicle_scan_grid) {
     appendVehicleScanInflatedHullObstacles();
@@ -2345,6 +2312,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
  
  void TebLocalPlannerROS::updateObstacleContainerWithCustomObstacles()
  {
+   
    // Add custom obstacles obtained via message
    std::lock_guard<std::mutex> l(custom_obst_mutex_);
  
@@ -2429,6 +2397,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
  
  void TebLocalPlannerROS::updateViaPointsContainer(const std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan, double min_separation)
  {
+   
    via_points_.clear();
    
    if (min_separation<=0)
@@ -2459,6 +2428,7 @@ bool TebLocalPlannerROS::isVehicleInEdgeFollowingExitCorridor(
   const Eigen::Vector2d& wall_w1,
   const geometry_msgs::msg::Pose& vehicle_pose) const
 {
+  
   const auto& wl = cfg_->wall_line;
   Eigen::Vector2d R(robot_pose.pose.position.x, robot_pose.pose.position.y);
   Eigen::Vector2d V(vehicle_pose.position.x, vehicle_pose.position.y);
@@ -2499,6 +2469,7 @@ void TebLocalPlannerROS::updateWallLineVec(
    const double distance_tolerance,
    const geometry_msgs::msg::PoseStamped& robot_pose)
  {
+   
    std::lock_guard<std::mutex> l(update_wall_line_mutex_);
    if (input_path.poses.size() < 2)
    {
@@ -2764,6 +2735,7 @@ void TebLocalPlannerROS::updateWallLineVec(
    const double distance_tolerance,
    const geometry_msgs::msg::PoseStamped& robot_pose)
  {
+   
    std::lock_guard<std::mutex> l(update_curb_line_mutex_);
 
    // 如果输入路径长度小于2，则清空wall_line_points_并退出
@@ -3036,6 +3008,7 @@ void TebLocalPlannerROS::updateWallLineVec(
  
  void TebLocalPlannerROS::curb_line_callback(const nav_msgs::msg::Path::ConstSharedPtr msg)
  {
+   
    std::lock_guard<std::mutex> l(curb_line_mutex_);
  
    curb_line_path_.poses.clear();
@@ -3144,6 +3117,7 @@ void TebLocalPlannerROS::updateWallLineVec(
        
  bool TebLocalPlannerROS::pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& global_pose, std::vector<geometry_msgs::msg::PoseStamped>& global_plan, double dist_behind_robot, double max_prune_dist)
  {
+   
    if (global_plan.empty())
      return true;
    
@@ -3240,6 +3214,7 @@ bool TebLocalPlannerROS::globalPlanPoseFootprintFreeInControllerFrame(
   const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
   geometry_msgs::msg::PoseStamped* out_pose_global_frame) const
 {
+  
   geometry_msgs::msg::PoseStamped pose_global;
   tf2::doTransform(pose_plan_frame, pose_global, plan_to_global_transform);
   if (out_pose_global_frame) {
@@ -3259,6 +3234,7 @@ bool TebLocalPlannerROS::orientedFootprintNavigableOnPartialCostmap(
   const geometry_msgs::msg::Pose2D & pose2d_controller_frame,
   const std::vector<geometry_msgs::msg::Point> & oriented_footprint) const
 {
+  
   if (costmap_ == nullptr || oriented_footprint.size() < 2) {
     return true;
   }
@@ -3342,6 +3318,7 @@ bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
   const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
   geometry_msgs::msg::PoseStamped& last_pose_plan_frame_inout) const
 {
+  
   last_pose_plan_frame_inout = original_last_pose_plan_frame;
   if (globalPlanPoseFootprintFreeInControllerFrame(
       original_last_pose_plan_frame, plan_to_global_transform, nullptr))
@@ -3441,6 +3418,7 @@ int computeLastIdxAfterExtension(
   const int from_idx,
   const double extend_arc_m)
 {
+  
   const int goal_idx = static_cast<int>(plan.size()) - 1;
   if (from_idx >= goal_idx || extend_arc_m <= 1e-9) {
     return goal_idx;
@@ -3465,6 +3443,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
                    const geometry_msgs::msg::PoseStamped& global_pose, const nav2_costmap_2d::Costmap2D& costmap, const std::string& global_frame, double max_plan_length,
                    std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan, int* current_goal_idx, geometry_msgs::msg::TransformStamped* tf_plan_to_global) const
  {
+   
    // this method is a slightly modified version of base_local_planner/goal_functions.h
  
    const geometry_msgs::msg::PoseStamped& plan_pose = global_plan[0];
@@ -3739,6 +3718,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
  double TebLocalPlannerROS::estimateLocalGoalOrientation(const std::vector<geometry_msgs::msg::PoseStamped>& global_plan, const geometry_msgs::msg::PoseStamped& local_goal,
                      int current_goal_idx, const geometry_msgs::msg::TransformStamped& tf_plan_to_global, int moving_average_length) const
  {
+   
    int n = (int)global_plan.size();
    
    // check if we are near the global goal already
@@ -3789,6 +3769,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
        
  void TebLocalPlannerROS::saturateVelocity(double& vx, double& vy, double& omega, double max_vel_x, double max_vel_y, double max_vel_theta, double max_vel_x_backwards) const
  {
+   
    double ratio_x = 1, ratio_omega = 1, ratio_y = 1;
    // Limit translational velocity for forward driving
    if (vx > max_vel_x)
@@ -3830,6 +3811,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
       
  double TebLocalPlannerROS::convertTransRotVelToSteeringAngle(double v, double omega, double wheelbase, double min_turning_radius) const
  {
+   
    if (omega==0 || v==0)
      return 0;
      
@@ -3844,6 +3826,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
  
  void TebLocalPlannerROS::validateFootprints(double opt_inscribed_radius, double costmap_inscribed_radius, double min_obst_dist)
  {
+   
      RCLCPP_WARN_EXPRESSION(
                  logger_, opt_inscribed_radius + min_obst_dist < costmap_inscribed_radius,
                    "The inscribed radius of the footprint specified for TEB optimization (%.2f) + min_obstacle_dist (%.2f) are smaller "
@@ -3855,6 +3838,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
     
  void TebLocalPlannerROS::configureBackupModes(std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan,  int& goal_idx)
  {
+   
      rclcpp::Time current_time = clock_->now();
      
      // reduced horizon backup mode
@@ -3937,6 +3921,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
  void TebLocalPlannerROS::setSpeedLimit(
      const double & speed_limit, const bool & percentage)
  {
+   
    if (speed_limit == nav2_costmap_2d::NO_SPEED_LIMIT) {
      // Restore default value
      cfg_->robot.max_vel_x = cfg_->robot.base_max_vel_x;
@@ -3972,6 +3957,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
 
 void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstSharedPtr msg)
 {
+  
   if (!msg) {
     return;
   }
@@ -3987,6 +3973,7 @@ void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstS
 
 void TebLocalPlannerROS::updateNarrowPassageTebSettings(const bool enable_narrow_teb)
 {
+  
   if (enable_narrow_teb) {
     if (!narrow_teb_settings_applied_) {
       applyNarrowPassageTebSettings();
@@ -3998,6 +3985,7 @@ void TebLocalPlannerROS::updateNarrowPassageTebSettings(const bool enable_narrow
 
 void TebLocalPlannerROS::enableBackwardCallback(const std_msgs::msg::Bool::SharedPtr msg)
 {
+  
   if (!msg) {
     return;
   }
@@ -4014,6 +4002,7 @@ void TebLocalPlannerROS::enableBackwardCallback(const std_msgs::msg::Bool::Share
 void TebLocalPlannerROS::narrowPassagesCallback(
   const garage_utils_msgs::msg::Polygons::SharedPtr msg)
 {
+  
   {
     std::lock_guard<std::mutex> lock(narrow_polygons_mutex_);
     narrow_polygons_received_ = true;
@@ -4036,6 +4025,7 @@ void TebLocalPlannerROS::narrowPassagesCallback(
 void TebLocalPlannerROS::publishNarrowPassagesMarkers(
   const std::vector<geometry_msgs::msg::Polygon> & polygons)
 {
+  
   if (!narrow_passages_marker_pub_) {
     return;
   }
@@ -4090,12 +4080,14 @@ void TebLocalPlannerROS::publishNarrowPassagesMarkers(
 
 bool TebLocalPlannerROS::narrowPolygonsAvailable() const
 {
+  
   std::lock_guard<std::mutex> lock(narrow_polygons_mutex_);
   return narrow_polygons_received_ && !narrow_polygons_.empty();
 }
 
 bool TebLocalPlannerROS::isPointInNarrowPassage(const double x, const double y) const
 {
+  
   std::lock_guard<std::mutex> lock(narrow_polygons_mutex_);
   for (const auto & polygon : narrow_polygons_) {
     if (polygon.points.size() < 3) {
@@ -4124,6 +4116,7 @@ bool TebLocalPlannerROS::isPointInNarrowPassage(const double x, const double y) 
 bool TebLocalPlannerROS::isFootprintFullyOutsideNarrowPassages(
   const geometry_msgs::msg::PoseStamped & pose) const
 {
+  
   std::lock_guard<std::mutex> lock(narrow_polygons_mutex_);
   if (!narrow_polygons_received_ || narrow_polygons_.empty()) {
     return true;
@@ -4163,6 +4156,7 @@ bool TebLocalPlannerROS::isFootprintFullyOutsideNarrowPassages(
 void TebLocalPlannerROS::updateNarrowPassageLatch(
   const geometry_msgs::msg::PoseStamped & robot_pose)
 {
+  
   const bool prev_latched = latched_narrow_passage_;
   if (!narrowPolygonsAvailable()) {
     latched_narrow_passage_ = false;
@@ -4196,6 +4190,7 @@ void TebLocalPlannerROS::updateNarrowPassageLatch(
 bool TebLocalPlannerROS::hasReverseSegmentInPlan(
   const std::vector<geometry_msgs::msg::PoseStamped> & plan) const
 {
+  
   if (plan.size() < 2) {
     return false;
   }
@@ -4233,6 +4228,7 @@ bool TebLocalPlannerROS::hasReverseSegmentInPlan(
 
 void TebLocalPlannerROS::publishBackwardMode(const bool backward)
 {
+  
   if (!backward_mode_pub_) {
     return;
   }
@@ -4252,6 +4248,7 @@ void TebLocalPlannerROS::publishBackwardMode(const bool backward)
 
 void TebLocalPlannerROS::resetBackwardModePublicationState(const bool publish_false)
 {
+  
   backward_exit_false_count_ = 0;
   backward_exit_window_start_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
   if (publish_false) {
@@ -4266,6 +4263,7 @@ void TebLocalPlannerROS::resetBackwardModePublicationState(const bool publish_fa
 
 void TebLocalPlannerROS::updateBackwardModePublication(const bool reverse_segment)
 {
+  
   if (!backward_mode_initial_sent_) {
     publishBackwardMode(false);
     backward_mode_initial_sent_ = true;
@@ -4317,6 +4315,7 @@ void TebLocalPlannerROS::updateBackwardModePublication(const bool reverse_segmen
 
 void TebLocalPlannerROS::applyNarrowPassageTebSettings()
 {
+  
   if (narrow_teb_settings_applied_) {
     return;
   }
@@ -4339,6 +4338,7 @@ void TebLocalPlannerROS::applyNarrowPassageTebSettings()
 
 void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
 {
+  
   if (!narrow_teb_settings_applied_) {
     return;
   }
@@ -4355,6 +4355,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
  
  void TebLocalPlannerROS::switchParameterMode(bool enable_edge_mode)
  {
+   
    if (!initialized_ || !nh_.lock()) {
      return;
    }
@@ -4532,6 +4533,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
 
  void TebLocalPlannerROS::setStaticLayerEnabled(bool enabled, bool is_delayed)
  {
+   
    if (!static_layer_client_) {
      RCLCPP_ERROR(logger_, "static_layer_client_ not initialized. Cannot set static_layer.enabled.");
      return;
@@ -4589,6 +4591,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
 
  void TebLocalPlannerROS::setLocalFootprintEnabled(bool enable, bool is_delayed)
  {
+   
    if (!local_footprint_client_) {
      RCLCPP_ERROR(logger_, "local_footprint_client_ not initialized. Cannot set footprint.");
      return;
@@ -4650,6 +4653,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
 
  void TebLocalPlannerROS::setGlobalFootprintEnabled(bool enable, bool is_delayed)
  {
+   
    if (!global_footprint_client_) {
      RCLCPP_ERROR(logger_, "global_footprint_client_ not initialized. Cannot set footprint.");
      return;
@@ -4711,12 +4715,14 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
 
  void TebLocalPlannerROS::customObstacleCB(const costmap_converter_msgs::msg::ObstacleArrayMsg::ConstSharedPtr obst_msg)
  {
+   
    std::lock_guard<std::mutex> l(custom_obst_mutex_);
    custom_obstacle_msg_ = *obst_msg;  
  }
  
  void TebLocalPlannerROS::customViaPointsCB(const nav_msgs::msg::Path::ConstSharedPtr via_points_msg)
  {
+   
    RCLCPP_INFO_ONCE(logger_, "Via-points received. This message is printed once.");
    if (cfg_->trajectory.global_plan_viapoint_sep > 0)
    {
@@ -4737,6 +4743,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
 
 void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArray::ConstSharedPtr msg)
 {
+  
   if (!msg || !initialized_ || !costmap_ros_ || !tf_) {
     return;
   }
@@ -4872,6 +4879,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
  // }
  
  void TebLocalPlannerROS::activate() {
+   
    visualization_->on_activate();
 
    // Reset static_layer state to default (enabled)
@@ -4885,6 +4893,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
    return;
  }
  void TebLocalPlannerROS::deactivate() {
+   
    visualization_->on_deactivate();
    restoreNarrowPassageTebSettings();
    resetBackwardModePublicationState(true);
@@ -4892,6 +4901,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
    return;
  }
  void TebLocalPlannerROS::cleanup() {
+   
    visualization_->on_cleanup();
    costmap_converter_->stopWorker();
 
@@ -4908,6 +4918,7 @@ double pathLengthToIndex(
   const std::vector<geometry_msgs::msg::PoseStamped> & plan,
   const size_t end_index)
 {
+  
   if (plan.empty()) {
     return 0.0;
   }
@@ -4927,6 +4938,7 @@ size_t waypointIndexOwningArcLength(
   const size_t end_index,
   const double dist)
 {
+  
   if (plan.empty() || end_index >= plan.size()) {
     return 0;
   }
@@ -4955,6 +4967,7 @@ bool interpolatePoseAlongPlanToIndex(
   const double distance_along,
   geometry_msgs::msg::PoseStamped * out)
 {
+  
   if (!out || plan.empty() || end_index >= plan.size()) {
     return false;
   }
@@ -5002,6 +5015,7 @@ bool TebLocalPlannerROS::orientedFootprintAnyVertexOutsideLocalCostmap(
   double x, double y, double theta,
   const std::vector<geometry_msgs::msg::Point> & footprint_poly) const
 {
+  
   if (!costmap_ || footprint_poly.size() < 2) {
     return true;
   }
@@ -5022,6 +5036,7 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
   const std::vector<geometry_msgs::msg::PoseStamped> & plan,
   const double sample_spacing_m) const
 {
+  
   if (!rotation_collision_checker_ || plan.empty()) {
     return true;
   }
@@ -5087,6 +5102,7 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
   const std::vector<geometry_msgs::msg::PoseStamped> & transformed_plan,
   const geometry_msgs::msg::PoseStamped & robot_pose)
 {
+  
   // Note: do NOT gate rotation on current angular velocity (intentionally removed)
 
   // Check if plan is not empty
@@ -5223,6 +5239,7 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
 double TebLocalPlannerROS::rotateToHeadingOmegaMagnitude(
   const double remaining_angle_rad, const double omega_current_abs) const
 {
+  
   const double wn = cfg_->rotation.rotate_to_heading_angular_vel;
   const double wm = cfg_->rotation.rotate_min_angular_vel;
   const double a = std::max(1e-6, cfg_->rotation.max_angular_accel);
@@ -5254,6 +5271,7 @@ bool TebLocalPlannerROS::isRotationCollisionFreeDecel(
   double rotation_magnitude_rad,
   double initial_omega_z) const
 {
+  
   static_cast<void>(initial_omega_z);
   if (rotation_magnitude_rad < 1e-9) {
     return true;
@@ -5300,6 +5318,7 @@ std::vector<geometry_msgs::msg::PoseStamped> TebLocalPlannerROS::buildInPlaceRot
   double omega_direction_sign,
   double rotation_magnitude_rad) const
 {
+  
   std::vector<geometry_msgs::msg::PoseStamped> path;
   if (rotation_magnitude_rad < 1e-9) {
     path.push_back(pose);
@@ -5338,6 +5357,7 @@ void TebLocalPlannerROS::publishInPlaceRotationLocalPlan(
   double omega_direction_sign,
   double rotation_magnitude_rad) const
 {
+  
   if (!visualization_) {
     return;
   }
@@ -5354,6 +5374,7 @@ bool TebLocalPlannerROS::checkRotateToHeadingCollisionNominal(
   const geometry_msgs::msg::PoseStamped & pose,
   const geometry_msgs::msg::Twist & velocity)
 {
+  
   const double abs_angular_distance = std::abs(angular_distance_to_heading);
   const double clockwise_angle = abs_angular_distance;
   const double counterclockwise_angle = 2.0 * M_PI - abs_angular_distance;
@@ -5399,6 +5420,7 @@ bool TebLocalPlannerROS::computeRotateToHeadingCommand(
   const geometry_msgs::msg::Twist & velocity,
   geometry_msgs::msg::TwistStamped & cmd_vel)
 {
+  
   const double abs_angular_distance = std::abs(angular_distance_to_heading);
   const double clockwise_angle = abs_angular_distance;
   const double counterclockwise_angle = 2.0 * M_PI - abs_angular_distance;
@@ -5488,6 +5510,7 @@ bool TebLocalPlannerROS::isRotationCollisionFree(
   const double & angular_distance_to_heading,
   const geometry_msgs::msg::PoseStamped & pose)
 {
+  
   double initial_yaw = tf2::getYaw(pose.pose.orientation);
   double abs_angular_distance = std::abs(angular_distance_to_heading);
   double abs_angular_vel = std::abs(cmd_vel.twist.angular.z);
@@ -5579,6 +5602,7 @@ bool TebLocalPlannerROS::isRotationCollisionFree(
 
 void TebLocalPlannerROS::clearActiveReferencePair()
 {
+  
   active_pair_index_ = -1;
   has_active_reference_pair_ = false;
   active_mission_segment_ = nav_msgs::msg::Path();
@@ -5588,6 +5612,7 @@ void TebLocalPlannerROS::clearActiveReferencePair()
 
 void TebLocalPlannerROS::refreshActiveReferencePair()
 {
+  
   if (paired_mission_and_reference_path_cache_.paths.size() < 2 ||
     removed_plan_cache_.poses.empty())
   {
@@ -5636,6 +5661,7 @@ void TebLocalPlannerROS::refreshActiveReferencePair()
 void TebLocalPlannerROS::pairedMissionAndReferencePathCallback(
   const capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr lane_center_paths_message)
 {
+  
   std::lock_guard<std::mutex> edge_mission_pair_mutex_lock(edge_mission_pair_mutex_);
   paired_mission_and_reference_path_cache_ = *lane_center_paths_message;
   if (paired_mission_and_reference_path_cache_.paths.empty()) {
@@ -5650,6 +5676,7 @@ void TebLocalPlannerROS::pairedMissionAndReferencePathCallback(
 
 void TebLocalPlannerROS::removedPlanCallback(const nav_msgs::msg::Path::ConstSharedPtr removed_plan_message)
 {
+  
   std::lock_guard<std::mutex> edge_mission_pair_mutex_lock(edge_mission_pair_mutex_);
   removed_plan_cache_ = *removed_plan_message;
   refreshActiveReferencePair();
@@ -5657,18 +5684,21 @@ void TebLocalPlannerROS::removedPlanCallback(const nav_msgs::msg::Path::ConstSha
 
 bool TebLocalPlannerROS::snapshotHasActiveReferencePair() const
 {
+  
   std::lock_guard<std::mutex> edge_mission_pair_mutex_lock(edge_mission_pair_mutex_);
   return has_active_reference_pair_;
 }
 
 nav_msgs::msg::Path TebLocalPlannerROS::snapshotActiveMissionSegment() const
 {
+  
   std::lock_guard<std::mutex> edge_mission_pair_mutex_lock(edge_mission_pair_mutex_);
   return active_mission_segment_;
 }
 
 std::vector<nav_msgs::msg::Path> TebLocalPlannerROS::snapshotActiveReferencePathList() const
 {
+  
   std::lock_guard<std::mutex> edge_mission_pair_mutex_lock(edge_mission_pair_mutex_);
   if (!has_active_reference_pair_) {
     return {};
@@ -5681,6 +5711,7 @@ bool TebLocalPlannerROS::extractLineSegmentFromPath(
   Eigen::Vector2d& segment_start,
   Eigen::Vector2d& segment_end) const
 {
+  
   if (path.poses.size() < 2) {
     return false;
   }
@@ -5694,6 +5725,7 @@ double TebLocalPlannerROS::pointToSegmentDistance(
   const Eigen::Vector2d& segment_start,
   const Eigen::Vector2d& segment_end) const
 {
+  
   const Eigen::Vector2d segment_vector = segment_end - segment_start;
   const double segment_length_squared = segment_vector.squaredNorm();
   if (segment_length_squared < 1e-12) {
@@ -5712,6 +5744,7 @@ double TebLocalPlannerROS::segmentToSegmentDistance(
   const Eigen::Vector2d& second_segment_start,
   const Eigen::Vector2d& second_segment_end) const
 {
+  
   const double first_to_second_start =
     pointToSegmentDistance(first_segment_start, second_segment_start, second_segment_end);
   const double first_to_second_end =
@@ -5731,6 +5764,7 @@ double TebLocalPlannerROS::segmentDirectionAngleDifferenceDeg(
   const Eigen::Vector2d& second_segment_start,
   const Eigen::Vector2d& second_segment_end) const
 {
+  
   const Eigen::Vector2d first_direction = first_segment_end - first_segment_start;
   const Eigen::Vector2d second_direction = second_segment_end - second_segment_start;
   if (first_direction.norm() < 1e-6 || second_direction.norm() < 1e-6) {
@@ -5745,6 +5779,7 @@ double TebLocalPlannerROS::segmentDirectionAngleDifferenceDeg(
 bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
   const std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan)
 {
+  
   nav_msgs::msg::Path transformed_path_segment;
   transformed_path_segment.header = transformed_plan.front().header;
   transformed_path_segment.poses.assign(transformed_plan.begin(), transformed_plan.end());
@@ -5866,6 +5901,7 @@ bool TebLocalPlannerROS::edgeFollowingEntryGuards(
   const geometry_msgs::msg::PoseStamped& robot_pose,
   const nav_msgs::msg::Path& input_path)
 {
+  
   if (input_path.poses.size() < 2) {
     if (wall_line_points_.size() > 0) {
       wall_line_points_.clear();
@@ -6183,6 +6219,7 @@ bool robotOnReferenceSegmentWithinDistance(
   const Eigen::Vector2d& robot_xy,
   double max_distance_m)
 {
+  // 先检查投影点是否落在线段内部，再比较机器人到投影点的垂距阈值。
   const Eigen::Vector2d segment_vector = segment_end - segment_start;
   const double segment_length_squared = segment_vector.squaredNorm();
   if (segment_length_squared < 1e-12) {
@@ -6195,6 +6232,10 @@ bool robotOnReferenceSegmentWithinDistance(
   }
   const Eigen::Vector2d closest_point_on_segment =
     segment_start + along_parameter * segment_vector;
+  RCLCPP_INFO_THROTTLE(rclcpp::get_logger("teb_local_planner"), edgeFollowingLogClock(), 2000, 
+                       "[robotOnReferenceSegmentWithinDistance] Edge following:"
+                       "机器人到贴边参考线距离: %.2f, 最大距离: %.2f",
+                       (robot_xy - closest_point_on_segment).norm(), max_distance_m);
   return (robot_xy - closest_point_on_segment).norm() <= max_distance_m;
 }
 
@@ -6209,6 +6250,7 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
   double& minimum_average_distance_to_plan,
   double& robot_perpendicular_distance_to_edge_line)
 {
+  
   bool found_any_matching_reference_segment = false;
   double best_minimum_average_distance_to_plan = std::numeric_limits<double>::max();
   Eigen::Vector2d best_reference_segment_start;
@@ -6316,6 +6358,7 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
 double TebLocalPlannerROS::computeWallLineDistWeightFromRobotDistance(
   const double robot_perpendicular_distance_to_edge_line) const
 {
+  
   const double base_weight = weight_wall_line_dist_;
   const double min_dist = cfg_->wall_line.min_wall_dist;
   const double tolerance = cfg_->wall_line.distance_tolerance;
@@ -6361,6 +6404,7 @@ void TebLocalPlannerROS::applyWallLineSegmentAndVisual(
   const double minimum_average_distance_to_plan,
   const double robot_perpendicular_distance_to_edge_line)
 {
+  
   if (wall_line_points_.size() > 0) {
     wall_line_points_.clear();
   }
@@ -6417,50 +6461,54 @@ void TebLocalPlannerROS::mergeFusionPrimaryWithReference(
   const double reference_robot_perpendicular_distance_to_edge,
   const nav_msgs::msg::Path& input_path)
 {
+  
+  // 1) 读取融合门限与锁定参数。
   const rclcpp::Time current_clock_time = clock_->now();
-  const double fusion_primary_lock_duration_seconds =
+  const double fusion_lock_duration_s =
     cfg_->wall_line.fusion_primary_lock_duration;
-  const double reference_fusion_maximum_angle_degrees =
+  const double reference_match_max_angle_deg =
     cfg_->wall_line.reference_match_max_angle_deg;
-  const double reference_fusion_maximum_segment_distance_meters =
+  const double reference_match_max_distance_m =
     cfg_->wall_line.reference_match_max_distance_m;
 
   if (!fusion_primary_segment_valid) {
     fusion_primary_lock_until_ = rclcpp::Time(0, 0, clock_->get_clock_type());
   }
 
-  const bool primary_and_reference_segments_geometrically_close =
+  // 2) 主来源与参考线几何接近时，刷新 primary 锁定窗口。
+  const bool segments_geometrically_close =
     fusion_primary_segment_valid && reference_segment_valid &&
     segmentsCloseForFusion(
       fusion_primary_segment_start,
       fusion_primary_segment_end,
       reference_segment_start,
       reference_segment_end,
-      reference_fusion_maximum_angle_degrees,
-      reference_fusion_maximum_segment_distance_meters);
-  if (primary_and_reference_segments_geometrically_close) {
+      reference_match_max_angle_deg,
+      reference_match_max_distance_m);
+  if (segments_geometrically_close) {
     fusion_primary_lock_until_ =
       current_clock_time +
-      rclcpp::Duration::from_seconds(fusion_primary_lock_duration_seconds);
+      rclcpp::Duration::from_seconds(fusion_lock_duration_s);
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, 
                          "[mergeFusionPrimaryWithReference] Edge following:"
                          "贴边参考线和墙线或路沿特征接近");
   }
 
-  bool use_fusion_primary_wall_or_curb_segment = false;
+  // 3) 依据“几何接近/锁定中/参考不可用”决定是否优先主来源。
+  bool use_primary_segment = false;
   if (fusion_primary_segment_valid) {
-    if (primary_and_reference_segments_geometrically_close) {
-      use_fusion_primary_wall_or_curb_segment = true;
+    if (segments_geometrically_close) {
+      use_primary_segment = true;
     } else if (
       fusion_primary_lock_until_.nanoseconds() != 0u &&
       current_clock_time < fusion_primary_lock_until_) {
-      use_fusion_primary_wall_or_curb_segment = true;
+      use_primary_segment = true;
     } else if (!reference_segment_valid) {
-      use_fusion_primary_wall_or_curb_segment = true;
+      use_primary_segment = true;
     }
   }
 
-  if (use_fusion_primary_wall_or_curb_segment) {
+  if (use_primary_segment) {
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, 
                          "[mergeFusionPrimaryWithReference] Edge following:"
                          "使用提取的墙线或是路沿作为贴边路径");
@@ -6470,15 +6518,16 @@ void TebLocalPlannerROS::mergeFusionPrimaryWithReference(
       input_path,
       fusion_primary_minimum_average_distance_to_plan,
       fusion_primary_robot_perpendicular_distance_to_edge);
-    reference_line_hold_.clear();
-    reference_line_hold_.push_back(fusion_primary_segment_start);
-    reference_line_hold_.push_back(fusion_primary_segment_end);
-    reference_line_hold_minimum_average_distance_to_plan_ = fusion_primary_minimum_average_distance_to_plan;
-    reference_line_hold_robot_perpendicular_distance_to_edge_line_ = fusion_primary_robot_perpendicular_distance_to_edge;
-    reference_line_last_success_time_ = current_clock_time;
+    cacheReferenceLineHold(
+      fusion_primary_segment_start,
+      fusion_primary_segment_end,
+      fusion_primary_minimum_average_distance_to_plan,
+      fusion_primary_robot_perpendicular_distance_to_edge,
+      current_clock_time);
     return;
   }
 
+  // 4) 主来源不可用时，回退到参考线。
   if (reference_segment_valid) {
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, 
                          "[mergeFusionPrimaryWithReference] Edge following:"
@@ -6489,15 +6538,16 @@ void TebLocalPlannerROS::mergeFusionPrimaryWithReference(
       input_path,
       reference_minimum_average_distance_to_plan,
       reference_robot_perpendicular_distance_to_edge);
-    reference_line_hold_.clear();
-    reference_line_hold_.push_back(reference_segment_start);
-    reference_line_hold_.push_back(reference_segment_end);
-    reference_line_hold_minimum_average_distance_to_plan_ = reference_minimum_average_distance_to_plan;
-    reference_line_hold_robot_perpendicular_distance_to_edge_line_ = reference_robot_perpendicular_distance_to_edge;
-    reference_line_last_success_time_ = current_clock_time;
+    cacheReferenceLineHold(
+      reference_segment_start,
+      reference_segment_end,
+      reference_minimum_average_distance_to_plan,
+      reference_robot_perpendicular_distance_to_edge,
+      current_clock_time);
     return;
   }
 
+  // 5) 参考线也不可用时，在超时窗口内可复用上一条缓存参考线。
   const double reference_no_valid_path_timeout_seconds =
     cfg_->wall_line.reference_no_valid_path_timeout;
   if (reference_line_hold_.size() == 2 &&
@@ -6516,26 +6566,76 @@ void TebLocalPlannerROS::mergeFusionPrimaryWithReference(
     return;
   }
 
-  if (wall_line_points_.size() > 0) {
+  // 6) 全部不可用，统一退出贴边模式。
+  exitEdgeFollowingMode(
+    "mergeFusionPrimaryWithReference",
+    "未找到合适的贴边路径，清空缓存，退出贴边模式");
+}
+
+void TebLocalPlannerROS::exitEdgeFollowingMode(
+  const char * log_context,
+  const char * reason)
+{
+  
+  // 退出动作必须原子一致：清线 -> 关模式 -> 打日志。
+  if (!wall_line_points_.empty()) {
     wall_line_points_.clear();
   }
   reference_line_hold_.clear();
   switchParameterMode(false);
-  RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, 
-                       "[mergeFusionPrimaryWithReference] Edge following:"
-                       "未找到合适的贴边路径，清空缓存，退出贴边模式");
+  RCLCPP_INFO_THROTTLE(
+    logger_,
+    *(clock_),
+    2000,
+    "[%s] Edge following: %s",
+    log_context != nullptr ? log_context : "exitEdgeFollowingMode",
+    reason != nullptr ? reason : "退出贴边模式");
+}
+
+void TebLocalPlannerROS::cacheReferenceLineHold(
+  const Eigen::Vector2d& segment_start,
+  const Eigen::Vector2d& segment_end,
+  const double minimum_average_distance_to_plan,
+  const double robot_perpendicular_distance_to_edge_line,
+  const rclcpp::Time& cache_time)
+{
+  
+  // 统一缓存“最近一次可用贴边线段”及其质量指标，供后续 fallback 使用。
+  reference_line_hold_.clear();
+  reference_line_hold_.push_back(segment_start);
+  reference_line_hold_.push_back(segment_end);
+  reference_line_hold_minimum_average_distance_to_plan_ = minimum_average_distance_to_plan;
+  reference_line_hold_robot_perpendicular_distance_to_edge_line_ =
+    robot_perpendicular_distance_to_edge_line;
+  reference_line_last_success_time_ = cache_time;
+}
+
+void TebLocalPlannerROS::pruneExpiredCurbLinePath()
+{
+  
+  // 路沿数据是时效数据，超时后清空，避免用旧线段误导贴边。
+  std::lock_guard<std::mutex> curb_line_mutex_lock(curb_line_mutex_);
+  if (curb_line_path_.poses.empty()) {
+    return;
+  }
+  const auto seconds_since_curb_path_update = clock_->now() - curb_line_update_time_;
+  if (seconds_since_curb_path_update.seconds() > keep_wall_line_time_) {
+    curb_line_path_.poses.clear();
+  }
 }
 
 void TebLocalPlannerROS::applyReferenceLineHoldFallbackOrExit(
   const nav_msgs::msg::Path& input_path)
 {
+  
+  // 参考线失效后的兜底策略：先尝试缓存，再退出模式。
   const rclcpp::Time current_clock_time = clock_->now();
-  const double reference_no_valid_path_timeout_seconds =
+  const double reference_no_valid_path_timeout_s =
     cfg_->wall_line.reference_no_valid_path_timeout;
   if (reference_line_hold_.size() == 2 &&
       reference_line_last_success_time_.nanoseconds() != 0u &&
       (current_clock_time - reference_line_last_success_time_).seconds() <
-        reference_no_valid_path_timeout_seconds) {
+        reference_no_valid_path_timeout_s) {
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
       "[applyReferenceLineHoldFallbackOrExit] Edge following: 使用缓存的参考路径作为贴边路径"
       "参考路径起点: (%.2f, %.2f), 参考路径终点: (%.2f, %.2f), 参考路径最小平均距离: %.2f, 参考路径与机器人垂直距离: %.2f",
@@ -6551,11 +6651,9 @@ void TebLocalPlannerROS::applyReferenceLineHoldFallbackOrExit(
       reference_line_hold_robot_perpendicular_distance_to_edge_line_);
     return;
   }
-  if (wall_line_points_.size() > 0) {
-    wall_line_points_.clear();
-  }
-  reference_line_hold_.clear();
-  switchParameterMode(false);
+  exitEdgeFollowingMode(
+    "applyReferenceLineHoldFallbackOrExit",
+    "参考路径缓存失效，退出贴边模式");
 }
 
 void TebLocalPlannerROS::updateReferenceLineVec(
@@ -6565,16 +6663,19 @@ void TebLocalPlannerROS::updateReferenceLineVec(
   const double distance_tolerance_meters,
   const geometry_msgs::msg::PoseStamped& robot_pose)
 {
+  
+  // 参考线模式：只在参考路径集合中做选线，不融合墙线/路沿。
   if (!edgeFollowingEntryGuards(robot_pose, input_path)) {
-    RCLCPP_WARN(logger_, "[updateReferenceLineVec] Edge following:"
+    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[updateReferenceLineVec] Edge following:"
                 "进入贴边模式检查失败");
     return;
   }
+  // 先从候选参考路径中选择最佳线段，再统一更新可视化与缓存。
   Eigen::Vector2d selected_reference_segment_start;
   Eigen::Vector2d selected_reference_segment_end;
-  double selected_minimum_average_distance_to_plan = 0.0;
-  double selected_robot_perpendicular_distance_to_edge_line = 0.0;
-  const bool reference_segment_selection_succeeded = trySelectBestReferencePathFromList(
+  double selected_min_avg_dist_to_plan = 0.0;
+  double selected_robot_dist_to_edge = 0.0;
+  const bool selected_reference_ok = trySelectBestReferencePathFromList(
     reference_path_list,
     input_path,
     robot_pose,
@@ -6582,27 +6683,27 @@ void TebLocalPlannerROS::updateReferenceLineVec(
     distance_tolerance_meters,
     selected_reference_segment_start,
     selected_reference_segment_end,
-    selected_minimum_average_distance_to_plan,
-    selected_robot_perpendicular_distance_to_edge_line);
+    selected_min_avg_dist_to_plan,
+    selected_robot_dist_to_edge);
   const rclcpp::Time current_clock_time = clock_->now();
-  if (reference_segment_selection_succeeded) {
+  if (selected_reference_ok) {
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[updateReferenceLineVec] Edge following: 选择参考路径起点: (%.2f, %.2f),"
                         "参考路径终点: (%.2f, %.2f), 参考路径最小平均距离: %.2f, 参考路径与机器人垂直距离: %.2f",
                         selected_reference_segment_start.x(), selected_reference_segment_start.y(), 
                         selected_reference_segment_end.x(), selected_reference_segment_end.y(), 
-                        selected_minimum_average_distance_to_plan, selected_robot_perpendicular_distance_to_edge_line);
+                        selected_min_avg_dist_to_plan, selected_robot_dist_to_edge);
     applyWallLineSegmentAndVisual(
       selected_reference_segment_start,
       selected_reference_segment_end,
       input_path,
-      selected_minimum_average_distance_to_plan,
-      selected_robot_perpendicular_distance_to_edge_line);
-    reference_line_hold_.clear();
-    reference_line_hold_.push_back(selected_reference_segment_start);
-    reference_line_hold_.push_back(selected_reference_segment_end);
-    reference_line_hold_minimum_average_distance_to_plan_ = selected_minimum_average_distance_to_plan;
-    reference_line_hold_robot_perpendicular_distance_to_edge_line_ = selected_robot_perpendicular_distance_to_edge_line;
-    reference_line_last_success_time_ = current_clock_time;
+      selected_min_avg_dist_to_plan,
+      selected_robot_dist_to_edge);
+    cacheReferenceLineHold(
+      selected_reference_segment_start,
+      selected_reference_segment_end,
+      selected_min_avg_dist_to_plan,
+      selected_robot_dist_to_edge,
+      current_clock_time);
     return;
   }
   applyReferenceLineHoldFallbackOrExit(input_path);
@@ -6612,16 +6713,19 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
   std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan,
   const geometry_msgs::msg::PoseStamped& robot_pose)
 {
+  
+  // 总调度入口：预裁剪输入路径后，按 edge_mode 分发到不同贴边来源。
   if (cfg_->optim.weight_wall_line_dist <= 0.0) {
     return;
   }
-  const std::string normalized_edge_mode_string = normalizeEdgeModeEnv(use_curb_or_wall);
-  if (normalized_edge_mode_string.empty()) {
+  const std::string edge_mode = normalizeEdgeModeEnv(use_curb_or_wall);
+  if (edge_mode.empty()) {
     return;
   }
 
-  double accumulated_distance_meters_along_transformed_plan = 0.0;
-  unsigned int input_path_end_pose_index_in_transformed_plan =
+  // 将 transformed_plan 截断到配置长度，避免后续几何比较过长、噪声过多。
+  double accumulated_dist_m = 0.0;
+  unsigned int input_path_end_idx =
     static_cast<unsigned int>(transformed_plan.size() - 1);
   for (unsigned int segment_end_index = 1; segment_end_index < transformed_plan.size();
        segment_end_index++) {
@@ -6631,11 +6735,11 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
     const double segment_delta_y =
       transformed_plan[segment_end_index].pose.position.y -
       transformed_plan[segment_end_index - 1].pose.position.y;
-    accumulated_distance_meters_along_transformed_plan +=
+    accumulated_dist_m +=
       std::sqrt(segment_delta_x * segment_delta_x + segment_delta_y * segment_delta_y);
-    if (accumulated_distance_meters_along_transformed_plan >
+    if (accumulated_dist_m >
         cfg_->wall_line.transform_path_line_length) {
-      input_path_end_pose_index_in_transformed_plan = segment_end_index;
+      input_path_end_idx = segment_end_index;
       break;
     }
   }
@@ -6644,24 +6748,22 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
   input_path.poses =
     std::vector<geometry_msgs::msg::PoseStamped>(transformed_plan.begin(),
       transformed_plan.begin() +
-        static_cast<std::ptrdiff_t>(input_path_end_pose_index_in_transformed_plan + 1));
+        static_cast<std::ptrdiff_t>(input_path_end_idx + 1));
   transformed_path->publish(input_path);
 
   const bool edge_mode_includes_wall =
-    (normalized_edge_mode_string.find("wall") != std::string::npos);
+    (edge_mode.find("wall") != std::string::npos);
   const bool edge_mode_includes_curb =
-    (normalized_edge_mode_string.find("curb") != std::string::npos);
+    (edge_mode.find("curb") != std::string::npos);
   const bool edge_mode_includes_reference =
-    (normalized_edge_mode_string.find("reference") != std::string::npos);
+    (edge_mode.find("reference") != std::string::npos);
 
+  // 参考线相关模式先做“路径靠边可行性”门控，失败则直接退出贴边。
   if (edge_mode_includes_reference) {
     if (!shouldRunEdgeFollowingForTransformedPlan(input_path.poses)) {
-      RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000, "Edge following: 不能找到路径靠近边缘, 退出贴边模式");
-      if (wall_line_points_.size() > 0) {
-        wall_line_points_.clear();
-      }
-      reference_line_hold_.clear();
-      switchParameterMode(false);
+      exitEdgeFollowingMode(
+        "runEdgeFollowingPathUpdate",
+        "不能找到路径靠近边缘，退出贴边模式");
       return;
     }
   }
@@ -6669,7 +6771,8 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
   // paired_mission_and_reference_path：上层在进入导航前发布（TRANSIENT_LOCAL），
   // 此处不得因超时而清空缓存；几何与 TF 使用在 trySelectBestReferencePathFromList 中按当前时间刷新。
 
-  if (normalized_edge_mode_string == "wall") {
+  // 单来源模式：wall / curb / reference
+  if (edge_mode == "wall") {
     if (!wall_line_ptr_) {
       return;
     }
@@ -6683,17 +6786,8 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
       robot_pose);
     return;
   }
-  if (normalized_edge_mode_string == "curb") {
-    {
-      std::lock_guard<std::mutex> curb_line_mutex_lock(curb_line_mutex_);
-      if (curb_line_path_.poses.size() > 0) {
-        const auto seconds_since_curb_path_update =
-          clock_->now() - curb_line_update_time_;
-        if (seconds_since_curb_path_update.seconds() > keep_wall_line_time_) {
-          curb_line_path_.poses.clear();
-        }
-      }
-    }
+  if (edge_mode == "curb") {
+    pruneExpiredCurbLinePath();
     updateCurbLineVec(
       curb_line_path_,
       input_path,
@@ -6702,7 +6796,7 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
       robot_pose);
     return;
   }
-  if (normalized_edge_mode_string == "reference") {
+  if (edge_mode == "reference") {
     const std::vector<nav_msgs::msg::Path> active_reference_path_list =
       snapshotActiveReferencePathList();
     updateReferenceLineVec(
@@ -6713,40 +6807,42 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
       robot_pose);
     return;
   }
+  // 融合模式 A：墙线 + 参考线（无路沿）
   if (edge_mode_includes_wall && edge_mode_includes_reference && !edge_mode_includes_curb) {
+    // 融合模式：主来源优先使用墙线（若可用），再与参考路径按几何约束融合。
     if (!wall_line_ptr_) {
-      std::vector<nav_msgs::msg::Path> active_reference_path_list =
+      std::vector<nav_msgs::msg::Path> active_reference_paths =
         snapshotActiveReferencePathList();
       Eigen::Vector2d selected_reference_segment_start;
       Eigen::Vector2d selected_reference_segment_end;
-      double reference_minimum_average_distance_to_plan = 0.0;
-      double reference_robot_perpendicular_distance_to_edge_line = 0.0;
+      double reference_min_avg_dist = 0.0;
+      double reference_robot_dist_to_edge = 0.0;
       if (!edgeFollowingEntryGuards(robot_pose, input_path)) {
         return;
       }
-      const bool reference_segment_selection_succeeded = trySelectBestReferencePathFromList(
-        active_reference_path_list,
+      const bool reference_selected = trySelectBestReferencePathFromList(
+        active_reference_paths,
         input_path,
         robot_pose,
         cfg_->wall_line.parallel_tolerance,
         cfg_->wall_line.distance_tolerance,
         selected_reference_segment_start,
         selected_reference_segment_end,
-        reference_minimum_average_distance_to_plan,
-        reference_robot_perpendicular_distance_to_edge_line);
-      if (reference_segment_selection_succeeded) {
+        reference_min_avg_dist,
+        reference_robot_dist_to_edge);
+      if (reference_selected) {
         applyWallLineSegmentAndVisual(
           selected_reference_segment_start,
           selected_reference_segment_end,
           input_path,
-          reference_minimum_average_distance_to_plan,
-          reference_robot_perpendicular_distance_to_edge_line);
-        reference_line_hold_.clear();
-        reference_line_hold_.push_back(selected_reference_segment_start);
-        reference_line_hold_.push_back(selected_reference_segment_end);
-        reference_line_hold_minimum_average_distance_to_plan_ = reference_minimum_average_distance_to_plan;
-        reference_line_hold_robot_perpendicular_distance_to_edge_line_ = reference_robot_perpendicular_distance_to_edge_line;
-        reference_line_last_success_time_ = clock_->now();
+          reference_min_avg_dist,
+          reference_robot_dist_to_edge);
+        cacheReferenceLineHold(
+          selected_reference_segment_start,
+          selected_reference_segment_end,
+          reference_min_avg_dist,
+          reference_robot_dist_to_edge,
+          clock_->now());
       } else {
         applyReferenceLineHoldFallbackOrExit(input_path);
       }
@@ -6757,60 +6853,52 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
     }
     const std::vector<nav_msgs::msg::Path> wall_line_candidate_paths =
       wall_line_ptr_->get_compare_result(input_path);
-    Eigen::Vector2d fusion_primary_segment_start;
-    Eigen::Vector2d fusion_primary_segment_end;
-    double fusion_primary_minimum_average_distance_to_plan = 0.0;
-    double fusion_primary_robot_perpendicular_distance_to_edge = 0.0;
-    const bool fusion_primary_wall_segment_valid = trySelectWallSegmentFromCandidates(
+    Eigen::Vector2d primary_segment_start;
+    Eigen::Vector2d primary_segment_end;
+    double primary_min_avg_dist = 0.0;
+    double primary_robot_dist_to_edge = 0.0;
+    const bool primary_segment_valid = trySelectWallSegmentFromCandidates(
       wall_line_candidate_paths,
       input_path,
       robot_pose,
       cfg_->wall_line.parallel_tolerance,
       cfg_->wall_line.distance_tolerance,
-      fusion_primary_segment_start,
-      fusion_primary_segment_end,
-      fusion_primary_minimum_average_distance_to_plan,
-      fusion_primary_robot_perpendicular_distance_to_edge);
-    std::vector<nav_msgs::msg::Path> active_reference_path_list = snapshotActiveReferencePathList();
-    Eigen::Vector2d fusion_reference_segment_start;
-    Eigen::Vector2d fusion_reference_segment_end;
-    double fusion_reference_minimum_average_distance_to_plan = 0.0;
-    double fusion_reference_robot_perpendicular_distance_to_edge = 0.0;
-    const bool fusion_reference_segment_valid = trySelectBestReferencePathFromList(
-      active_reference_path_list,
+      primary_segment_start,
+      primary_segment_end,
+      primary_min_avg_dist,
+      primary_robot_dist_to_edge);
+    std::vector<nav_msgs::msg::Path> active_reference_paths = snapshotActiveReferencePathList();
+    Eigen::Vector2d reference_segment_start;
+    Eigen::Vector2d reference_segment_end;
+    double reference_min_avg_dist = 0.0;
+    double reference_robot_dist_to_edge = 0.0;
+    const bool reference_segment_valid = trySelectBestReferencePathFromList(
+      active_reference_paths,
       input_path,
       robot_pose,
       cfg_->wall_line.parallel_tolerance,
       cfg_->wall_line.distance_tolerance,
-      fusion_reference_segment_start,
-      fusion_reference_segment_end,
-      fusion_reference_minimum_average_distance_to_plan,
-      fusion_reference_robot_perpendicular_distance_to_edge);
+      reference_segment_start,
+      reference_segment_end,
+      reference_min_avg_dist,
+      reference_robot_dist_to_edge);
     mergeFusionPrimaryWithReference(
-      fusion_primary_segment_start,
-      fusion_primary_segment_end,
-      fusion_primary_wall_segment_valid,
-      fusion_primary_minimum_average_distance_to_plan,
-      fusion_primary_robot_perpendicular_distance_to_edge,
-      fusion_reference_segment_start,
-      fusion_reference_segment_end,
-      fusion_reference_segment_valid,
-      fusion_reference_minimum_average_distance_to_plan,
-      fusion_reference_robot_perpendicular_distance_to_edge,
+      primary_segment_start,
+      primary_segment_end,
+      primary_segment_valid,
+      primary_min_avg_dist,
+      primary_robot_dist_to_edge,
+      reference_segment_start,
+      reference_segment_end,
+      reference_segment_valid,
+      reference_min_avg_dist,
+      reference_robot_dist_to_edge,
       input_path);
     return;
   }
+  // 融合模式 B：路沿 + 参考线（无墙线）
   if (edge_mode_includes_curb && edge_mode_includes_reference && !edge_mode_includes_wall) {
-    {
-      std::lock_guard<std::mutex> curb_line_mutex_lock(curb_line_mutex_);
-      if (curb_line_path_.poses.size() > 0) {
-        const auto seconds_since_curb_path_update =
-          clock_->now() - curb_line_update_time_;
-        if (seconds_since_curb_path_update.seconds() > keep_wall_line_time_) {
-          curb_line_path_.poses.clear();
-        }
-      }
-    }
+    pruneExpiredCurbLinePath();
     if (!edgeFollowingEntryGuards(robot_pose, input_path)) {
       RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[runEdgeFollowingPathUpdate] Edge following:" 
                           "贴边检查失败, 退出贴边模式");
@@ -6821,46 +6909,46 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
       std::lock_guard<std::mutex> curb_line_mutex_lock(curb_line_mutex_);
       curb_line_path_snapshot = curb_line_path_;
     }
-    Eigen::Vector2d fusion_primary_curb_segment_start;
-    Eigen::Vector2d fusion_primary_curb_segment_end;
-    double fusion_primary_curb_minimum_average_distance_to_plan = 0.0;
-    double fusion_primary_curb_robot_perpendicular_distance_to_edge = 0.0;
-    const bool fusion_primary_curb_segment_valid = trySelectSegmentFromTwoPointPath(
+    Eigen::Vector2d primary_curb_segment_start;
+    Eigen::Vector2d primary_curb_segment_end;
+    double primary_curb_min_avg_dist = 0.0;
+    double primary_curb_robot_dist_to_edge = 0.0;
+    const bool primary_curb_segment_valid = trySelectSegmentFromTwoPointPath(
       curb_line_path_snapshot,
       input_path,
       robot_pose,
       cfg_->wall_line.parallel_tolerance,
       cfg_->wall_line.distance_tolerance,
-      fusion_primary_curb_segment_start,
-      fusion_primary_curb_segment_end,
-      fusion_primary_curb_minimum_average_distance_to_plan,
-      fusion_primary_curb_robot_perpendicular_distance_to_edge);
-    std::vector<nav_msgs::msg::Path> active_reference_path_list = snapshotActiveReferencePathList();
-    Eigen::Vector2d curb_fusion_reference_segment_start;
-    Eigen::Vector2d curb_fusion_reference_segment_end;
-    double curb_fusion_reference_minimum_average_distance_to_plan = 0.0;
-    double curb_fusion_reference_robot_perpendicular_distance_to_edge = 0.0;
-    const bool curb_fusion_reference_segment_valid = trySelectBestReferencePathFromList(
-      active_reference_path_list,
+      primary_curb_segment_start,
+      primary_curb_segment_end,
+      primary_curb_min_avg_dist,
+      primary_curb_robot_dist_to_edge);
+    std::vector<nav_msgs::msg::Path> active_reference_paths = snapshotActiveReferencePathList();
+    Eigen::Vector2d reference_segment_start;
+    Eigen::Vector2d reference_segment_end;
+    double reference_min_avg_dist = 0.0;
+    double reference_robot_dist_to_edge = 0.0;
+    const bool reference_segment_valid = trySelectBestReferencePathFromList(
+      active_reference_paths,
       input_path,
       robot_pose,
       cfg_->wall_line.parallel_tolerance,
       cfg_->wall_line.distance_tolerance,
-      curb_fusion_reference_segment_start,
-      curb_fusion_reference_segment_end,
-      curb_fusion_reference_minimum_average_distance_to_plan,
-      curb_fusion_reference_robot_perpendicular_distance_to_edge);
+      reference_segment_start,
+      reference_segment_end,
+      reference_min_avg_dist,
+      reference_robot_dist_to_edge);
     mergeFusionPrimaryWithReference(
-      fusion_primary_curb_segment_start,
-      fusion_primary_curb_segment_end,
-      fusion_primary_curb_segment_valid,
-      fusion_primary_curb_minimum_average_distance_to_plan,
-      fusion_primary_curb_robot_perpendicular_distance_to_edge,
-      curb_fusion_reference_segment_start,
-      curb_fusion_reference_segment_end,
-      curb_fusion_reference_segment_valid,
-      curb_fusion_reference_minimum_average_distance_to_plan,
-      curb_fusion_reference_robot_perpendicular_distance_to_edge,
+      primary_curb_segment_start,
+      primary_curb_segment_end,
+      primary_curb_segment_valid,
+      primary_curb_min_avg_dist,
+      primary_curb_robot_dist_to_edge,
+      reference_segment_start,
+      reference_segment_end,
+      reference_segment_valid,
+      reference_min_avg_dist,
+      reference_robot_dist_to_edge,
       input_path);
     return;
   }
@@ -6871,7 +6959,7 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
     5000,
     "USE_CURB_OR_WALL=\"%s\" (normalized \"%s\") is not a supported edge mode",
     use_curb_or_wall != nullptr ? use_curb_or_wall : "(null)",
-    normalized_edge_mode_string.c_str());
+    edge_mode.c_str());
 }
 
  } // end namespace teb_local_planner

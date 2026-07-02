@@ -270,6 +270,10 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "obstacle_protrusion_min_confirm_frames", rclcpp::ParameterValue(wall_line.obstacle_protrusion_min_confirm_frames));
   declare_parameter_if_not_declared(nh, name + "." + "obstacle_protrusion_confirm_window", rclcpp::ParameterValue(wall_line.obstacle_protrusion_confirm_window));
   declare_parameter_if_not_declared(nh, name + "." + "obstacle_protrusion_max_stored", rclcpp::ParameterValue(wall_line.obstacle_protrusion_max_stored));
+  declare_parameter_if_not_declared(nh, name + "." + "enable_front_scan_protrusion_check", rclcpp::ParameterValue(wall_line.enable_front_scan_protrusion_check));
+  declare_parameter_if_not_declared(nh, name + "." + "front_scan_topic", rclcpp::ParameterValue(wall_line.front_scan_topic));
+  declare_parameter_if_not_declared(nh, name + "." + "front_scan_min_range_base_footprint", rclcpp::ParameterValue(wall_line.front_scan_min_range_base_footprint));
+  declare_parameter_if_not_declared(nh, name + "." + "front_scan_max_range_base_footprint", rclcpp::ParameterValue(wall_line.front_scan_max_range_base_footprint));
   declare_parameter_if_not_declared(nh, name + "." + "wall_line_obstacle_clip_intersect_min_span", rclcpp::ParameterValue(wall_line.wall_line_obstacle_clip_intersect_min_span));
   declare_parameter_if_not_declared(nh, name + "." + "wall_line_obstacle_clip_min_keep_area_sq", rclcpp::ParameterValue(wall_line.wall_line_obstacle_clip_min_keep_area_sq));
   declare_parameter_if_not_declared(nh, name + "." + "wall_line_obstacle_clip_vertex_dedupe_dist", rclcpp::ParameterValue(wall_line.wall_line_obstacle_clip_vertex_dedupe_dist));
@@ -583,6 +587,10 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "obstacle_protrusion_min_confirm_frames", wall_line.obstacle_protrusion_min_confirm_frames, wall_line.obstacle_protrusion_min_confirm_frames);
   nh->get_parameter_or(name + "." + "obstacle_protrusion_confirm_window", wall_line.obstacle_protrusion_confirm_window, wall_line.obstacle_protrusion_confirm_window);
   nh->get_parameter_or(name + "." + "obstacle_protrusion_max_stored", wall_line.obstacle_protrusion_max_stored, wall_line.obstacle_protrusion_max_stored);
+  nh->get_parameter_or(name + "." + "enable_front_scan_protrusion_check", wall_line.enable_front_scan_protrusion_check, wall_line.enable_front_scan_protrusion_check);
+  nh->get_parameter_or(name + "." + "front_scan_topic", wall_line.front_scan_topic, wall_line.front_scan_topic);
+  nh->get_parameter_or(name + "." + "front_scan_min_range_base_footprint", wall_line.front_scan_min_range_base_footprint, wall_line.front_scan_min_range_base_footprint);
+  nh->get_parameter_or(name + "." + "front_scan_max_range_base_footprint", wall_line.front_scan_max_range_base_footprint, wall_line.front_scan_max_range_base_footprint);
   nh->get_parameter_or(name + "." + "wall_line_obstacle_clip_intersect_min_span", wall_line.wall_line_obstacle_clip_intersect_min_span, wall_line.wall_line_obstacle_clip_intersect_min_span);
   nh->get_parameter_or(name + "." + "wall_line_obstacle_clip_min_keep_area_sq", wall_line.wall_line_obstacle_clip_min_keep_area_sq, wall_line.wall_line_obstacle_clip_min_keep_area_sq);
   nh->get_parameter_or(name + "." + "wall_line_obstacle_clip_vertex_dedupe_dist", wall_line.wall_line_obstacle_clip_vertex_dedupe_dist, wall_line.wall_line_obstacle_clip_vertex_dedupe_dist);
@@ -1084,6 +1092,14 @@ rcl_interfaces::msg::SetParametersResult
         wall_line.wall_line_obstacle_clip_min_keep_area_sq = parameter.as_double();
       } else if (name == node_name + ".wall_line_obstacle_clip_vertex_dedupe_dist") {
         wall_line.wall_line_obstacle_clip_vertex_dedupe_dist = parameter.as_double();
+      } else if (name == node_name + ".enable_front_scan_protrusion_check") {
+        wall_line.enable_front_scan_protrusion_check = parameter.as_bool();
+      } else if (name == node_name + ".front_scan_topic") {
+        wall_line.front_scan_topic = parameter.as_string();
+      } else if (name == node_name + ".front_scan_min_range_base_footprint") {
+        wall_line.front_scan_min_range_base_footprint = parameter.as_double();
+      } else if (name == node_name + ".front_scan_max_range_base_footprint") {
+        wall_line.front_scan_max_range_base_footprint = parameter.as_double();
       } else if (name == node_name + ".switch_static_layer") {
         wall_line.switch_static_layer = parameter.as_bool();
       } else if (name == node_name + ".switch_local_footprint") {
