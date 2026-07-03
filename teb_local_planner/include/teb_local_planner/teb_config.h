@@ -251,15 +251,17 @@ public:
     double wall_line_obstacle_protrusion_base_distance; //!< If dist(robot, protrusion point) <= this, use nominal threshold [m]
     double wall_line_obstacle_filter_distance_scale; //!< Beyond base: add this * (d - base) to nominal threshold [m/m]
     double wall_line_obstacle_filter_distance_max; //!< Upper cap for distance-scaled threshold (filter + exit) [m]
-    double wall_line_obstacle_along_wall_rear_margin; //!< Along-wall min = max(0, robot_along_wall - this); large value ~ old "> 0" [m]
-    double wall_line_protrusion_exit_forward_max; //!< Exit check: max forward extent of base_link corridor (x > 0) [m]
-    double wall_line_protrusion_exit_lateral_max; //!< Exit check: half-width |y| in base_link corridor [m]
+    double wall_line_obstacle_along_wall_rear_margin; //!< 沿墙监测走廊：foot 点后方长度 [m]
+    double wall_line_protrusion_exit_forward_max; //!< 沿墙监测走廊：foot 点前方长度 [m]
+    double wall_line_protrusion_exit_lateral_max; //!< 沿墙监测走廊：墙→机器人侧法向宽度 [m]
+    double monitor_corridor_path_heading_length; //!< 航向与墙夹角过大时，用路径定 along 方向的截取弧长 [m]
+    double monitor_corridor_heading_angle_deg; //!< |wall.dir·robot_fwd| 低于 cos(此角) 时启用路径定方向 [deg]
     double wall_line_protrusion_exit_depth_min; //!< Exit check: base eff threshold vs robot-vertex dist (pen>eff counts); larger => stricter, less likely to exit edge mode [m]
     double wall_line_protrusion_exit_depth_max; //!< Exit check: max wall-normal protrusion toward robot counted [m], interval (eff, this]
-    double obstacle_protrusion_reenter_distance; //!< Minimum distance from protruding obstacle to re-enter edge-following mode [m]
-    double obstacle_protrusion_timeout; //!< Time after which a protruding obstacle record expires [s]
-    int obstacle_protrusion_min_confirm_frames; //!< Minimum detection frames within confirm_window to trigger exit
-    double obstacle_protrusion_confirm_window; //!< Sliding time window for protrusion detection confirmation [s]
+    double obstacle_protrusion_reenter_distance; //!< Deprecated: 清除/重入判定已改用 base 监测走廊，保留参数兼容
+    double obstacle_protrusion_timeout; //!< protruding_obstacles_ 记录超过此时间未刷新则删除 [s]
+    int obstacle_protrusion_min_confirm_frames; //!< Deprecated: no longer used (protrusion recorded immediately on detection)
+    double obstacle_protrusion_confirm_window; //!< Deprecated: no longer used (protrusion recorded immediately on detection)
     int obstacle_protrusion_max_stored; //!< Maximum number of protruding obstacles to store
     double wall_line_obstacle_clip_intersect_min_span; //!< Min along-wall span of polygon-wall segment intersection to enable clip [m]
     double wall_line_obstacle_clip_min_keep_area_sq; //!< If clipped polygon area below this, replace with minimal wall segment [m^2]
@@ -541,6 +543,8 @@ public:
     wall_line.wall_line_obstacle_along_wall_rear_margin = 2.0;
     wall_line.wall_line_protrusion_exit_forward_max = 6.0;
     wall_line.wall_line_protrusion_exit_lateral_max = 1.0;
+    wall_line.monitor_corridor_path_heading_length = 2.0;
+    wall_line.monitor_corridor_heading_angle_deg = 45.0;
     wall_line.wall_line_protrusion_exit_depth_min = 0.3;
     wall_line.wall_line_protrusion_exit_depth_max = 2.0;
     wall_line.obstacle_protrusion_reenter_distance = 2.0;

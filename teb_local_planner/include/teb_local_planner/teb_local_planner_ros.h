@@ -423,12 +423,60 @@
     const std::string& map_frame);
 
   /**
-   * @brief 记录一次 protrusion 命中并执行滑动窗口确认（polygon / front_scan 共用）
+   * @brief 记录一次 protrusion 命中（检测到即写入；polygon / front_scan 共用）
    */
   void recordProtrusionDetection(
     const Eigen::Vector2d& best_point,
     double best_pen,
     const char * log_context);
+
+  /** @brief 删除超过 obstacle_protrusion_timeout 的 protruding_obstacles_ 记录 */
+  void pruneExpiredProtrudingObstacles();
+
+  /**
+   * @brief 按墙线 Frenet 监测走廊清理 protruding_obstacles_，并返回是否仍有在走廊内的记录
+   */
+  bool hasProtrudingObstacleInMonitorCorridor(
+    const geometry_msgs::msg::PoseStamped& robot_pose);
+
+  /** @brief 根据当前墙段与路径更新 protrusion / vehicle 监测走廊缓存 */
+  void updateEdgeMonitorCorridors(
+    const geometry_msgs::msg::PoseStamped& robot_pose,
+    const std::vector<geometry_msgs::msg::PoseStamped>& path_poses);
+
+  /** @brief 发布监测走廊 Marker（话题 teb_monitor_corridor_markers） */
+  void publishMonitorCorridorMarkers(const std::string& frame_id);
+
+  /** @brief 发布 protruding_obstacles_ 轮廓点 Marker（话题 teb_protruding_obstacle_markers） */
+  void publishProtrudingObstacleMarkers(const std::string& frame_id);
+
+  /** @brief 清除 protruding_obstacles_ Marker */
+  void clearProtrudingObstacleMarkers(const std::string& frame_id);
+
+  /** @brief 清除监测走廊缓存并删除 Marker */
+  void clearEdgeMonitorCorridors(const std::string& frame_id);
+
+  /**
+   * @brief 进入贴边前：用候选墙线对 converter + front_scan 做 protrusion 预检
+   * @return true 表示检测到凸出，应拒绝进入贴边
+   */
+  bool protrusionBlocksEdgeEntryForWallSegment(
+    const Eigen::Vector2d& wall_segment_start,
+    const Eigen::Vector2d& wall_segment_end,
+    const Eigen::Vector2d& robot_position);
+
+  WallProtrusionHit scanCostmapConverterProtrusionHit(
+    const EffWallFrame& wall,
+    const Eigen::Vector2d& robot_position,
+    double robot_yaw,
+    const WallMonitorCorridor* monitor_corridor);
+
+  WallProtrusionHit scanFrontScanProtrusionHit(
+    const EffWallFrame& wall,
+    const Eigen::Vector2d& robot_position,
+    double robot_yaw,
+    const std::string& map_frame,
+    const WallMonitorCorridor* monitor_corridor);
 
   /**
    * @brief 维护车身激光 + converter 多边形滚动栅格（map 对齐）；OccupancyGrid 在 updateObstacleContainerWithCostmapConverter 末尾发布
@@ -722,6 +770,11 @@
    // std::shared_ptr<DynamicGoalPub> dynamic_goal_pub_;
    std::shared_ptr<line_path_compare::LinePathCompare> wall_line_ptr_;
    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr wall_line_marker_publisher_;
+   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr monitor_corridor_marker_pub_;
+   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr protruding_obstacle_marker_pub_;
+   int last_published_protruding_obstacle_marker_count_{0};
+   WallMonitorCorridor protrusion_monitor_corridor_;
+   WallMonitorCorridor vehicle_monitor_corridor_;
    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr edge_distance_publisher_;
    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr curb_line_subscriber_;
    void curb_line_callback(const nav_msgs::msg::Path::ConstSharedPtr msg);
@@ -770,7 +823,6 @@
 
    // Protruding obstacles that caused exit from edge-following mode
    std::vector<ProtrudingObstacle> protruding_obstacles_;
-   std::vector<rclcpp::Time> protrusion_detection_timestamps_;  //!< Sliding window timestamps for protrusion confirmation
 
    rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedPtr static_layer_client_; //!< Persistent client for static_layer parameter updates
    std::atomic<bool> desired_static_layer_state_{true}; //!< Desired state of static_layer.enabled
@@ -792,13 +844,13 @@
    double safe_linear_speed_limit_;
    double keep_wall_line_time_;
    /**
-    * @brief 贴边退出：车辆是否在「机器人航向前后条带 ∩ 墙法向内外条带」内（墙段与机器人、车辆均为 map 系）
+    * @brief 贴边退出：车辆是否在墙线 Frenet 监测走廊内
     */
    bool isVehicleInEdgeFollowingExitCorridor(
      const geometry_msgs::msg::PoseStamped& robot_pose,
      const Eigen::Vector2d& wall_w0,
      const Eigen::Vector2d& wall_w1,
-     const geometry_msgs::msg::Pose& vehicle_pose) const;
+     const geometry_msgs::msg::Pose& vehicle_pose);
 
    /**
     * @brief 末端路径点(plan系)变换到控制器坐标系后用 footprint 做占据检测；无障碍返回 true。

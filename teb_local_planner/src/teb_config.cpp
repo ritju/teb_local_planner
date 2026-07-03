@@ -263,6 +263,8 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "wall_line_obstacle_along_wall_rear_margin", rclcpp::ParameterValue(wall_line.wall_line_obstacle_along_wall_rear_margin));
   declare_parameter_if_not_declared(nh, name + "." + "wall_line_protrusion_exit_forward_max", rclcpp::ParameterValue(wall_line.wall_line_protrusion_exit_forward_max));
   declare_parameter_if_not_declared(nh, name + "." + "wall_line_protrusion_exit_lateral_max", rclcpp::ParameterValue(wall_line.wall_line_protrusion_exit_lateral_max));
+  declare_parameter_if_not_declared(nh, name + "." + "monitor_corridor_path_heading_length", rclcpp::ParameterValue(wall_line.monitor_corridor_path_heading_length));
+  declare_parameter_if_not_declared(nh, name + "." + "monitor_corridor_heading_angle_deg", rclcpp::ParameterValue(wall_line.monitor_corridor_heading_angle_deg));
   declare_parameter_if_not_declared(nh, name + "." + "wall_line_protrusion_exit_depth_min", rclcpp::ParameterValue(wall_line.wall_line_protrusion_exit_depth_min));
   declare_parameter_if_not_declared(nh, name + "." + "wall_line_protrusion_exit_depth_max", rclcpp::ParameterValue(wall_line.wall_line_protrusion_exit_depth_max));
   declare_parameter_if_not_declared(nh, name + "." + "obstacle_protrusion_reenter_distance", rclcpp::ParameterValue(wall_line.obstacle_protrusion_reenter_distance));
@@ -580,6 +582,8 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "wall_line_obstacle_along_wall_rear_margin", wall_line.wall_line_obstacle_along_wall_rear_margin, wall_line.wall_line_obstacle_along_wall_rear_margin);
   nh->get_parameter_or(name + "." + "wall_line_protrusion_exit_forward_max", wall_line.wall_line_protrusion_exit_forward_max, wall_line.wall_line_protrusion_exit_forward_max);
   nh->get_parameter_or(name + "." + "wall_line_protrusion_exit_lateral_max", wall_line.wall_line_protrusion_exit_lateral_max, wall_line.wall_line_protrusion_exit_lateral_max);
+  nh->get_parameter_or(name + "." + "monitor_corridor_path_heading_length", wall_line.monitor_corridor_path_heading_length, wall_line.monitor_corridor_path_heading_length);
+  nh->get_parameter_or(name + "." + "monitor_corridor_heading_angle_deg", wall_line.monitor_corridor_heading_angle_deg, wall_line.monitor_corridor_heading_angle_deg);
   nh->get_parameter_or(name + "." + "wall_line_protrusion_exit_depth_min", wall_line.wall_line_protrusion_exit_depth_min, wall_line.wall_line_protrusion_exit_depth_min);
   nh->get_parameter_or(name + "." + "wall_line_protrusion_exit_depth_max", wall_line.wall_line_protrusion_exit_depth_max, wall_line.wall_line_protrusion_exit_depth_max);
   nh->get_parameter_or(name + "." + "obstacle_protrusion_reenter_distance", wall_line.obstacle_protrusion_reenter_distance, wall_line.obstacle_protrusion_reenter_distance);
@@ -1072,6 +1076,10 @@ rcl_interfaces::msg::SetParametersResult
         wall_line.wall_line_protrusion_exit_forward_max = parameter.as_double();
       } else if (name == node_name + ".wall_line_protrusion_exit_lateral_max") {
         wall_line.wall_line_protrusion_exit_lateral_max = parameter.as_double();
+      } else if (name == node_name + ".monitor_corridor_path_heading_length") {
+        wall_line.monitor_corridor_path_heading_length = parameter.as_double();
+      } else if (name == node_name + ".monitor_corridor_heading_angle_deg") {
+        wall_line.monitor_corridor_heading_angle_deg = parameter.as_double();
       } else if (name == node_name + ".wall_line_protrusion_exit_depth_min") {
         wall_line.wall_line_protrusion_exit_depth_min = parameter.as_double();
       } else if (name == node_name + ".wall_line_protrusion_exit_depth_max") {

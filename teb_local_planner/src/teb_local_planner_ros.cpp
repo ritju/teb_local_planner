@@ -613,10 +613,9 @@ WallPolygonClipResult processWallFilteredPolygon(
   const geometry_msgs::msg::Polygon& polygon,
   const EffWallFrame& wall,
   const Eigen::Vector2d& robot_position,
-  bool have_tf_obstacles_to_base,
-  const geometry_msgs::msg::TransformStamped& tf_base_from_obstacles,
-  const std::string& obstacles_frame,
-  const TebConfig& config)
+  double robot_yaw,
+  const TebConfig& config,
+  const WallMonitorCorridor* monitor_corridor)
 {
   
   WallPolygonClipResult result;
@@ -642,22 +641,8 @@ WallPolygonClipResult processWallFilteredPolygon(
       }
     }
 
-    Eigen::Vector2d p_base = Eigen::Vector2d::Zero();
-    bool have_p_base = false;
-    if (have_tf_obstacles_to_base) {
-      geometry_msgs::msg::PointStamped pin;
-      pin.header.frame_id = obstacles_frame;
-      pin.point.x = point.x;
-      pin.point.y = point.y;
-      pin.point.z = point.z;
-      geometry_msgs::msg::PointStamped p_base_stamped;
-      tf2::doTransform(pin, p_base_stamped, tf_base_from_obstacles);
-      p_base = Eigen::Vector2d(p_base_stamped.point.x, p_base_stamped.point.y);
-      have_p_base = true;
-    }
-
     const WallProtrusionHit point_hit = checkWallProtrusionPoint(
-      vertex, p_base, have_p_base, wall, robot_position, config);
+      vertex, wall, robot_position, robot_yaw, config, monitor_corridor);
     if (point_hit.exit_trigger &&
       (!result.exit_trigger || point_hit.exit_best_pen > result.exit_best_pen))
     {
@@ -1142,8 +1127,12 @@ bool clippedFootprintOutlineTouchesBlockingCost(
     transformed_path = node->create_publisher<nav_msgs::msg::Path>("teb_transformed_path", 1);
     global_plan_pub_ = node->create_publisher<nav_msgs::msg::Path>("teb_global_plan", 1);
     wall_line_marker_publisher_ = node->create_publisher<visualization_msgs::msg::Marker>("teb_selected_wall_line", 1);
+    monitor_corridor_marker_pub_ =
+      node->create_publisher<visualization_msgs::msg::MarkerArray>("teb_monitor_corridor_markers", 1);
+    protruding_obstacle_marker_pub_ =
+      node->create_publisher<visualization_msgs::msg::MarkerArray>("teb_protruding_obstacle_markers", 1);
     edge_distance_publisher_  = node->create_publisher<std_msgs::msg::Float32>("edge_distance", 1);
-    RCLCPP_INFO(logger_, "TEB 创建发布话题 /teb_selected_wall_line、/edge_distance、/teb_transformed_path、/teb_global_plan");
+    RCLCPP_INFO(logger_, "TEB 创建发布话题 /teb_selected_wall_line、/teb_monitor_corridor_markers、/teb_protruding_obstacle_markers、/edge_distance、/teb_transformed_path、/teb_global_plan");
 
     // Create persistent client for static_layer parameter updates
     static_layer_client_ = node->create_client<rcl_interfaces::srv::SetParameters>("/local_costmap/local_costmap/set_parameters");
@@ -2205,22 +2194,6 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
     }
   }
 
-  geometry_msgs::msg::TransformStamped tf_base_from_obstacles;
-  bool have_tf_obstacles_to_base = false;
-
-  if (use_wall_line_filter && tf_ && costmap_ros_) {
-    try {
-      tf_base_from_obstacles = tf_->lookupTransform(
-        costmap_ros_->getBaseFrameID(), obstacles_frame, tf2::TimePointZero);
-      have_tf_obstacles_to_base = true;
-    } catch (const tf2::TransformException& ex) {
-      RCLCPP_DEBUG_THROTTLE(
-        logger_, *(clock_), 2000,
-        "protrusion exit: TF %s->%s failed: %s",
-        obstacles_frame.c_str(), costmap_ros_->getBaseFrameID().c_str(), ex.what());
-    }
-  }
-
   EffWallFrame eff_wall;
   if (use_wall_line_filter) {
     eff_wall.start = eff_wall_start;
@@ -2244,10 +2217,9 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
         *polygon,
         eff_wall,
         robot_pose_.position(),
-        have_tf_obstacles_to_base,
-        tf_base_from_obstacles,
-        obstacles_frame,
-        *cfg_);
+        robot_pose_.theta(),
+        *cfg_,
+        protrusion_monitor_corridor_.valid ? &protrusion_monitor_corridor_ : nullptr);
 
       if (wall_result.exit_trigger) {
         recordProtrusionDetection(
@@ -2426,40 +2398,43 @@ bool TebLocalPlannerROS::isVehicleInEdgeFollowingExitCorridor(
   const geometry_msgs::msg::PoseStamped& robot_pose,
   const Eigen::Vector2d& wall_w0,
   const Eigen::Vector2d& wall_w1,
-  const geometry_msgs::msg::Pose& vehicle_pose) const
+  const geometry_msgs::msg::Pose& vehicle_pose)
 {
-  
-  const auto& wl = cfg_->wall_line;
-  Eigen::Vector2d R(robot_pose.pose.position.x, robot_pose.pose.position.y);
-  Eigen::Vector2d V(vehicle_pose.position.x, vehicle_pose.position.y);
+  (void)robot_pose;
+  (void)wall_w0;
+  (void)wall_w1;
 
-  Eigen::Vector2d seg = wall_w1 - wall_w0;
-  const double L = seg.norm();
-  if (L < 1e-6) {
-    return false;
-  }
-  const Eigen::Vector2d u = seg / L;
-  Eigen::Vector2d n(-u.y(), u.x());
-  if (n.dot(R - wall_w0) < 0.0) {
-    n = -n;
+  if (vehicle_monitor_corridor_.valid) {
+    return isPointInWallMonitorCorridor(
+      Eigen::Vector2d(vehicle_pose.position.x, vehicle_pose.position.y),
+      vehicle_monitor_corridor_);
   }
 
-  const double yaw = tf2::getYaw(robot_pose.pose.orientation);
-  const Eigen::Vector2d fwd(std::cos(yaw), std::sin(yaw));
-
-  const Eigen::Vector2d d = V - R;
-  const double longitudinal = d.dot(fwd);
-  if (longitudinal < -wl.vehicle_exit_corridor_rear_m || longitudinal > wl.vehicle_exit_corridor_front_m) {
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 车辆不在检查区域前后范围内");
+  const Eigen::Vector2d robot_position(
+    robot_pose.pose.position.x, robot_pose.pose.position.y);
+  EffWallFrame wall;
+  if (!buildEffWallFrameFromSegment(wall_w0, wall_w1, robot_position, *cfg_, wall)) {
     return false;
   }
 
-  const double lateral = (V - wall_w0).dot(n);
-  if (lateral < -wl.vehicle_exit_corridor_wall_inner_m || lateral > wl.vehicle_exit_corridor_wall_robot_side_m) {
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 车辆不在检查区域内外范围内");
+  const WallMonitorCorridor fallback = buildWallMonitorCorridor(
+    wall,
+    robot_position,
+    tf2::getYaw(robot_pose.pose.orientation),
+    {},
+    cfg_->wall_line.vehicle_exit_corridor_rear_m,
+    cfg_->wall_line.vehicle_exit_corridor_front_m,
+    cfg_->wall_line.vehicle_exit_corridor_wall_inner_m,
+    cfg_->wall_line.vehicle_exit_corridor_wall_robot_side_m,
+    *cfg_);
+
+  if (!fallback.valid) {
     return false;
   }
-  return true;
+
+  return isPointInWallMonitorCorridor(
+    Eigen::Vector2d(vehicle_pose.position.x, vehicle_pose.position.y),
+    fallback);
 }
 
 void TebLocalPlannerROS::updateWallLineVec(
@@ -2524,36 +2499,7 @@ void TebLocalPlannerROS::updateWallLineVec(
    }
 
    // Check for protruding obstacles that prohibit entering edge-following mode
-   bool has_protruding_obstacle_nearby = false;
-   Eigen::Vector2d robot_pos(robot_pose.pose.position.x, robot_pose.pose.position.y);
-   
-   // Clean up expired obstacles and check for nearby ones
-   rclcpp::Time current_time = clock_->now();
-   auto it = protruding_obstacles_.begin();
-   while (it != protruding_obstacles_.end())
-   {
-     double dist = (robot_pos - it->position).norm();
-     double time_elapsed = (current_time - it->detection_time).seconds();
-     
-     // Check if obstacle is expired by timeout
-     if (time_elapsed > cfg_->wall_line.obstacle_protrusion_timeout)
-     {
-       it = protruding_obstacles_.erase(it);
-       continue;
-     }
-     
-     // Check if robot is within re-enter distance + influence radius
-     if (dist < cfg_->wall_line.obstacle_protrusion_reenter_distance)
-     {
-       has_protruding_obstacle_nearby = true;
-       ++it;
-     } else {
-       // Robot is far away, remove this obstacle record
-       it = protruding_obstacles_.erase(it);
-     }
-   }
-   
-   if (has_protruding_obstacle_nearby)
+   if (hasProtrudingObstacleInMonitorCorridor(robot_pose))
    {
      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 机器人附近有障碍物，退出贴边模式");
      if(wall_line_points_.size() > 0) wall_line_points_.clear();
@@ -2663,6 +2609,16 @@ void TebLocalPlannerROS::updateWallLineVec(
     // 5. 如果找到最佳匹配的墙线，更新配置
     if (found_valid_wall) 
     {
+      const Eigen::Vector2d candidate_wall_start(best_wall_start.x, best_wall_start.y);
+      const Eigen::Vector2d candidate_wall_end(best_wall_end.x, best_wall_end.y);
+      const Eigen::Vector2d robot_pos(
+        robot_pose.pose.position.x, robot_pose.pose.position.y);
+      if (protrusionBlocksEdgeEntryForWallSegment(
+          candidate_wall_start, candidate_wall_end, robot_pos))
+      {
+        return;
+      }
+
       if(wall_line_points_.size() > 0) wall_line_points_.clear();
       wall_line_points_.emplace_back(Eigen::Vector2d(best_wall_start.x, best_wall_start.y));
       wall_line_points_.emplace_back(Eigen::Vector2d(best_wall_end.x, best_wall_end.y));
@@ -2790,39 +2746,7 @@ void TebLocalPlannerROS::updateWallLineVec(
    }
 
    // Check for protruding obstacles that prohibit entering edge-following mode
-   bool has_protruding_obstacle_nearby = false;
-   Eigen::Vector2d robot_pos(robot_pose.pose.position.x, robot_pose.pose.position.y);
-   
-   // Clean up expired obstacles and check for nearby ones
-   rclcpp::Time current_time = clock_->now();
-   auto it = protruding_obstacles_.begin();
-   while (it != protruding_obstacles_.end())
-   {
-     double dist = (robot_pos - it->position).norm();
-     double time_elapsed = (current_time - it->detection_time).seconds();
-     
-     // Check if obstacle is expired by timeout
-     if (time_elapsed > cfg_->wall_line.obstacle_protrusion_timeout)
-     {
-       it = protruding_obstacles_.erase(it);
-       continue;
-     }
-     
-     // Check if robot is within re-enter distance + influence radius
-     double reenter_threshold = cfg_->wall_line.obstacle_protrusion_reenter_distance + it->influence_radius;
-     if (dist < reenter_threshold)
-     {
-       has_protruding_obstacle_nearby = true;
-       ++it;
-     }
-     else
-     {
-       // Robot is far away, remove this obstacle record
-       it = protruding_obstacles_.erase(it);
-     }
-   }
-   
-   if (has_protruding_obstacle_nearby)
+   if (hasProtrudingObstacleInMonitorCorridor(robot_pose))
    {
      RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 机器人附近有障碍物，退出贴边模式");
      if(wall_line_points_.size() > 0) wall_line_points_.clear();
@@ -2939,6 +2863,16 @@ void TebLocalPlannerROS::updateWallLineVec(
    // 5. 如果找到最佳匹配的墙线，更新配置
    if (found_valid_wall) 
    {
+     const Eigen::Vector2d candidate_wall_start(best_wall_start.x, best_wall_start.y);
+     const Eigen::Vector2d candidate_wall_end(best_wall_end.x, best_wall_end.y);
+     const Eigen::Vector2d robot_pos(
+       robot_pose.pose.position.x, robot_pose.pose.position.y);
+     if (protrusionBlocksEdgeEntryForWallSegment(
+         candidate_wall_start, candidate_wall_end, robot_pos))
+     {
+       return;
+     }
+
      if(wall_line_points_.size() > 0) wall_line_points_.clear();
      wall_line_points_.emplace_back(Eigen::Vector2d(best_wall_start.x, best_wall_start.y));
      wall_line_points_.emplace_back(Eigen::Vector2d(best_wall_end.x, best_wall_end.y));
@@ -5947,31 +5881,7 @@ bool TebLocalPlannerROS::edgeFollowingEntryGuards(
     return false;
   }
 
-  bool has_protruding_obstacle_nearby = false;
-  const Eigen::Vector2d robot_position_planar(
-    robot_pose.pose.position.x, robot_pose.pose.position.y);
-  const rclcpp::Time current_clock_time = clock_->now();
-  auto protruding_obstacle_iterator = protruding_obstacles_.begin();
-  while (protruding_obstacle_iterator != protruding_obstacles_.end()) {
-    const double distance_robot_to_obstacle =
-      (robot_position_planar - protruding_obstacle_iterator->position).norm();
-    const double seconds_since_obstacle_detection =
-      (current_clock_time - protruding_obstacle_iterator->detection_time).seconds();
-    if (seconds_since_obstacle_detection > cfg_->wall_line.obstacle_protrusion_timeout) {
-      protruding_obstacle_iterator = protruding_obstacles_.erase(protruding_obstacle_iterator);
-      continue;
-    }
-    const double obstacle_reenter_influence_threshold =
-      cfg_->wall_line.obstacle_protrusion_reenter_distance +
-      protruding_obstacle_iterator->influence_radius;
-    if (distance_robot_to_obstacle < obstacle_reenter_influence_threshold) {
-      has_protruding_obstacle_nearby = true;
-      ++protruding_obstacle_iterator;
-    } else {
-      protruding_obstacle_iterator = protruding_obstacles_.erase(protruding_obstacle_iterator);
-    }
-  }
-  if (has_protruding_obstacle_nearby) {
+  if (hasProtrudingObstacleInMonitorCorridor(robot_pose)) {
     if (wall_line_points_.size() > 0) {
       wall_line_points_.clear();
     }
@@ -6405,6 +6315,12 @@ void TebLocalPlannerROS::applyWallLineSegmentAndVisual(
   const double robot_perpendicular_distance_to_edge_line)
 {
   
+  if (protrusionBlocksEdgeEntryForWallSegment(
+      wall_line_segment_start, wall_line_segment_end, robot_pose_.position()))
+  {
+    return;
+  }
+
   if (wall_line_points_.size() > 0) {
     wall_line_points_.clear();
   }
@@ -6582,6 +6498,9 @@ void TebLocalPlannerROS::exitEdgeFollowingMode(
     wall_line_points_.clear();
   }
   reference_line_hold_.clear();
+  const std::string map_frame = costmap_ros_ ?
+    costmap_ros_->getGlobalFrameID() : cfg_->map_frame;
+  clearEdgeMonitorCorridors(map_frame);
   switchParameterMode(false);
   RCLCPP_INFO_THROTTLE(
     logger_,
@@ -6750,6 +6669,20 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
       transformed_plan.begin() +
         static_cast<std::ptrdiff_t>(input_path_end_idx + 1));
   transformed_path->publish(input_path);
+
+  updateEdgeMonitorCorridors(robot_pose, input_path.poses);
+
+  struct MonitorCorridorGuard
+  {
+    TebLocalPlannerROS * self;
+    const geometry_msgs::msg::PoseStamped& robot_pose;
+    const nav_msgs::msg::Path& input_path;
+    ~MonitorCorridorGuard()
+    {
+      self->updateEdgeMonitorCorridors(robot_pose, input_path.poses);
+      self->publishMonitorCorridorMarkers(input_path.header.frame_id);
+    }
+  } monitor_corridor_guard{this, robot_pose, input_path};
 
   const bool edge_mode_includes_wall =
     (edge_mode.find("wall") != std::string::npos);
