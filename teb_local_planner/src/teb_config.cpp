@@ -88,6 +88,21 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(
     nh, name + "." + "prune_before_corner_linear_x_threshold",
     rclcpp::ParameterValue(trajectory.prune_before_corner_linear_x_threshold));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "corner_approach_ray_check_enable",
+    rclcpp::ParameterValue(trajectory.corner_approach_ray_check_enable));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "corner_approach_check_sample_spacing",
+    rclcpp::ParameterValue(trajectory.corner_approach_check_sample_spacing));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "corner_approach_check_cost_mode",
+    rclcpp::ParameterValue(trajectory.corner_approach_check_cost_mode));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "corner_approach_check_margin",
+    rclcpp::ParameterValue(trajectory.corner_approach_check_margin));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "corner_approach_footprint_marker_enable",
+    rclcpp::ParameterValue(trajectory.corner_approach_footprint_marker_enable));
   declare_parameter_if_not_declared(nh, name + "." + "max_plan_length_extend_on_trajectory_obstacle_m", rclcpp::ParameterValue(trajectory.max_plan_length_extend_on_trajectory_obstacle_m));
   declare_parameter_if_not_declared(
     nh, name + "." + "transformed_plan_collision_pose_to_end_distance",
@@ -290,6 +305,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "rotation_max_angular_accel", rclcpp::ParameterValue(rotation.max_angular_accel));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_forward_lookahead_distance", rclcpp::ParameterValue(rotation.forward_lookahead_distance));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_path_footprint_sample_spacing", rclcpp::ParameterValue(rotation.path_footprint_sample_spacing));
+  declare_parameter_if_not_declared(nh, name + "." + "rotation_path_footprint_check_cost_mode", rclcpp::ParameterValue(rotation.path_footprint_check_cost_mode));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_rotate_min_angular_vel", rclcpp::ParameterValue(rotation.rotate_min_angular_vel));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_decel_blend_start_rad", rclcpp::ParameterValue(rotation.decel_blend_start_rad));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_limit_duration", rclcpp::ParameterValue(rotation.rotation_limit_duration));
@@ -388,6 +404,26 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
     name + "." + "prune_before_corner_linear_x_threshold",
     trajectory.prune_before_corner_linear_x_threshold,
     trajectory.prune_before_corner_linear_x_threshold);
+  nh->get_parameter_or(
+    name + "." + "corner_approach_ray_check_enable",
+    trajectory.corner_approach_ray_check_enable,
+    trajectory.corner_approach_ray_check_enable);
+  nh->get_parameter_or(
+    name + "." + "corner_approach_check_sample_spacing",
+    trajectory.corner_approach_check_sample_spacing,
+    trajectory.corner_approach_check_sample_spacing);
+  nh->get_parameter_or(
+    name + "." + "corner_approach_check_cost_mode",
+    trajectory.corner_approach_check_cost_mode,
+    trajectory.corner_approach_check_cost_mode);
+  nh->get_parameter_or(
+    name + "." + "corner_approach_check_margin",
+    trajectory.corner_approach_check_margin,
+    trajectory.corner_approach_check_margin);
+  nh->get_parameter_or(
+    name + "." + "corner_approach_footprint_marker_enable",
+    trajectory.corner_approach_footprint_marker_enable,
+    trajectory.corner_approach_footprint_marker_enable);
   nh->get_parameter_or(name + "." + "max_plan_length_extend_on_trajectory_obstacle_m", trajectory.max_plan_length_extend_on_trajectory_obstacle_m, trajectory.max_plan_length_extend_on_trajectory_obstacle_m);
   nh->get_parameter_or(
     name + "." + "transformed_plan_collision_pose_to_end_distance",
@@ -649,6 +685,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "rotation_max_angular_accel", rotation.max_angular_accel, rotation.max_angular_accel);
   nh->get_parameter_or(name + "." + "rotation_forward_lookahead_distance", rotation.forward_lookahead_distance, rotation.forward_lookahead_distance);
   nh->get_parameter_or(name + "." + "rotation_path_footprint_sample_spacing", rotation.path_footprint_sample_spacing, rotation.path_footprint_sample_spacing);
+  nh->get_parameter_or(name + "." + "rotation_path_footprint_check_cost_mode", rotation.path_footprint_check_cost_mode, rotation.path_footprint_check_cost_mode);
   nh->get_parameter_or(name + "." + "rotation_rotate_min_angular_vel", rotation.rotate_min_angular_vel, rotation.rotate_min_angular_vel);
   nh->get_parameter_or(name + "." + "rotation_decel_blend_start_rad", rotation.decel_blend_start_rad, rotation.decel_blend_start_rad);
   nh->get_parameter_or(name + "." + "rotation_limit_duration", rotation.rotation_limit_duration, rotation.rotation_limit_duration);
@@ -847,6 +884,16 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.prune_corner_residual_distance = parameter.as_double();
       } else if (name == node_name + ".prune_before_corner_linear_x_threshold") {
         trajectory.prune_before_corner_linear_x_threshold = parameter.as_double();
+      } else if (name == node_name + ".corner_approach_ray_check_enable") {
+        trajectory.corner_approach_ray_check_enable = parameter.as_bool();
+      } else if (name == node_name + ".corner_approach_check_sample_spacing") {
+        trajectory.corner_approach_check_sample_spacing = parameter.as_double();
+      } else if (name == node_name + ".corner_approach_check_cost_mode") {
+        trajectory.corner_approach_check_cost_mode = parameter.as_string();
+      } else if (name == node_name + ".corner_approach_check_margin") {
+        trajectory.corner_approach_check_margin = parameter.as_double();
+      } else if (name == node_name + ".corner_approach_footprint_marker_enable") {
+        trajectory.corner_approach_footprint_marker_enable = parameter.as_bool();
       } else if (name == node_name + ".max_plan_length_extend_on_trajectory_obstacle_m") {
         trajectory.max_plan_length_extend_on_trajectory_obstacle_m = parameter.as_double();
       } else if (name == node_name + ".transformed_plan_collision_pose_to_end_distance") {
@@ -1192,6 +1239,8 @@ rcl_interfaces::msg::SetParametersResult
         rotation.forward_lookahead_distance = parameter.as_double();
       } else if (name == node_name + ".rotation_path_footprint_sample_spacing") {
         rotation.path_footprint_sample_spacing = parameter.as_double();
+      } else if (name == node_name + ".rotation_path_footprint_check_cost_mode") {
+        rotation.path_footprint_check_cost_mode = parameter.as_string();
       } else if (name == node_name + ".rotation_rotate_min_angular_vel") {
         rotation.rotate_min_angular_vel = parameter.as_double();
       } else if (name == node_name + ".rotation_decel_blend_start_rad") {

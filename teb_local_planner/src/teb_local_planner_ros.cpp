@@ -801,8 +801,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
       }
       const unsigned char cost = costmap_ref.getCost(
         static_cast<unsigned int>(lx), static_cast<unsigned int>(ly));
-      if (cost == nav2_costmap_2d::LETHAL_OBSTACLE ||
-        cost == nav2_costmap_2d::NO_INFORMATION)
+      if (cost == nav2_costmap_2d::LETHAL_OBSTACLE)
       {
         return true;
       }
@@ -1131,8 +1130,10 @@ bool clippedFootprintOutlineTouchesBlockingCost(
       node->create_publisher<visualization_msgs::msg::MarkerArray>("teb_monitor_corridor_markers", 1);
     protruding_obstacle_marker_pub_ =
       node->create_publisher<visualization_msgs::msg::MarkerArray>("teb_protruding_obstacle_markers", 1);
+    corner_approach_footprint_marker_pub_ =
+      node->create_publisher<visualization_msgs::msg::MarkerArray>("teb_corner_approach_footprint_markers", 1);
     edge_distance_publisher_  = node->create_publisher<std_msgs::msg::Float32>("edge_distance", 1);
-    RCLCPP_INFO(logger_, "TEB 创建发布话题 /teb_selected_wall_line、/teb_monitor_corridor_markers、/teb_protruding_obstacle_markers、/edge_distance、/teb_transformed_path、/teb_global_plan");
+    RCLCPP_INFO(logger_, "TEB 创建发布话题 /teb_selected_wall_line、/teb_monitor_corridor_markers、/teb_protruding_obstacle_markers、/teb_corner_approach_footprint_markers、/edge_distance、/teb_transformed_path、/teb_global_plan");
 
     // Create persistent client for static_layer parameter updates
     static_layer_client_ = node->create_client<rcl_interfaces::srv::SetParameters>("/local_costmap/local_costmap/set_parameters");
@@ -1686,32 +1687,57 @@ void TebLocalPlannerROS::configure(
     geometry_msgs::msg::Pose2D corner_check_pose2d;
     corner_check_pose2d.x = local_corner_check_pose2d.pose.position.x;
     corner_check_pose2d.y = local_corner_check_pose2d.pose.position.y;
-    corner_check_pose2d.theta = direction_to_corner;  // Use direction from robot to corner
-    
-    
-    try
-    {
-      unsigned char corner_check_cost = costmap_model_->scorePose(corner_check_pose2d, dwb_critics::getOrientedFootprint(corner_check_pose2d, footprint_spec_));
-      if (corner_check_cost == nav2_costmap_2d::LETHAL_OBSTACLE || corner_check_cost == nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
-      {
-        if (corner_check_cost == nav2_costmap_2d::LETHAL_OBSTACLE)
-        {
-          cut_path_before_corner_distance = cfg_->trajectory.cut_path_before_corner_lethal_dist;
-        } else {
-          cut_path_before_corner_distance = cfg_->trajectory.cut_path_before_corner_inscribed_dist;
-          RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000, "检测到角点被INSCRIBED_INFLATED_OBSTACLE障碍物占用");
-        }
-        corner_has_obstacle = true;
+    corner_check_pose2d.theta = direction_to_corner;
+
+    unsigned char corner_hit_cost = 0;
+    const std::string& corner_cost_mode = cfg_->trajectory.corner_approach_check_cost_mode;
+    bool corner_approach_blocked = false;
+    int corner_blocked_sample_index = -1;
+    if (cfg_->trajectory.corner_approach_ray_check_enable) {
+      corner_approach_blocked = checkCornerApproachRayBlocked(
+        robot_pose_local,
+        corner_check_pose2d,
+        cfg_->trajectory.corner_approach_check_sample_spacing,
+        corner_cost_mode,
+        corner_hit_cost,
+        &corner_blocked_sample_index);
+    } else {
+      corner_approach_blocked = checkCornerFootprintPoseBlocked(
+        corner_check_pose2d, corner_cost_mode, corner_hit_cost);
+      if (corner_approach_blocked) {
+        corner_blocked_sample_index = 0;
       }
     }
-    catch(const dwb_core::IllegalTrajectoryException& e)
-    {
-      if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
-      {
-        corner_has_obstacle = true;
+
+    if (cfg_->trajectory.corner_approach_footprint_marker_enable) {
+      const std::string marker_frame_id = transformed_plan.empty() ?
+        (costmap_ros_ ? costmap_ros_->getGlobalFrameID() : cfg_->map_frame) :
+        transformed_plan.front().header.frame_id;
+      publishCornerApproachFootprintMarkers(
+        marker_frame_id,
+        robot_pose_local,
+        corner_check_pose2d,
+        cfg_->trajectory.corner_approach_ray_check_enable,
+        cfg_->trajectory.corner_approach_check_sample_spacing,
+        corner_blocked_sample_index,
+        corner_hit_cost);
+    }
+
+    if (corner_approach_blocked) {
+      if (corner_hit_cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
         cut_path_before_corner_distance = cfg_->trajectory.cut_path_before_corner_lethal_dist;
-        RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000, "检测到角点被LETHAL_OBSTACLE障碍物占用");
+        RCLCPP_INFO_THROTTLE(
+          logger_, *clock_, 2000,
+          "角点/射线路径检测到 LETHAL_OBSTACLE (ray_check=%s)",
+          cfg_->trajectory.corner_approach_ray_check_enable ? "true" : "false");
+      } else {
+        cut_path_before_corner_distance = cfg_->trajectory.cut_path_before_corner_inscribed_dist;
+        RCLCPP_INFO_THROTTLE(
+          logger_, *clock_, 2000,
+          "角点/射线路径检测到 INSCRIBED_INFLATED_OBSTACLE (ray_check=%s)",
+          cfg_->trajectory.corner_approach_ray_check_enable ? "true" : "false");
       }
+      corner_has_obstacle = true;
     }
     
     // If corner has obstacle, delete all path points before the corner in global_plan_
@@ -1755,6 +1781,10 @@ void TebLocalPlannerROS::configure(
         break;
       }
     }
+  } else if (cfg_->trajectory.corner_approach_footprint_marker_enable) {
+    const std::string marker_frame_id = costmap_ros_ ?
+      costmap_ros_->getGlobalFrameID() : cfg_->map_frame;
+    clearCornerApproachFootprintMarkers(marker_frame_id);
   }
 
   jump_prune_transformed_plan:
@@ -4966,6 +4996,316 @@ bool TebLocalPlannerROS::orientedFootprintAnyVertexOutsideLocalCostmap(
   return false;
 }
 
+bool TebLocalPlannerROS::cornerApproachCostIsBlocking(
+  unsigned char cost,
+  const std::string& cost_mode) const
+{
+  using nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+  using nav2_costmap_2d::LETHAL_OBSTACLE;
+
+  if (cost_mode == "lethal") {
+    return cost == LETHAL_OBSTACLE;
+  }
+  if (cost_mode == "inscribed") {
+    return cost == INSCRIBED_INFLATED_OBSTACLE;
+  }
+  return cost == LETHAL_OBSTACLE || cost == INSCRIBED_INFLATED_OBSTACLE;
+}
+
+double TebLocalPlannerROS::cornerApproachCheckMargin() const
+{
+  if (!cfg_) {
+    return 0.0;
+  }
+  const double configured = cfg_->trajectory.corner_approach_check_margin;
+  if (configured < 0.0) {
+    return cfg_->obstacles.min_obstacle_dist;
+  }
+  return configured;
+}
+
+std::vector<geometry_msgs::msg::Point> TebLocalPlannerROS::cornerApproachFootprintSpec() const
+{
+  std::vector<geometry_msgs::msg::Point> footprint =
+    (footprint_spec_.size() >= 3) ?
+    footprint_spec_ :
+    (costmap_ros_ ? costmap_ros_->getRobotFootprint() :
+    std::vector<geometry_msgs::msg::Point>{});
+
+  const double margin = cornerApproachCheckMargin();
+  if (margin > 1e-9 && footprint.size() >= 3) {
+    nav2_costmap_2d::padFootprint(footprint, margin);
+  }
+  return footprint;
+}
+
+bool TebLocalPlannerROS::checkCornerFootprintPoseBlocked(
+  const geometry_msgs::msg::Pose2D& pose2d,
+  const std::string& cost_mode,
+  unsigned char& hit_cost_out) const
+{
+  if (!costmap_model_) {
+    return false;
+  }
+
+  const std::vector<geometry_msgs::msg::Point> corner_footprint =
+    cornerApproachFootprintSpec();
+  if (corner_footprint.size() < 3) {
+    return false;
+  }
+
+  try {
+    const unsigned char cost = costmap_model_->scorePose(
+      pose2d, dwb_critics::getOrientedFootprint(pose2d, corner_footprint));
+    if (cornerApproachCostIsBlocking(cost, cost_mode)) {
+      hit_cost_out = cost;
+      return true;
+    }
+  } catch (const dwb_core::IllegalTrajectoryException& e) {
+    if (std::strcmp(e.what(), "Trajectory Hits Obstacle.") == 0) {
+      const unsigned char lethal = nav2_costmap_2d::LETHAL_OBSTACLE;
+      if (cornerApproachCostIsBlocking(lethal, cost_mode)) {
+        hit_cost_out = lethal;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool TebLocalPlannerROS::checkCornerApproachRayBlocked(
+  const geometry_msgs::msg::Pose2D& robot_pose_local,
+  const geometry_msgs::msg::Pose2D& corner_pose_local,
+  double sample_spacing,
+  const std::string& cost_mode,
+  unsigned char& hit_cost_out,
+  int* blocked_sample_index_out)
+{
+  const std::vector<geometry_msgs::msg::Pose2D> sample_poses =
+    buildCornerApproachCheckPoses(
+      robot_pose_local, corner_pose_local, true, sample_spacing);
+
+  for (std::size_t i = 0; i < sample_poses.size(); ++i) {
+    if (checkCornerFootprintPoseBlocked(sample_poses[i], cost_mode, hit_cost_out)) {
+      if (blocked_sample_index_out != nullptr) {
+        *blocked_sample_index_out = static_cast<int>(i);
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+std::vector<geometry_msgs::msg::Pose2D> TebLocalPlannerROS::buildCornerApproachCheckPoses(
+  const geometry_msgs::msg::Pose2D& robot_pose_local,
+  const geometry_msgs::msg::Pose2D& corner_pose_local,
+  const bool ray_check_enable,
+  const double sample_spacing) const
+{
+  std::vector<geometry_msgs::msg::Pose2D> sample_poses;
+  const double dx = corner_pose_local.x - robot_pose_local.x;
+  const double dy = corner_pose_local.y - robot_pose_local.y;
+  const double direction_to_corner = std::atan2(dy, dx);
+
+  geometry_msgs::msg::Pose2D sample_pose;
+  sample_pose.theta = direction_to_corner;
+
+  if (!ray_check_enable) {
+    sample_pose.x = corner_pose_local.x;
+    sample_pose.y = corner_pose_local.y;
+    sample_poses.push_back(sample_pose);
+    return sample_poses;
+  }
+
+  const double segment_len = std::hypot(dx, dy);
+  if (segment_len <= 1e-6) {
+    sample_pose.x = corner_pose_local.x;
+    sample_pose.y = corner_pose_local.y;
+    sample_poses.push_back(sample_pose);
+    return sample_poses;
+  }
+
+  const double spacing = std::max(1e-3, sample_spacing);
+  std::vector<double> arc_samples;
+  for (double s = 0.0; s < segment_len; s += spacing) {
+    arc_samples.push_back(s);
+  }
+  if (arc_samples.empty() || std::abs(arc_samples.back() - segment_len) > 1e-3) {
+    arc_samples.push_back(segment_len);
+  }
+
+  sample_poses.reserve(arc_samples.size());
+  for (const double s : arc_samples) {
+    const double t = s / segment_len;
+    sample_pose.x = robot_pose_local.x + t * dx;
+    sample_pose.y = robot_pose_local.y + t * dy;
+    sample_poses.push_back(sample_pose);
+  }
+  return sample_poses;
+}
+
+void TebLocalPlannerROS::publishCornerApproachFootprintMarkers(
+  const std::string& frame_id,
+  const geometry_msgs::msg::Pose2D& robot_pose_local,
+  const geometry_msgs::msg::Pose2D& corner_pose_local,
+  const bool ray_check_enable,
+  const double sample_spacing,
+  const int blocked_sample_index,
+  const unsigned char hit_cost)
+{
+  if (!corner_approach_footprint_marker_pub_ ||
+    !cfg_->trajectory.corner_approach_footprint_marker_enable)
+  {
+    return;
+  }
+
+  const std::vector<geometry_msgs::msg::Point> footprint_spec =
+    cornerApproachFootprintSpec();
+  if (footprint_spec.size() < 3) {
+    return;
+  }
+
+  const std::vector<geometry_msgs::msg::Pose2D> sample_poses =
+    buildCornerApproachCheckPoses(
+      robot_pose_local, corner_pose_local, ray_check_enable, sample_spacing);
+  if (sample_poses.empty()) {
+    clearCornerApproachFootprintMarkers(frame_id);
+    return;
+  }
+
+  visualization_msgs::msg::MarkerArray marker_array;
+  const rclcpp::Time stamp = clock_->now();
+  int marker_id = 0;
+
+  if (ray_check_enable) {
+    visualization_msgs::msg::Marker ray_marker;
+    ray_marker.header.frame_id = frame_id;
+    ray_marker.header.stamp = stamp;
+    ray_marker.ns = "corner_approach_ray";
+    ray_marker.id = 0;
+    ray_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    ray_marker.action = visualization_msgs::msg::Marker::ADD;
+    ray_marker.scale.x = 0.04;
+    ray_marker.color.r = 1.0f;
+    ray_marker.color.g = 0.85f;
+    ray_marker.color.b = 0.0f;
+    ray_marker.color.a = 0.9f;
+    ray_marker.pose.orientation.w = 1.0;
+
+    geometry_msgs::msg::Point p0;
+    p0.x = robot_pose_local.x;
+    p0.y = robot_pose_local.y;
+    p0.z = 0.03;
+    geometry_msgs::msg::Point p1;
+    p1.x = corner_pose_local.x;
+    p1.y = corner_pose_local.y;
+    p1.z = 0.03;
+    ray_marker.points.push_back(p0);
+    ray_marker.points.push_back(p1);
+    marker_array.markers.push_back(ray_marker);
+    marker_id = 1;
+  }
+
+  const bool corner_only = !ray_check_enable && sample_poses.size() == 1;
+  for (std::size_t i = 0; i < sample_poses.size(); ++i) {
+    const dwb_critics::Footprint oriented_footprint =
+      dwb_critics::getOrientedFootprint(sample_poses[i], footprint_spec);
+    if (oriented_footprint.size() < 3) {
+      continue;
+    }
+
+    visualization_msgs::msg::Marker footprint_marker;
+    footprint_marker.header.frame_id = frame_id;
+    footprint_marker.header.stamp = stamp;
+    footprint_marker.ns = corner_only ?
+      "corner_approach_corner_footprint" : "corner_approach_ray_footprint";
+    footprint_marker.id = marker_id + static_cast<int>(i);
+    footprint_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    footprint_marker.action = visualization_msgs::msg::Marker::ADD;
+    footprint_marker.scale.x = 0.03;
+    footprint_marker.pose.orientation.w = 1.0;
+
+    const bool is_blocked_sample =
+      static_cast<int>(i) == blocked_sample_index && hit_cost != 0;
+    if (is_blocked_sample) {
+      footprint_marker.color.r = 1.0f;
+      footprint_marker.color.g = 0.1f;
+      footprint_marker.color.b = 0.1f;
+    } else if (corner_only) {
+      footprint_marker.color.r = 0.2f;
+      footprint_marker.color.g = 0.7f;
+      footprint_marker.color.b = 1.0f;
+    } else {
+      footprint_marker.color.r = 0.1f;
+      footprint_marker.color.g = 0.9f;
+      footprint_marker.color.b = 0.3f;
+    }
+    footprint_marker.color.a = 0.85f;
+
+    for (const auto& pt : oriented_footprint) {
+      geometry_msgs::msg::Point mp;
+      mp.x = pt.x;
+      mp.y = pt.y;
+      mp.z = 0.02;
+      footprint_marker.points.push_back(mp);
+    }
+    footprint_marker.points.push_back(footprint_marker.points.front());
+    marker_array.markers.push_back(footprint_marker);
+  }
+
+  const int current_marker_count = marker_id + static_cast<int>(sample_poses.size());
+  for (int id = current_marker_count; id < last_published_corner_footprint_marker_count_; ++id) {
+    visualization_msgs::msg::Marker delete_marker;
+    delete_marker.header.frame_id = frame_id;
+    delete_marker.header.stamp = stamp;
+    delete_marker.ns = "corner_approach_ray_footprint";
+    delete_marker.id = id;
+    delete_marker.action = visualization_msgs::msg::Marker::DELETE;
+    marker_array.markers.push_back(delete_marker);
+
+    visualization_msgs::msg::Marker delete_corner_marker = delete_marker;
+    delete_corner_marker.ns = "corner_approach_corner_footprint";
+    marker_array.markers.push_back(delete_corner_marker);
+  }
+
+  last_published_corner_footprint_marker_count_ = current_marker_count;
+  corner_approach_footprint_marker_pub_->publish(marker_array);
+}
+
+void TebLocalPlannerROS::clearCornerApproachFootprintMarkers(const std::string& frame_id)
+{
+  if (!corner_approach_footprint_marker_pub_) {
+    return;
+  }
+
+  visualization_msgs::msg::MarkerArray marker_array;
+  const rclcpp::Time stamp = clock_->now();
+
+  visualization_msgs::msg::Marker delete_ray;
+  delete_ray.header.frame_id = frame_id;
+  delete_ray.header.stamp = stamp;
+  delete_ray.ns = "corner_approach_ray";
+  delete_ray.action = visualization_msgs::msg::Marker::DELETEALL;
+  marker_array.markers.push_back(delete_ray);
+
+  visualization_msgs::msg::Marker delete_ray_fp;
+  delete_ray_fp.header.frame_id = frame_id;
+  delete_ray_fp.header.stamp = stamp;
+  delete_ray_fp.ns = "corner_approach_ray_footprint";
+  delete_ray_fp.action = visualization_msgs::msg::Marker::DELETEALL;
+  marker_array.markers.push_back(delete_ray_fp);
+
+  visualization_msgs::msg::Marker delete_corner_fp;
+  delete_corner_fp.header.frame_id = frame_id;
+  delete_corner_fp.header.stamp = stamp;
+  delete_corner_fp.ns = "corner_approach_corner_footprint";
+  delete_corner_fp.action = visualization_msgs::msg::Marker::DELETEALL;
+  marker_array.markers.push_back(delete_corner_fp);
+
+  corner_approach_footprint_marker_pub_->publish(marker_array);
+  last_published_corner_footprint_marker_count_ = 0;
+}
+
 bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
   const std::vector<geometry_msgs::msg::PoseStamped> & plan,
   const double sample_spacing_m) const
@@ -4979,8 +5319,7 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
   const std::vector<geometry_msgs::msg::Point> & footprint_poly =
     (footprint_spec_.size() >= 3) ? footprint_spec_ : costmap_ros_->getRobotFootprint();
 
-  using nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
-  using nav2_costmap_2d::LETHAL_OBSTACLE;
+  const std::string& cost_mode = cfg_->rotation.path_footprint_check_cost_mode;
 
   const auto pose_footprint_clear = [&](double px, double py, double pyaw) -> bool {
     if (orientedFootprintAnyVertexOutsideLocalCostmap(px, py, pyaw, footprint_poly)) {
@@ -4988,8 +5327,7 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
     }
     const double fc = rotation_collision_checker_->footprintCostAtPose(
       px, py, pyaw, footprint_poly);
-    if (fc == static_cast<double>(LETHAL_OBSTACLE) ||
-        fc == static_cast<double>(INSCRIBED_INFLATED_OBSTACLE)) {
+    if (cornerApproachCostIsBlocking(static_cast<unsigned char>(fc), cost_mode)) {
       return false;
     }
     return true;

@@ -772,7 +772,9 @@
    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr wall_line_marker_publisher_;
    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr monitor_corridor_marker_pub_;
    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr protruding_obstacle_marker_pub_;
+   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr corner_approach_footprint_marker_pub_;
    int last_published_protruding_obstacle_marker_count_{0};
+   int last_published_corner_footprint_marker_count_{0};
    WallMonitorCorridor protrusion_monitor_corridor_;
    WallMonitorCorridor vehicle_monitor_corridor_;
    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr edge_distance_publisher_;
@@ -912,6 +914,50 @@
    bool orientedFootprintAnyVertexOutsideLocalCostmap(
      double x, double y, double theta,
      const std::vector<geometry_msgs::msg::Point> & footprint_poly) const;
+
+   /** @brief 角点检测：代价值是否命中 corner_approach_check_cost_mode 配置 */
+   bool cornerApproachCostIsBlocking(unsigned char cost, const std::string& cost_mode) const;
+
+   /** @brief 单 pose footprint 角点碰撞检测，命中时写入 hit_cost_out */
+   bool checkCornerFootprintPoseBlocked(
+     const geometry_msgs::msg::Pose2D& pose2d,
+     const std::string& cost_mode,
+     unsigned char& hit_cost_out) const;
+
+   /** @brief 角点检测有效 footprint 扩展量 [m]（<0 时用 min_obstacle_dist） */
+   double cornerApproachCheckMargin() const;
+
+   /** @brief 角点检测用 footprint（按 margin 在 body 系四向 pad） */
+   std::vector<geometry_msgs::msg::Point> cornerApproachFootprintSpec() const;
+
+   /** @brief 机器人→角点射线 footprint 采样（含角点），命中时写入 hit_cost_out */
+   bool checkCornerApproachRayBlocked(
+     const geometry_msgs::msg::Pose2D& robot_pose_local,
+     const geometry_msgs::msg::Pose2D& corner_pose_local,
+     double sample_spacing,
+     const std::string& cost_mode,
+     unsigned char& hit_cost_out,
+     int* blocked_sample_index_out = nullptr);
+
+   /** @brief 构建角点/射线检测采样 pose 列表（局部 costmap 系） */
+   std::vector<geometry_msgs::msg::Pose2D> buildCornerApproachCheckPoses(
+     const geometry_msgs::msg::Pose2D& robot_pose_local,
+     const geometry_msgs::msg::Pose2D& corner_pose_local,
+     bool ray_check_enable,
+     double sample_spacing) const;
+
+   /** @brief 发布角点/射线检测 footprint Marker（teb_corner_approach_footprint_markers） */
+   void publishCornerApproachFootprintMarkers(
+     const std::string& frame_id,
+     const geometry_msgs::msg::Pose2D& robot_pose_local,
+     const geometry_msgs::msg::Pose2D& corner_pose_local,
+     bool ray_check_enable,
+     double sample_spacing,
+     int blocked_sample_index,
+     unsigned char hit_cost);
+
+   /** @brief 清除角点/射线检测 footprint Marker */
+   void clearCornerApproachFootprintMarkers(const std::string& frame_id);
 
    /** 沿整条 plan 弧长从起点向前采样；全长取 plan 全长，向前有效长度 capped 为 trajectory.max_global_plan_lookahead_dist（≤0 则用 plan 全长）；footprint 判定同 isRotationCollisionFreeDecel；越界顶点不判碰 */
    bool isTransformedPlanFootprintSamplesCollisionFree(

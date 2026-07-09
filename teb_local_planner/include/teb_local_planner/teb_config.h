@@ -111,6 +111,16 @@ public:
     double prune_corner_residual_distance; //!< 角点到终点剩余长度需大于该值才裁剪 [m]
     //!< 角点有障碍时裁剪 global_plan：|linear.x| 须小于该阈值才执行裁剪 [m/s]
     double prune_before_corner_linear_x_threshold; //!< 仅当线速度绝对值高于该阈值时允许角点裁剪 [m/s]
+    //!< 角点检测：true=机器人→角点射线采样+角点 footprint 检测；false=仅角点
+    bool corner_approach_ray_check_enable;
+    //!< 角点/射线路径 footprint 采样间距 [m]
+    double corner_approach_check_sample_spacing;
+    //!< 角点碰撞代价模式: both | lethal | inscribed
+    std::string corner_approach_check_cost_mode;
+    //!< 角点检测 footprint 四向扩展 [m]; <0 表示使用 obstacles.min_obstacle_dist
+    double corner_approach_check_margin;
+    //!< 是否发布角点/射线检测 footprint MarkerArray（teb_corner_approach_footprint_markers）
+    bool corner_approach_footprint_marker_enable;
     //! transformGlobalPlan: when scorePose throws "Trajectory Hits Obstacle.", extend max plan length by this (m), capped by local costmap size
     double max_plan_length_extend_on_trajectory_obstacle_m; //!< 末端碰障时允许扩展的 transformed_plan 长度 [m]
     //!< transformGlobalPlan: 碰撞点距全局终点直线距离小于此值时，延长 max_plan_length 并前移 last_idx（m）
@@ -373,6 +383,8 @@ public:
     double forward_lookahead_distance; //!< Forward lookahead distance to select target pose for rotation [m]
     //!< 原地转路径 footprint 碰障采样间距 [m]（沿 transformed_plan 弧长）
     double path_footprint_sample_spacing; //!< 沿路径做 footprint 碰撞采样的间距 [m]
+    //!< 原地转路径 footprint 碰撞代价模式: both | lethal | inscribed
+    std::string path_footprint_check_cost_mode;
     double rotate_min_angular_vel; //!< Minimum angular velocity for in-place rotation [rad/s]
     //!< >0：手动 blend(rad)，标称上界 wn*r/blend；<=0：由 wn、wm、max_angular_accel 与当前|ω|自动算 blend
     double decel_blend_start_rad; //!< 原地转减速 blend 角度阈值 [rad]（<=0 自动计算）
@@ -409,6 +421,11 @@ public:
     trajectory.prune_before_corner_distance = 4.0;
     trajectory.prune_corner_residual_distance = 0.5;
     trajectory.prune_before_corner_linear_x_threshold = 0.1;
+    trajectory.corner_approach_ray_check_enable = true;
+    trajectory.corner_approach_check_sample_spacing = 0.2;
+    trajectory.corner_approach_check_cost_mode = "both";
+    trajectory.corner_approach_check_margin = -1.0;
+    trajectory.corner_approach_footprint_marker_enable = false;
     trajectory.teb_autosize = true;
     trajectory.dt_ref = 0.3;
     trajectory.dt_hysteresis = 0.1;
@@ -651,6 +668,7 @@ public:
     rotation.max_angular_accel = 0.35;
     rotation.forward_lookahead_distance = 0.5;  // 0.5 meters forward
     rotation.path_footprint_sample_spacing = 0.2;
+    rotation.path_footprint_check_cost_mode = "both";
     rotation.rotate_min_angular_vel = 0.05;
     rotation.decel_blend_start_rad = 0.0;
     rotation.rotation_limit_duration = 3.0;
