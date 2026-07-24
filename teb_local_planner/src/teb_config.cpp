@@ -123,8 +123,8 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
     nh, name + "." + "reverse_segment_min_angle_deg",
     rclcpp::ParameterValue(trajectory.reverse_segment_min_angle_deg));
   declare_parameter_if_not_declared(
-    nh, name + "." + "reverse_segment_angle_check_num",
-    rclcpp::ParameterValue(trajectory.reverse_segment_angle_check_num));
+    nh, name + "." + "reverse_segment_arc_length_ratio",
+    rclcpp::ParameterValue(trajectory.reverse_segment_arc_length_ratio));
   declare_parameter_if_not_declared(
     nh, name + "." + "backward_check_duration",
     rclcpp::ParameterValue(trajectory.backward_check_duration));
@@ -450,9 +450,9 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
     trajectory.reverse_segment_min_angle_deg,
     trajectory.reverse_segment_min_angle_deg);
   nh->get_parameter_or(
-    name + "." + "reverse_segment_angle_check_num",
-    trajectory.reverse_segment_angle_check_num,
-    trajectory.reverse_segment_angle_check_num);
+    name + "." + "reverse_segment_arc_length_ratio",
+    trajectory.reverse_segment_arc_length_ratio,
+    trajectory.reverse_segment_arc_length_ratio);
   nh->get_parameter_or(
     name + "." + "backward_check_duration",
     trajectory.backward_check_duration,
@@ -908,8 +908,8 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.reverse_segment_min_segment_length_m = parameter.as_double();
       } else if (name == node_name + ".reverse_segment_min_angle_deg") {
         trajectory.reverse_segment_min_angle_deg = parameter.as_double();
-      } else if (name == node_name + ".reverse_segment_angle_check_num") {
-        trajectory.reverse_segment_angle_check_num = parameter.as_int();
+      } else if (name == node_name + ".reverse_segment_arc_length_ratio") {
+        trajectory.reverse_segment_arc_length_ratio = parameter.as_double();
       } else if (name == node_name + ".backward_check_duration") {
         trajectory.backward_check_duration = parameter.as_double();
       } else if (name == node_name + ".backward_check_num") {

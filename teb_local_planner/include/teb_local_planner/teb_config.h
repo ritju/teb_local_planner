@@ -131,12 +131,12 @@ public:
     double transform_global_plan_goal_occupied_tolerance; //!< 末端被占据时，平面偏移搜索半径 [m]
     //!< transformGlobalPlan: 末端位姿微调时的平面网格步长 [m]，与 SMAC Hybrid 等价的 goal_search_resolution
     double transform_global_plan_goal_search_resolution; //!< 末端偏移搜索网格步长 [m]
-    //!< hasReverseSegmentInPlan: 参与倒车判定的相邻路点最小段长 [m]
-    double reverse_segment_min_segment_length_m; //!< 倒车判定的最小相邻段长度 [m]
+    //!< hasReverseSegmentInPlan: 参与倒车判定的路点段最小弦长 [m]；过短则向前扩窗至 i+2, i+3, ...
+    double reverse_segment_min_segment_length_m; //!< 倒车判定的最小段弦长 [m]
     //!< hasReverseSegmentInPlan: 位移方向与 pose 航向夹角下限 [deg]，接近 180° 时判为倒车（如 150 表示 150°~180°）
     double reverse_segment_min_angle_deg; //!< 倒车判定最小夹角阈值 [deg]
-    //!< hasReverseSegmentInPlan: 单帧 plan 内满足角度条件的相邻段最少数量
-    int reverse_segment_angle_check_num; //!< 单帧内参与倒车角度判定的最少段数
+    //!< hasReverseSegmentInPlan: 倒车路径弧长占判定区间总弧长的比例阈值 [0,1]
+    double reverse_segment_arc_length_ratio; //!< 倒车弧长占比阈值
     //!< /backward_mode true→false: 连续非倒车帧防抖窗口时长 [s]
     double backward_check_duration; //!< backward_mode 退出防抖窗口时长 [s]
     //!< /backward_mode true→false: 窗口内连续 reverse_segment=false 帧数
@@ -455,7 +455,7 @@ public:
     trajectory.transform_global_plan_goal_search_resolution = 0.2;
     trajectory.reverse_segment_min_segment_length_m = 0.05;
     trajectory.reverse_segment_min_angle_deg = 150.0;
-    trajectory.reverse_segment_angle_check_num = 10;
+    trajectory.reverse_segment_arc_length_ratio = 0.3;
     trajectory.backward_check_duration = 1.0;
     trajectory.backward_check_num = 2;
 

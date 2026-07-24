@@ -652,7 +652,7 @@
    bool isPointInNarrowPassage(double x, double y) const;
    bool isFootprintFullyOutsideNarrowPassages(
      const geometry_msgs::msg::PoseStamped & pose) const;
-   /** 检测 transformed_plan 中是否存在倒车段：位移与 pose 航向夹角接近 180° */
+   /** 检测 transformed_plan 倒车弧长占比：短段扩窗后位移与航向夹角接近 180° */
    bool hasReverseSegmentInPlan(
      const std::vector<geometry_msgs::msg::PoseStamped> & plan) const;
    /** 边沿发布 /backward_mode（仅几何倒车检测，供 controller 门控） */

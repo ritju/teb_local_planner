@@ -1032,8 +1032,8 @@ bool clippedFootprintOutlineTouchesBlockingCost(
       RCLCPP_INFO(
         logger_,
         "TEB 已发布 /backward_mode（几何倒车检测），"
-        "angle_check_num=%d backward_check_duration=%.2f backward_check_num=%d",
-        cfg_->trajectory.reverse_segment_angle_check_num,
+        "arc_length_ratio=%.2f backward_check_duration=%.2f backward_check_num=%d",
+        cfg_->trajectory.reverse_segment_arc_length_ratio,
         cfg_->trajectory.backward_check_duration,
         cfg_->trajectory.backward_check_num);
     }
@@ -4154,38 +4154,79 @@ void TebLocalPlannerROS::updateNarrowPassageLatch(
 bool TebLocalPlannerROS::hasReverseSegmentInPlan(
   const std::vector<geometry_msgs::msg::PoseStamped> & plan) const
 {
-  
-  if (plan.size() < 2) {
+  // 跳过首段：从 plan[1] 起做非重叠扩窗，按倒车弧长 / 判定区间总弧长判定
+  if (plan.size() < 3) {
     return false;
   }
-  const int required_hits = std::max(1, cfg_->trajectory.reverse_segment_angle_check_num);
-  size_t reverse_hit_count = 0;
-  // 倒车判定：相邻路点位移方向与 pose 方向夹角接近 180°（跳过过短段与首段）
-  for (size_t i = 1; i + 1 < plan.size(); ++i) {
-    const double dx = plan[i + 1].pose.position.x - plan[i].pose.position.x;
-    const double dy = plan[i + 1].pose.position.y - plan[i].pose.position.y;
-    const double segment_length = std::hypot(dx, dy);
-    if (segment_length < cfg_->trajectory.reverse_segment_min_segment_length_m) {
-      RCLCPP_DEBUG(
-        logger_,
-        "狭窄通道: 跳过过短段 plan[%zu]->[%zu], length=%.4f",
-        i, i + 1, segment_length);
-      continue;
+
+  const double min_seg_len = cfg_->trajectory.reverse_segment_min_segment_length_m;
+  const double min_angle_deg = cfg_->trajectory.reverse_segment_min_angle_deg;
+  const double ratio_thresh = std::clamp(
+    cfg_->trajectory.reverse_segment_arc_length_ratio, 0.0, 1.0);
+
+  // 判定区间总弧长：相邻路点折线长 plan[1] → plan.back()
+  double plan_arc_length = 0.0;
+  for (size_t k = 1; k + 1 < plan.size(); ++k) {
+    plan_arc_length += std::hypot(
+      plan[k + 1].pose.position.x - plan[k].pose.position.x,
+      plan[k + 1].pose.position.y - plan[k].pose.position.y);
+  }
+  if (plan_arc_length < min_seg_len || ratio_thresh <= 0.0) {
+    return false;
+  }
+
+  const double reverse_arc_needed = ratio_thresh * plan_arc_length;
+  double reverse_arc_length = 0.0;
+  double consumed_arc_length = 0.0;
+
+  size_t i = 1;
+  while (i + 1 < plan.size()) {
+    // 弦长过短则向前扩窗至 i+2, i+3, ...
+    size_t j = i + 1;
+    double dx = plan[j].pose.position.x - plan[i].pose.position.x;
+    double dy = plan[j].pose.position.y - plan[i].pose.position.y;
+    double chord_length = std::hypot(dx, dy);
+    while (chord_length < min_seg_len && j + 1 < plan.size()) {
+      ++j;
+      dx = plan[j].pose.position.x - plan[i].pose.position.x;
+      dy = plan[j].pose.position.y - plan[i].pose.position.y;
+      chord_length = std::hypot(dx, dy);
     }
+    if (chord_length < min_seg_len) {
+      break;
+    }
+
+    // 用路径折线弧长计入占比（与 plan_arc_length 同口径）；夹角用弦方向
+    double window_arc_length = 0.0;
+    for (size_t k = i; k < j; ++k) {
+      window_arc_length += std::hypot(
+        plan[k + 1].pose.position.x - plan[k].pose.position.x,
+        plan[k + 1].pose.position.y - plan[k].pose.position.y);
+    }
+
     const double yaw = tf2::getYaw(plan[i].pose.orientation);
     const double dot = dx * std::cos(yaw) + dy * std::sin(yaw);
-    const double cos_angle = std::clamp(dot / segment_length, -1.0, 1.0);
+    const double cos_angle = std::clamp(dot / chord_length, -1.0, 1.0);
     const double heading_segment_angle_deg = std::acos(cos_angle) * 180.0 / M_PI;
-    if (heading_segment_angle_deg >= cfg_->trajectory.reverse_segment_min_angle_deg) {
-      ++reverse_hit_count;
+    if (heading_segment_angle_deg >= min_angle_deg) {
+      reverse_arc_length += window_arc_length;
       RCLCPP_DEBUG(
         logger_,
-        "狭窄通道: 倒车段候选 plan[%zu]->[%zu], angle=%.2f deg, hits=%zu/%d",
-        i, i + 1, heading_segment_angle_deg, reverse_hit_count, required_hits);
-      if (reverse_hit_count >= static_cast<size_t>(required_hits)) {
+        "狭窄通道: 倒车段 plan[%zu]->[%zu], angle=%.2f deg, "
+        "rev_arc=%.3f/%.3f (need=%.3f)",
+        i, j, heading_segment_angle_deg,
+        reverse_arc_length, plan_arc_length, reverse_arc_needed);
+      if (reverse_arc_length >= reverse_arc_needed) {
         return true;
       }
     }
+
+    consumed_arc_length += window_arc_length;
+    // 剩余全算倒车仍不够阈值 → 提前判假
+    if (reverse_arc_length + (plan_arc_length - consumed_arc_length) < reverse_arc_needed) {
+      return false;
+    }
+    i = j;
   }
   return false;
 }
