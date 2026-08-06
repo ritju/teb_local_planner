@@ -96,6 +96,8 @@ controller_server:
       weight_wall_side_pull: 80.0
       weight_wall_side_push: 200.0
       weight_wall_line_dist: 40.0
+      # 贴边模式膨胀权重（切换时覆盖 weight_inflation）；0 避免路缘膨胀顶开贴边
+      edge_weight_inflation: 0.0
       # 贴边/障碍代价调试日志间隔 [s]；<=0 关闭
       debug_wall_obstacle_cost_interval: 1.0
 

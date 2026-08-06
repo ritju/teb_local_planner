@@ -822,8 +822,10 @@ bool clippedFootprintOutlineTouchesBlockingCost(
                                             cfg_max_angular_vel_(0.6), cfg_max_vel_x_(0.5), cfg_max_angular_acc_(0.6), wall_line_update_time_(0),
                                             curb_line_update_time_(0), min_obstacle_dist_(0.5), wall_line_ptr_(nullptr), curb_line_subscriber_(nullptr),
                                             normal_weight_optimaltime_(2.0), normal_min_obstacle_dist_(0.2),
+                                            normal_weight_inflation_(0.1),
                                             normal_footprint_vertices_("[[1.25, 0.55], [1.25, -0.55], [-0.65, -0.55], [-0.65, 0.55]]"),
-                                            edge_weight_optimaltime_(10.0), edge_min_obstacle_dist_(0.05), min_wall_line_length_(1.0),
+                                            edge_weight_optimaltime_(10.0), edge_min_obstacle_dist_(0.05),
+                                            edge_weight_inflation_(0.0), min_wall_line_length_(1.0),
                                             edge_footprint_vertices_("[[1.25, 0.5], [1.25, -0.5], [-0.65, -0.5], [-0.65, 0.5]]"),
                                             prune_angle_threshold_(1.57079632679),
                                             is_edge_following_mode_(false),
@@ -837,6 +839,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
    // Initialize edge mode parameters from config defaults (will be overridden by parameters if available)
    edge_weight_optimaltime_ = cfg_->wall_line.edge_weight_optimaltime;
    edge_min_obstacle_dist_ = cfg_->wall_line.edge_min_obstacle_dist;
+   edge_weight_inflation_ = cfg_->wall_line.edge_weight_inflation;
    edge_footprint_vertices_ = cfg_->wall_line.edge_footprint_vertices;
  }
  
@@ -872,6 +875,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
     // Save normal mode parameters
     normal_weight_optimaltime_ = cfg_->optim.weight_optimaltime;
     normal_min_obstacle_dist_ = cfg_->obstacles.min_obstacle_dist;
+    normal_weight_inflation_ = cfg_->optim.weight_inflation;
     // Try to get footprint vertices from parameter server
     std::string footprint_string;
     if (node->get_parameter(name_ + "." + "footprint_model.vertices", footprint_string)) {
@@ -881,6 +885,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
     // Load edge-following mode parameters from config
     edge_weight_optimaltime_ = cfg_->wall_line.edge_weight_optimaltime;
     edge_min_obstacle_dist_ = cfg_->wall_line.edge_min_obstacle_dist;
+    edge_weight_inflation_ = cfg_->wall_line.edge_weight_inflation;
     edge_footprint_vertices_ = cfg_->wall_line.edge_footprint_vertices;
     // via_sep_ = cfg_->trajectory.global_plan_viapoint_sep;
     RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %.2f, max_vel_x: %.2f! In initialize!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
@@ -4406,6 +4411,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
        RCLCPP_INFO(logger_, "Switching to edge-following mode parameters");
        cfg_->optim.weight_optimaltime = cfg_->wall_line.edge_weight_optimaltime;
        cfg_->obstacles.min_obstacle_dist = cfg_->wall_line.edge_min_obstacle_dist;
+       cfg_->optim.weight_inflation = cfg_->wall_line.edge_weight_inflation;
        cfg_->robot.acc_lim_theta = cfg_->wall_line.edge_acc_lim_theta;
        cfg_->robot.max_vel_theta = cfg_->wall_line.edge_max_vel_theta;
 
@@ -4417,6 +4423,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
        RCLCPP_INFO(logger_, "Switching to normal mode parameters");
        cfg_->optim.weight_optimaltime = normal_weight_optimaltime_;
        cfg_->obstacles.min_obstacle_dist = normal_min_obstacle_dist_;
+       cfg_->optim.weight_inflation = normal_weight_inflation_;
        cfg_->robot.acc_lim_theta = cfg_max_angular_acc_;
        cfg_->robot.max_vel_theta = cfg_max_angular_vel_;
        // Set footprint vertices

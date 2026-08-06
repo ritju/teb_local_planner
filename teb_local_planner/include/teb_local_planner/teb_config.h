@@ -234,6 +234,7 @@ public:
     double edge_max_vel_x; //!< 贴边模式线速度上限 [m/s]
     double edge_weight_optimaltime; //!< weight_optimaltime parameter for edge-following mode
     double edge_min_obstacle_dist; //!< min_obstacle_dist parameter for edge-following mode
+    double edge_weight_inflation; //!< 贴边时 weight_inflation；宜较小以免膨胀项顶开贴边
     double keep_wall_line_time; //!< time to keep the wall line when not detect usefull wall line
     std::string paired_mission_and_reference_path_topic; //!< Paired mission segment + edge reference paths
     std::string removed_plan_topic; //!< Remaining mission goals; front pose selects active reference pair
@@ -538,6 +539,7 @@ public:
     wall_line.edge_max_vel_x = 0.5;
     wall_line.edge_weight_optimaltime = 10.0;
     wall_line.edge_min_obstacle_dist = 0.05;
+    wall_line.edge_weight_inflation = 0.0;
     wall_line.keep_wall_line_time = 5.0;
     wall_line.paired_mission_and_reference_path_topic = "paired_mission_and_reference_path";
     wall_line.removed_plan_topic = "/removed_plan";

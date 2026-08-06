@@ -814,10 +814,12 @@
    double prune_angle_threshold_;  // rad, default 90deg
    double normal_weight_optimaltime_;
    double normal_min_obstacle_dist_;
+   double normal_weight_inflation_;
    std::string normal_footprint_vertices_;
    // Parameters for edge-following mode
    double edge_weight_optimaltime_;
    double edge_min_obstacle_dist_;
+   double edge_weight_inflation_;
    double min_wall_line_length_;
    std::string edge_footprint_vertices_;
    bool is_edge_following_mode_;
