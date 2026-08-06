@@ -67,7 +67,7 @@ public:
   /**
     * @brief Default constructor of the abstract obstacle class
     */
-  Obstacle() : dynamic_(false), centroid_velocity_(Eigen::Vector2d::Zero())
+  Obstacle() : dynamic_(false), wall_guide_(false), centroid_velocity_(Eigen::Vector2d::Zero())
   {
   }
   
@@ -195,6 +195,17 @@ public:
   bool isDynamic() const {return dynamic_;}
 
   /**
+    * @brief Mark this obstacle as a wall-following guide line (not a normal collision obstacle).
+    * @details Wall-guide obstacles are constrained by EdgeWallSideClearance and skipped by EdgeObstacle.
+    */
+  void setWallGuide(bool wall_guide) { wall_guide_ = wall_guide; }
+
+  /**
+    * @brief Whether this obstacle is a wall-following guide line.
+    */
+  bool isWallGuide() const { return wall_guide_; }
+
+  /**
     * @brief Set the 2d velocity (vx, vy) of the obstacle w.r.t to the centroid
     * @remarks Setting the velocity using this function marks the obstacle as dynamic (@see isDynamic)
     * @param vel 2D vector containing the velocities of the centroid in x and y directions
@@ -278,6 +289,7 @@ public:
 protected:
 	   
   bool dynamic_; //!< Store flag if obstacle is dynamic (resp. a moving obstacle)
+  bool wall_guide_; //!< True if this obstacle is a wall-following guide (skip normal obstacle edges)
   Eigen::Vector2d centroid_velocity_; //!< Store the corresponding velocity (vx, vy) of the centroid (zero, if _dynamic is \c true)
   
 public:	

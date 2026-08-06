@@ -372,6 +372,10 @@
   double computeWallLineDistWeightFromRobotDistance(
     double robot_perpendicular_distance_to_edge_line) const;
   /**
+   * @brief 按机器人到贴边线垂距调度 weight_wall_line_dist 与 weight_wall_side_pull。
+   */
+  void updateScheduledWallDistWeights(double robot_perpendicular_distance_to_edge_line);
+  /**
    * @brief 融合主来源（墙线/路沿）与参考路径，按优先级与锁定策略选择最终贴边线。
    */
   void mergeFusionPrimaryWithReference(
@@ -763,6 +767,7 @@
    bool initialized_; //!< Keeps track about the correct initialization of this class
    std::string name_; //!< Name of plugin ID
    double weight_wall_line_direction_, weight_wall_line_dist_;
+   double weight_wall_side_pull_; //!< 配置基值，贴边时按垂距比例调度
    double weight_via_point_;
    double min_obstacle_dist_;
    geometry_msgs::msg::PoseStamped last_corner_pose_;

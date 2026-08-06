@@ -54,6 +54,8 @@
 #include <teb_local_planner/g2o_types/edge_via_point.h>
 #include <teb_local_planner/g2o_types/edge_prefer_rotdir.h>
 
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <limits>
 #include "dwb_core/exceptions.hpp"
@@ -155,6 +157,7 @@ void TebOptimalPlanner::registerG2OTypes()
   factory->registerType("EDGE_DYNAMIC_OBSTACLE", std::make_shared<g2o::HyperGraphElementCreator<EdgeDynamicObstacle>>());
   factory->registerType("EDGE_VIA_POINT", std::make_shared<g2o::HyperGraphElementCreator<EdgeViaPoint>>());
   factory->registerType("EDGE_WALL_LINE_DIST", std::make_shared<g2o::HyperGraphElementCreator<EdgeDistanceToWall>>());
+  factory->registerType("EDGE_WALL_SIDE_CLEARANCE", std::make_shared<g2o::HyperGraphElementCreator<EdgeWallSideClearance>>());
   factory->registerType("EDGE_WALL_LINE_DIRECTION", std::make_shared<g2o::HyperGraphElementCreator<EdgeParallelToWall>>());
   factory->registerType("EDGE_PREFER_ROTDIR", std::make_shared<g2o::HyperGraphElementCreator<EdgePreferRotDir>>());
   return;
@@ -224,6 +227,10 @@ bool TebOptimalPlanner::optimizeTEB(int iterations_innerloop, int iterations_out
         return false;
     }
     optimized_ = true;
+
+    // 最后一轮外层迭代、清图前：按间隔打印贴边/障碍代价
+    if (i == iterations_outerloop - 1)
+      logWallAndObstacleCostsIfDue();
     
     if (compute_cost_afterwards && i==iterations_outerloop-1) // compute cost vec only in the last iteration
       computeCurrentCost(obst_cost_scale, viapoint_cost_scale, alternative_time_cost);
@@ -505,6 +512,9 @@ void TebOptimalPlanner::AddEdgesObstacles(double weight_multiplier)
         // we handle dynamic obstacles differently below
         if(cfg_->obstacles.include_dynamic_obstacles && obst->isDynamic())
           continue;
+        // Wall-guide line is handled by EdgeWallSideClearance
+        if (obst->isWallGuide())
+          continue;
 
           // calculate distance to robot model
           double dist = cfg_->robot_model->calculateDistance(teb_.Pose(i), obst.get());
@@ -576,7 +586,9 @@ void TebOptimalPlanner::AddEdgesObstaclesLegacy(double weight_multiplier)
   for (ObstContainer::const_iterator obst = obstacles_->begin(); obst != obstacles_->end(); ++obst)
   {
     if (cfg_->obstacles.include_dynamic_obstacles && (*obst)->isDynamic()) // we handle dynamic obstacles differently below
-      continue; 
+      continue;
+    if ((*obst)->isWallGuide())
+      continue;
     
     int index;
     
@@ -923,17 +935,76 @@ void TebOptimalPlanner::AddEdgesShortestPath()
 
 void TebOptimalPlanner::AddEdgesDistanceToWall()
 {
-  if (cfg_->optim.weight_wall_line_dist==0)
-    return; // if weight equals zero skip adding edges!
-  Eigen::Matrix<double,1,1> information;
+  if (!wall_line_ || wall_line_->size() < 2)
+    return;
+
   const Eigen::Vector2d p0 = teb_.PoseVertex(0)->position();
-  for (int i=0; i < teb_.sizePoses()-1; ++i)
+
+  // --- Scheme A: footprint side clearance (Pull/Push) ---
+  if (cfg_->wall_line.wall_side_clearance_mode)
+  {
+    double w_pull = cfg_->optim.weight_wall_side_pull;
+    if (w_pull <= 0.0)
+      w_pull = cfg_->optim.weight_wall_line_dist;
+    const double w_push = cfg_->optim.weight_wall_side_push;
+    if (w_pull <= 0.0 && w_push <= 0.0)
+      return;
+
+    const Obstacle* wall_guide = nullptr;
+    if (obstacles_)
+    {
+      for (const ObstaclePtr& obst : *obstacles_)
+      {
+        if (obst && obst->isWallGuide())
+        {
+          wall_guide = obst.get();
+          break;
+        }
+      }
+    }
+    if (!wall_guide)
+    {
+      if (!wall_side_clearance_fallback_)
+        wall_side_clearance_fallback_ = std::make_shared<LineObstacle>();
+      wall_side_clearance_fallback_->setStart((*wall_line_)[0]);
+      wall_side_clearance_fallback_->setEnd((*wall_line_)[1]);
+      wall_side_clearance_fallback_->setWallGuide(true);
+      wall_guide = wall_side_clearance_fallback_.get();
+    }
+
+    const BaseRobotFootprintModel* robot_model =
+      cfg_->robot_model ? cfg_->robot_model.get() : robot_model_.get();
+    if (!robot_model)
+      return;
+
+    Eigen::Matrix<double,2,2> information;
+    information.setZero();
+    for (int i = 0; i < teb_.sizePoses() - 1; ++i)
+    {
+      const double dist_from_robot = (teb_.PoseVertex(i)->position() - p0).norm();
+      const double k = EdgeWallSideClearance::distanceWeightScale(*cfg_, dist_from_robot);
+      information(0, 0) = w_pull * k;
+      information(1, 1) = w_push * k;
+      EdgeWallSideClearance* edge = new EdgeWallSideClearance;
+      edge->setVertex(0, teb_.PoseVertex(i));
+      edge->setInformation(information);
+      edge->setParameters(*cfg_, robot_model, wall_guide);
+      optimizer_->addEdge(edge);
+    }
+    return;
+  }
+
+  // --- Legacy: center-to-wall distance ---
+  if (cfg_->optim.weight_wall_line_dist == 0)
+    return;
+  Eigen::Matrix<double,1,1> information;
+  for (int i = 0; i < teb_.sizePoses() - 1; ++i)
   {
     const double dist_from_robot = (teb_.PoseVertex(i)->position() - p0).norm();
     const double k = EdgeDistanceToWall::distanceWeightScale(*cfg_, dist_from_robot);
     information.fill(cfg_->optim.weight_wall_line_dist * k);
     EdgeDistanceToWall* wall_line_dist_edge = new EdgeDistanceToWall;
-    wall_line_dist_edge->setVertex(0,teb_.PoseVertex(i));
+    wall_line_dist_edge->setVertex(0, teb_.PoseVertex(i));
     wall_line_dist_edge->setInformation(information);
     wall_line_dist_edge->setParameters(*cfg_, wall_line_);
     optimizer_->addEdge(wall_line_dist_edge);
@@ -1054,6 +1125,8 @@ void TebOptimalPlanner::AddEdgesVelocityObstacleRatio()
   {
     for (const ObstaclePtr obstacle : (*iter_obstacle++))
     {
+      if (obstacle && obstacle->isWallGuide())
+        continue;
       EdgeVelocityObstacleRatio* edge = new EdgeVelocityObstacleRatio;
       edge->setVertex(0,teb_.PoseVertex(index));
       edge->setVertex(1,teb_.PoseVertex(index + 1));
@@ -1081,6 +1154,138 @@ bool TebOptimalPlanner::hasDiverged() const
   const auto last_iter_stats = stats_vector.back();
 
   return last_iter_stats.chi2 > cfg_->recovery.divergence_detection_max_chi_squared;
+}
+
+void TebOptimalPlanner::logWallAndObstacleCostsIfDue()
+{
+  if (!cfg_ || !optimizer_ || !node_ || !enable_wall_obstacle_cost_log_)
+    return;
+
+  const double interval = cfg_->wall_line.debug_wall_obstacle_cost_interval;
+  if (interval <= 0.0)
+    return;
+
+  const rclcpp::Time now = node_->now();
+  if (last_wall_obstacle_cost_log_time_.nanoseconds() != 0 &&
+      (now - last_wall_obstacle_cost_log_time_).seconds() < interval)
+    return;
+  last_wall_obstacle_cost_log_time_ = now;
+
+  double wall_side_chi2 = 0.0;
+  double wall_side_pull = 0.0;
+  double wall_side_push = 0.0;
+  double wall_legacy_chi2 = 0.0;
+  double obst_chi2 = 0.0;
+  double obst_hard = 0.0;
+  double obst_inflation = 0.0;
+  double dyn_obst_chi2 = 0.0;
+  int n_wall_side = 0;
+  int n_wall_legacy = 0;
+  int n_obst = 0;
+  int n_inflated = 0;
+  int n_dyn = 0;
+  double g_min = std::numeric_limits<double>::infinity();
+  double g_max = -std::numeric_limits<double>::infinity();
+  double g_sum = 0.0;
+  int g_count = 0;
+  double g0 = std::numeric_limits<double>::quiet_NaN();
+
+  for (g2o::OptimizableGraph::Edge* edge : optimizer_->activeEdges())
+  {
+    if (auto* e = dynamic_cast<EdgeWallSideClearance*>(edge))
+    {
+      const auto& err = e->getError();
+      const auto& info = e->information();
+      const double pull = err[0] * err[0] * info(0, 0);
+      const double push = err[1] * err[1] * info(1, 1);
+      wall_side_pull += pull;
+      wall_side_push += push;
+      wall_side_chi2 += e->chi2();
+      ++n_wall_side;
+
+      const double g = e->sideClearance();
+      if (std::isfinite(g))
+      {
+        if (g_count == 0)
+          g0 = g;
+        g_min = std::min(g_min, g);
+        g_max = std::max(g_max, g);
+        g_sum += g;
+        ++g_count;
+      }
+    }
+    else if (dynamic_cast<EdgeDistanceToWall*>(edge))
+    {
+      wall_legacy_chi2 += edge->chi2();
+      ++n_wall_legacy;
+    }
+    else if (auto* e = dynamic_cast<EdgeInflatedObstacle*>(edge))
+    {
+      const auto& err = e->getError();
+      const auto& info = e->information();
+      obst_hard += err[0] * err[0] * info(0, 0);
+      obst_inflation += err[1] * err[1] * info(1, 1);
+      obst_chi2 += e->chi2();
+      ++n_inflated;
+    }
+    else if (dynamic_cast<EdgeObstacle*>(edge))
+    {
+      const double c = edge->chi2();
+      obst_hard += c;
+      obst_chi2 += c;
+      ++n_obst;
+    }
+    else if (dynamic_cast<EdgeDynamicObstacle*>(edge))
+    {
+      dyn_obst_chi2 += edge->chi2();
+      ++n_dyn;
+    }
+  }
+
+  const double wall_total = wall_side_chi2 + wall_legacy_chi2;
+  const double obst_total = obst_chi2 + dyn_obst_chi2;
+
+  // n=0：本轮未添加贴边边（wall_line 为空/未贴边），g 无样本，不是计算错误
+  if (g_count <= 0)
+  {
+    const char * wall_state = "null";
+    std::size_t wall_size = 0u;
+    if (wall_line_)
+    {
+      wall_size = wall_line_->size();
+      wall_state = (wall_size >= 2u) ? "ok" : "empty";
+    }
+    RCLCPP_INFO(
+        node_->get_logger(),
+        "[TEB cost dbg] no side-clearance samples (n_wall_side=%d n_legacy=%d wall_line=%s size=%zu) "
+        "obst_total=%.3f (hard=%.3f infl=%.3f n_pt=%d n_inf=%d | dyn=%.3f n=%d) "
+        "g*=%.3f g_push=%.3f — g0/g_avg/g_min/g_max N/A",
+        n_wall_side, n_wall_legacy,
+        wall_state, wall_size,
+        obst_total,
+        obst_hard, obst_inflation, n_obst, n_inflated,
+        dyn_obst_chi2, n_dyn,
+        cfg_->wall_line.desired_side_clearance,
+        cfg_->wall_line.side_clearance_push);
+    return;
+  }
+
+  const double g_avg = g_sum / static_cast<double>(g_count);
+
+  RCLCPP_INFO(
+      node_->get_logger(),
+      "[TEB cost dbg] wall_total=%.3f (side=%.3f pull=%.3f push=%.3f n=%d | legacy=%.3f n=%d) "
+      "obst_total=%.3f (hard=%.3f infl=%.3f n_pt=%d n_inf=%d | dyn=%.3f n=%d) "
+      "g0=%.3f g_avg=%.3f g_min=%.3f g_max=%.3f g*=%.3f g_push=%.3f",
+      wall_total,
+      wall_side_chi2, wall_side_pull, wall_side_push, n_wall_side,
+      wall_legacy_chi2, n_wall_legacy,
+      obst_total,
+      obst_hard, obst_inflation, n_obst, n_inflated,
+      dyn_obst_chi2, n_dyn,
+      g0, g_avg, g_min, g_max,
+      cfg_->wall_line.desired_side_clearance,
+      cfg_->wall_line.side_clearance_push);
 }
 
 void TebOptimalPlanner::computeCurrentCost(double obst_cost_scale, double viapoint_cost_scale, bool alternative_time_cost)

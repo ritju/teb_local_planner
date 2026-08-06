@@ -71,6 +71,7 @@
 #include "teb_local_planner/g2o_types/edge_prefer_rotdir.h"
 #include "teb_local_planner/g2o_types/edge_parallel_to_wall.h"
 #include "teb_local_planner/g2o_types/edge_distance_to_wall.h"
+#include "teb_local_planner/g2o_types/edge_wall_side_clearance.h"
 
 // messages
 #include <nav_msgs/msg/path.hpp>
@@ -336,6 +337,11 @@ public:
    * @return Const reference to the wall_line container
    */
   const std::vector<Eigen::Vector2d> getWallLine() const {return *wall_line_;}
+
+  /**
+   * @brief HCP 多轨迹时仅对 best TEB 打开贴边/障碍代价调试日志
+   */
+  void setEnableWallObstacleCostLog(bool enabled) { enable_wall_obstacle_cost_log_ = enabled; }
 
   //@}
 	  
@@ -726,6 +732,11 @@ protected:
    * @see optimizeGraph
    */
   void AddEdgesVelocityObstacleRatio();
+
+  /**
+   * @brief 按 debug_wall_obstacle_cost_interval 节流，汇总打印贴边与障碍边代价（需在 clearGraph 前调用）
+   */
+  void logWallAndObstacleCostsIfDue();
   
   //@}
   
@@ -754,6 +765,10 @@ protected:
   std::shared_ptr<g2o::SparseOptimizer> optimizer_; //!< g2o optimizer for trajectory optimization
   std::pair<bool, geometry_msgs::msg::Twist> vel_start_; //!< Store the initial velocity at the start pose
   std::pair<bool, geometry_msgs::msg::Twist> vel_goal_; //!< Store the final velocity at the goal pose
+  //!< Fallback wall-guide LineObstacle when obstacles_ has no isWallGuide() entry
+  std::shared_ptr<LineObstacle> wall_side_clearance_fallback_;
+  rclcpp::Time last_wall_obstacle_cost_log_time_{0, 0, RCL_ROS_TIME}; //!< 贴边/障碍代价日志节流时间戳
+  bool enable_wall_obstacle_cost_log_{true}; //!< false 时跳过 logWallAndObstacleCostsIfDue（HCP 非 best）
 
   bool initialized_; //!< Keeps track about the correct initialization of this class
   bool optimized_; //!< This variable is \c true as long as the last optimization has been completed successful

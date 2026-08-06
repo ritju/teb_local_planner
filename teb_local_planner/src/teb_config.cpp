@@ -205,9 +205,16 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "weight_velocity_obstacle_ratio", rclcpp::ParameterValue(optim.weight_velocity_obstacle_ratio));
   declare_parameter_if_not_declared(nh, name + "." + "weight_wall_line_dist", rclcpp::ParameterValue(optim.weight_wall_line_dist));
   declare_parameter_if_not_declared(nh, name + "." + "weight_wall_line_direction", rclcpp::ParameterValue(optim.weight_wall_line_direction));
+  declare_parameter_if_not_declared(nh, name + "." + "weight_wall_side_pull", rclcpp::ParameterValue(optim.weight_wall_side_pull));
+  declare_parameter_if_not_declared(nh, name + "." + "weight_wall_side_push", rclcpp::ParameterValue(optim.weight_wall_side_push));
 
   
   declare_parameter_if_not_declared(nh, name + "." + "min_wall_dist", rclcpp::ParameterValue(wall_line.min_wall_dist));
+  declare_parameter_if_not_declared(nh, name + "." + "wall_side_clearance_mode", rclcpp::ParameterValue(wall_line.wall_side_clearance_mode));
+  declare_parameter_if_not_declared(nh, name + "." + "desired_side_clearance", rclcpp::ParameterValue(wall_line.desired_side_clearance));
+  declare_parameter_if_not_declared(nh, name + "." + "side_clearance_push", rclcpp::ParameterValue(wall_line.side_clearance_push));
+  declare_parameter_if_not_declared(nh, name + "." + "side_clearance_attract_max", rclcpp::ParameterValue(wall_line.side_clearance_attract_max));
+  declare_parameter_if_not_declared(nh, name + "." + "debug_wall_obstacle_cost_interval", rclcpp::ParameterValue(wall_line.debug_wall_obstacle_cost_interval));
   declare_parameter_if_not_declared(nh, name + "." + "min_wall_line_length", rclcpp::ParameterValue(wall_line.min_wall_line_length));
   declare_parameter_if_not_declared(nh, name + "." + "min_path_line_length", rclcpp::ParameterValue(wall_line.min_path_line_length));
   declare_parameter_if_not_declared(nh, name + "." + "transform_path_line_length", rclcpp::ParameterValue(wall_line.transform_path_line_length));
@@ -535,9 +542,16 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "weight_velocity_obstacle_ratio", optim.weight_velocity_obstacle_ratio, optim.weight_velocity_obstacle_ratio);
   nh->get_parameter_or(name + "." + "weight_wall_line_dist", optim.weight_wall_line_dist, optim.weight_wall_line_dist);
   nh->get_parameter_or(name + "." + "weight_wall_line_direction", optim.weight_wall_line_direction, optim.weight_wall_line_direction);
+  nh->get_parameter_or(name + "." + "weight_wall_side_pull", optim.weight_wall_side_pull, optim.weight_wall_side_pull);
+  nh->get_parameter_or(name + "." + "weight_wall_side_push", optim.weight_wall_side_push, optim.weight_wall_side_push);
 
 
   nh->get_parameter_or(name + "." + "min_wall_dist", wall_line.min_wall_dist, wall_line.min_wall_dist);
+  nh->get_parameter_or(name + "." + "wall_side_clearance_mode", wall_line.wall_side_clearance_mode, wall_line.wall_side_clearance_mode);
+  nh->get_parameter_or(name + "." + "desired_side_clearance", wall_line.desired_side_clearance, wall_line.desired_side_clearance);
+  nh->get_parameter_or(name + "." + "side_clearance_push", wall_line.side_clearance_push, wall_line.side_clearance_push);
+  nh->get_parameter_or(name + "." + "side_clearance_attract_max", wall_line.side_clearance_attract_max, wall_line.side_clearance_attract_max);
+  nh->get_parameter_or(name + "." + "debug_wall_obstacle_cost_interval", wall_line.debug_wall_obstacle_cost_interval, wall_line.debug_wall_obstacle_cost_interval);
   nh->get_parameter_or(name + "." + "static_layer_enable_delay", wall_line.static_layer_enable_delay, wall_line.static_layer_enable_delay);
   nh->get_parameter_or(name + "." + "min_wall_direction", wall_line.min_wall_direction, wall_line.min_wall_direction);
   nh->get_parameter_or(name + "." + "parallel_tolerance", wall_line.parallel_tolerance, wall_line.parallel_tolerance);
@@ -1031,8 +1045,22 @@ rcl_interfaces::msg::SetParametersResult
         optim.weight_wall_line_dist = parameter.as_double();
       } else if (name == node_name + ".weight_wall_line_direction") {
         optim.weight_wall_line_direction = parameter.as_double();
+      } else if (name == node_name + ".weight_wall_side_pull") {
+        optim.weight_wall_side_pull = parameter.as_double();
+      } else if (name == node_name + ".weight_wall_side_push") {
+        optim.weight_wall_side_push = parameter.as_double();
       } else if (name == node_name + ".min_wall_dist") {
         wall_line.min_wall_dist = parameter.as_double();
+      } else if (name == node_name + ".wall_side_clearance_mode") {
+        wall_line.wall_side_clearance_mode = parameter.as_bool();
+      } else if (name == node_name + ".desired_side_clearance") {
+        wall_line.desired_side_clearance = parameter.as_double();
+      } else if (name == node_name + ".side_clearance_push") {
+        wall_line.side_clearance_push = parameter.as_double();
+      } else if (name == node_name + ".side_clearance_attract_max") {
+        wall_line.side_clearance_attract_max = parameter.as_double();
+      } else if (name == node_name + ".debug_wall_obstacle_cost_interval") {
+        wall_line.debug_wall_obstacle_cost_interval = parameter.as_double();
       } else if (name == node_name + ".min_wall_line_length") {
         wall_line.min_wall_line_length = parameter.as_double();
       } else if (name == node_name + ".min_path_line_length") {
@@ -1499,6 +1527,14 @@ void TebConfig::checkParameters() const
   
   if (optim.weight_optimaltime <= 0)
       RCLCPP_WARN(logger_, "TebLocalPlannerROS() Param Warning: parameter weight_optimaltime shoud be > 0 (even if weight_shortest_path is in use)");
+
+  if (wall_line.wall_side_clearance_mode &&
+      wall_line.side_clearance_push >= wall_line.desired_side_clearance)
+  {
+    RCLCPP_WARN(logger_,
+                "TebLocalPlannerROS() Param Warning: side_clearance_push (%.3f) should be < desired_side_clearance (%.3f).",
+                wall_line.side_clearance_push, wall_line.desired_side_clearance);
+  }
 }    
 
 void TebConfig::checkDeprecated(const nav2_util::LifecycleNode::SharedPtr nh, const std::string name) const

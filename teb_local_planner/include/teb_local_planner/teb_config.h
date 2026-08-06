@@ -209,10 +209,17 @@ public:
   //! WallLine related parameters
   struct WallLine
   {
-    double min_wall_dist; //!< Minimum desired separation from obstacles
+    double min_wall_dist; //!< 进入贴边/中心距匹配用；侧隙模式下不作为优化目标
     double min_wall_direction; //!< buffer zone around obstacles with non-zero penalty costs (should be larger than min_obstacle_dist in order to take effect)
     double parallel_tolerance; //!< 路径与边线平行度阈值（通常为 cos 夹角）
     double distance_tolerance; //!< 路径与边线匹配的最大允许距离 [m]
+    //!< 侧隙贴边（方案 A）：footprint 到墙线 guide 的侧隙 g，Pull 钉 g*，Push 在 g<g_push 时推远
+    bool wall_side_clearance_mode; //!< true=侧隙 EdgeWallSideClearance；false=旧中心距 EdgeDistanceToWall
+    double desired_side_clearance; //!< 目标侧隙 g* [m]
+    double side_clearance_push; //!< Push 触发阈值 g_push，须 < g* [m]
+    double side_clearance_attract_max; //!< (g-g*) 超过此值时 Pull 误差置 0；<=0 表示不截断 [m]
+    //!< 调试：按间隔打印贴边代价与障碍代价；<=0 关闭 [s]
+    double debug_wall_obstacle_cost_interval;
     //!< 贴墙距离项：路径点距轨迹起点（机器人）欧氏距离在 [0,R] 内时，信息权重系数由 min 线性过渡到 max；R<=0 表示关闭（恒为 max）
     double wall_line_dist_robot_weight_radius; //!< 距离分段权重半径 R（0~R 线性插值）[m]
     double wall_line_dist_weight_scale_at_robot; //!< 距离起点 0m 时的系数（通常较小，减轻起点附近贴边/倒退）
@@ -254,8 +261,8 @@ public:
     std::string edge_footprint_vertices; //!< footprint vertices parameter for edge-following mode
     double wall_line_safety_offset; //!< Offset the wall line toward the wall side for safety margin [m]
     double wall_line_extension_distance; //!< Extend the wall line segment on both ends [m]
-    double wall_line_lock_distance_threshold; //!< Distance change threshold to unlock locked wall line [m]
-    double wall_line_lock_angle_threshold; //!< Angle change threshold to unlock locked wall line [deg]
+    double wall_line_lock_distance_threshold; //!< 相对锁定墙线的法向偏移阈值（两端点取 max），超过则解锁；忽略沿墙伸缩 [m]
+    double wall_line_lock_angle_threshold; //!< 无向夹角变化阈值，超过则解锁 [deg]
     int wall_line_lock_min_stable_count; //!< Minimum consecutive stable frames before locking
     double wall_line_obstacle_filter_distance; //!< Base nominal: below effective value filters wall noise; above starts exit confirmation [m]
     double wall_line_obstacle_protrusion_base_distance; //!< If dist(robot, protrusion point) <= this, use nominal threshold [m]
@@ -319,8 +326,10 @@ public:
     double weight_prefer_rotdir; //!< Optimization weight for preferring a specific turning direction (-> currently only activated if an oscillation is detected, see 'oscillation_recovery'
     double weight_adapt_factor; //!< Some special weights (currently 'weight_obstacle') are repeatedly scaled by this factor in each outer TEB iteration (weight_new = weight_old*factor); Increasing weights iteratively instead of setting a huge value a-priori leads to better numerical conditions of the underlying optimization problem.
     double obstacle_cost_exponent; //!< Exponent for nonlinear obstacle cost (cost = linear_cost * obstacle_cost_exponent). Set to 1 to disable nonlinear cost (default)
-    double weight_wall_line_dist; //!< 贴边距离代价权重
+    double weight_wall_line_dist; //!< 旧中心距贴边权重；侧隙模式下若 weight_wall_side_pull<=0 则回退用此值作 Pull
     double weight_wall_line_direction; //!< 贴边方向一致性代价权重
+    double weight_wall_side_pull; //!< 侧隙 Pull 权重（g - g*）
+    double weight_wall_side_push; //!< 侧隙 Push 权重（max(g_push - g, 0)）
   } optim; //!< Optimization related parameters
 
 
@@ -519,6 +528,11 @@ public:
     wall_line.min_wall_direction = 0.0;
     wall_line.parallel_tolerance = 0.98;
     wall_line.distance_tolerance = 0.8;
+    wall_line.wall_side_clearance_mode = true;
+    wall_line.desired_side_clearance = 0.08;
+    wall_line.side_clearance_push = 0.05;
+    wall_line.side_clearance_attract_max = 0.35;
+    wall_line.debug_wall_obstacle_cost_interval = 0.0;
     wall_line.edge_acc_lim_theta = 0.2;
     wall_line.edge_max_vel_theta = 0.3;
     wall_line.edge_max_vel_x = 0.5;
@@ -617,6 +631,8 @@ public:
     optim.obstacle_cost_exponent = 1.0;
     optim.weight_wall_line_dist = 1.0;
     optim.weight_wall_line_direction = 1.0;
+    optim.weight_wall_side_pull = 80.0;
+    optim.weight_wall_side_push = 200.0;
 
     // Homotopy Class Planner
 
