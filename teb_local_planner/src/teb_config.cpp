@@ -38,6 +38,8 @@
 
 #include "teb_local_planner/teb_config.h"
 
+#include <algorithm>
+
 using nav2_util::declare_parameter_if_not_declared;
 
 namespace teb_local_planner
@@ -67,7 +69,19 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "force_reinit_new_goal_dist", rclcpp::ParameterValue(trajectory.force_reinit_new_goal_dist));
   declare_parameter_if_not_declared(nh, name + "." + "force_reinit_new_goal_angular", rclcpp::ParameterValue(trajectory.force_reinit_new_goal_angular));
   declare_parameter_if_not_declared(nh, name + "." + "feasibility_check_no_poses", rclcpp::ParameterValue(trajectory.feasibility_check_no_poses));
+  declare_parameter_if_not_declared(nh, name + "." + "feasibility_check_obstacle_contours", rclcpp::ParameterValue(trajectory.feasibility_check_obstacle_contours));
+  declare_parameter_if_not_declared(nh, name + "." + "feasibility_check_dynamic_prediction", rclcpp::ParameterValue(trajectory.feasibility_check_dynamic_prediction));
+  declare_parameter_if_not_declared(nh, name + "." + "feas_contour_margin", rclcpp::ParameterValue(trajectory.feas_contour_margin));
+  declare_parameter_if_not_declared(nh, name + "." + "feas_pred_T", rclcpp::ParameterValue(trajectory.feas_pred_T));
+  declare_parameter_if_not_declared(nh, name + "." + "feas_pred_R", rclcpp::ParameterValue(trajectory.feas_pred_R));
+  declare_parameter_if_not_declared(nh, name + "." + "feas_pred_gate_mode", rclcpp::ParameterValue(trajectory.feas_pred_gate_mode));
+  declare_parameter_if_not_declared(nh, name + "." + "feas_pred_delta_omega_abs", rclcpp::ParameterValue(trajectory.feas_pred_delta_omega_abs));
+  declare_parameter_if_not_declared(nh, name + "." + "feas_pred_delta_omega_rel", rclcpp::ParameterValue(trajectory.feas_pred_delta_omega_rel));
+  declare_parameter_if_not_declared(nh, name + "." + "feas_pred_v_min", rclcpp::ParameterValue(trajectory.feas_pred_v_min));
   declare_parameter_if_not_declared(nh, name + "." + "publish_feedback", rclcpp::ParameterValue(trajectory.publish_feedback));
+  declare_parameter_if_not_declared(nh, name + "." + "publish_dynamic_obstacle_debug", rclcpp::ParameterValue(trajectory.publish_dynamic_obstacle_debug));
+  declare_parameter_if_not_declared(nh, name + "." + "dynamic_obstacle_debug_pose_stride", rclcpp::ParameterValue(trajectory.dynamic_obstacle_debug_pose_stride));
+  declare_parameter_if_not_declared(nh, name + "." + "dynamic_obstacle_debug_time_z_scale", rclcpp::ParameterValue(trajectory.dynamic_obstacle_debug_time_z_scale));
   declare_parameter_if_not_declared(nh, name + "." + "min_resolution_collision_check_angular", rclcpp::ParameterValue(trajectory.min_resolution_collision_check_angular));
   declare_parameter_if_not_declared(nh, name + "." + "control_look_ahead_poses", rclcpp::ParameterValue(trajectory.control_look_ahead_poses));
   declare_parameter_if_not_declared(nh, name + "." + "feasibility_check_lookahead_distance", rclcpp::ParameterValue(trajectory.feasibility_check_lookahead_distance));
@@ -154,6 +168,21 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "inflation_dist", rclcpp::ParameterValue(obstacles.inflation_dist));
   declare_parameter_if_not_declared(nh, name + "." + "dynamic_obstacle_inflation_dist", rclcpp::ParameterValue(obstacles.dynamic_obstacle_inflation_dist));
   declare_parameter_if_not_declared(nh, name + "." + "include_dynamic_obstacles", rclcpp::ParameterValue(obstacles.include_dynamic_obstacles));
+  declare_parameter_if_not_declared(nh, name + "." + "dynamic_safety_predictable_mode", rclcpp::ParameterValue(obstacles.dynamic_safety_predictable_mode));
+  declare_parameter_if_not_declared(nh, name + "." + "dynamic_obstacles_as_static_edges", rclcpp::ParameterValue(obstacles.dynamic_obstacles_as_static_edges));
+  declare_parameter_if_not_declared(nh, name + "." + "dynamic_obstacle_cache_time", rclcpp::ParameterValue(obstacles.dynamic_obstacle_cache_time));
+  declare_parameter_if_not_declared(nh, name + "." + "dyn_gate_T_near", rclcpp::ParameterValue(obstacles.dyn_gate_T_near));
+  declare_parameter_if_not_declared(nh, name + "." + "dyn_gate_v_x_max", rclcpp::ParameterValue(obstacles.dyn_gate_v_x_max));
+  declare_parameter_if_not_declared(nh, name + "." + "dyn_gate_omega_z_max", rclcpp::ParameterValue(obstacles.dyn_gate_omega_z_max));
+  declare_parameter_if_not_declared(nh, name + "." + "dyn_gate_inflation", rclcpp::ParameterValue(obstacles.dyn_gate_inflation));
+  declare_parameter_if_not_declared(nh, name + "." + "dyn_gate_overlap_dist", rclcpp::ParameterValue(obstacles.dyn_gate_overlap_dist));
+  declare_parameter_if_not_declared(nh, name + "." + "dyn_gate_roi_front", rclcpp::ParameterValue(obstacles.dyn_gate_roi_front));
+  declare_parameter_if_not_declared(nh, name + "." + "dyn_gate_roi_rear", rclcpp::ParameterValue(obstacles.dyn_gate_roi_rear));
+  declare_parameter_if_not_declared(nh, name + "." + "dyn_gate_roi_left", rclcpp::ParameterValue(obstacles.dyn_gate_roi_left));
+  declare_parameter_if_not_declared(nh, name + "." + "dyn_gate_roi_right", rclcpp::ParameterValue(obstacles.dyn_gate_roi_right));
+  declare_parameter_if_not_declared(nh, name + "." + "dyn_gate_hold_time", rclcpp::ParameterValue(obstacles.dyn_gate_hold_time));
+  declare_parameter_if_not_declared(nh, name + "." + "delta_omega_scale", rclcpp::ParameterValue(obstacles.delta_omega_scale));
+  declare_parameter_if_not_declared(nh, name + "." + "publish_near_horizon_debug", rclcpp::ParameterValue(obstacles.publish_near_horizon_debug));
   declare_parameter_if_not_declared(nh, name + "." + "include_costmap_obstacles", rclcpp::ParameterValue(obstacles.include_costmap_obstacles));
   declare_parameter_if_not_declared(nh, name + "." + "costmap_obstacles_behind_robot_dist", rclcpp::ParameterValue(obstacles.costmap_obstacles_behind_robot_dist));
   declare_parameter_if_not_declared(nh, name + "." + "obstacle_poses_affected", rclcpp::ParameterValue(obstacles.obstacle_poses_affected));
@@ -198,6 +227,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "weight_inflation", rclcpp::ParameterValue(optim.weight_inflation));
   declare_parameter_if_not_declared(nh, name + "." + "weight_dynamic_obstacle", rclcpp::ParameterValue(optim.weight_dynamic_obstacle));
   declare_parameter_if_not_declared(nh, name + "." + "weight_dynamic_obstacle_inflation", rclcpp::ParameterValue(optim.weight_dynamic_obstacle_inflation));
+  declare_parameter_if_not_declared(nh, name + "." + "weight_near_horizon_omega_hold", rclcpp::ParameterValue(optim.weight_near_horizon_omega_hold));
   declare_parameter_if_not_declared(nh, name + "." + "weight_viapoint", rclcpp::ParameterValue(optim.weight_viapoint));
   declare_parameter_if_not_declared(nh, name + "." + "weight_prefer_rotdir", rclcpp::ParameterValue(optim.weight_prefer_rotdir));
   declare_parameter_if_not_declared(nh, name + "." + "weight_adapt_factor", rclcpp::ParameterValue(optim.weight_adapt_factor));
@@ -378,7 +408,21 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "force_reinit_new_goal_dist", trajectory.force_reinit_new_goal_dist, trajectory.force_reinit_new_goal_dist);
   nh->get_parameter_or(name + "." + "force_reinit_new_goal_angular", trajectory.force_reinit_new_goal_angular, trajectory.force_reinit_new_goal_angular);
   nh->get_parameter_or(name + "." + "feasibility_check_no_poses", trajectory.feasibility_check_no_poses, trajectory.feasibility_check_no_poses);
+  nh->get_parameter_or(name + "." + "feasibility_check_obstacle_contours", trajectory.feasibility_check_obstacle_contours, trajectory.feasibility_check_obstacle_contours);
+  nh->get_parameter_or(name + "." + "feasibility_check_dynamic_prediction", trajectory.feasibility_check_dynamic_prediction, trajectory.feasibility_check_dynamic_prediction);
+  nh->get_parameter_or(name + "." + "feas_contour_margin", trajectory.feas_contour_margin, trajectory.feas_contour_margin);
+  nh->get_parameter_or(name + "." + "feas_pred_T", trajectory.feas_pred_T, trajectory.feas_pred_T);
+  nh->get_parameter_or(name + "." + "feas_pred_R", trajectory.feas_pred_R, trajectory.feas_pred_R);
+  nh->get_parameter_or(name + "." + "feas_pred_gate_mode", trajectory.feas_pred_gate_mode, trajectory.feas_pred_gate_mode);
+  nh->get_parameter_or(name + "." + "feas_pred_delta_omega_abs", trajectory.feas_pred_delta_omega_abs, trajectory.feas_pred_delta_omega_abs);
+  nh->get_parameter_or(name + "." + "feas_pred_delta_omega_rel", trajectory.feas_pred_delta_omega_rel, trajectory.feas_pred_delta_omega_rel);
+  nh->get_parameter_or(name + "." + "feas_pred_v_min", trajectory.feas_pred_v_min, trajectory.feas_pred_v_min);
   nh->get_parameter_or(name + "." + "publish_feedback", trajectory.publish_feedback, trajectory.publish_feedback);
+  nh->get_parameter_or(name + "." + "publish_dynamic_obstacle_debug", trajectory.publish_dynamic_obstacle_debug, trajectory.publish_dynamic_obstacle_debug);
+  nh->get_parameter_or(name + "." + "dynamic_obstacle_debug_pose_stride", trajectory.dynamic_obstacle_debug_pose_stride, trajectory.dynamic_obstacle_debug_pose_stride);
+  nh->get_parameter_or(name + "." + "dynamic_obstacle_debug_time_z_scale", trajectory.dynamic_obstacle_debug_time_z_scale, trajectory.dynamic_obstacle_debug_time_z_scale);
+  if (trajectory.dynamic_obstacle_debug_pose_stride < 1)
+    trajectory.dynamic_obstacle_debug_pose_stride = 1;
   nh->get_parameter_or(name + "." + "min_resolution_collision_check_angular", trajectory.min_resolution_collision_check_angular, trajectory.min_resolution_collision_check_angular);
   nh->get_parameter_or(name + "." + "control_look_ahead_poses", trajectory.control_look_ahead_poses, trajectory.control_look_ahead_poses);
   nh->get_parameter_or(name + "." + "feasibility_check_lookahead_distance", trajectory.feasibility_check_lookahead_distance, trajectory.feasibility_check_lookahead_distance);
@@ -484,6 +528,21 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "inflation_dist", obstacles.inflation_dist, obstacles.inflation_dist);
   nh->get_parameter_or(name + "." + "dynamic_obstacle_inflation_dist", obstacles.dynamic_obstacle_inflation_dist, obstacles.dynamic_obstacle_inflation_dist);
   nh->get_parameter_or(name + "." + "include_dynamic_obstacles", obstacles.include_dynamic_obstacles, obstacles.include_dynamic_obstacles);
+  nh->get_parameter_or(name + "." + "dynamic_safety_predictable_mode", obstacles.dynamic_safety_predictable_mode, obstacles.dynamic_safety_predictable_mode);
+  nh->get_parameter_or(name + "." + "dynamic_obstacles_as_static_edges", obstacles.dynamic_obstacles_as_static_edges, obstacles.dynamic_obstacles_as_static_edges);
+  nh->get_parameter_or(name + "." + "dynamic_obstacle_cache_time", obstacles.dynamic_obstacle_cache_time, obstacles.dynamic_obstacle_cache_time);
+  nh->get_parameter_or(name + "." + "dyn_gate_T_near", obstacles.dyn_gate_T_near, obstacles.dyn_gate_T_near);
+  nh->get_parameter_or(name + "." + "dyn_gate_v_x_max", obstacles.dyn_gate_v_x_max, obstacles.dyn_gate_v_x_max);
+  nh->get_parameter_or(name + "." + "dyn_gate_omega_z_max", obstacles.dyn_gate_omega_z_max, obstacles.dyn_gate_omega_z_max);
+  nh->get_parameter_or(name + "." + "dyn_gate_inflation", obstacles.dyn_gate_inflation, obstacles.dyn_gate_inflation);
+  nh->get_parameter_or(name + "." + "dyn_gate_overlap_dist", obstacles.dyn_gate_overlap_dist, obstacles.dyn_gate_overlap_dist);
+  nh->get_parameter_or(name + "." + "dyn_gate_roi_front", obstacles.dyn_gate_roi_front, obstacles.dyn_gate_roi_front);
+  nh->get_parameter_or(name + "." + "dyn_gate_roi_rear", obstacles.dyn_gate_roi_rear, obstacles.dyn_gate_roi_rear);
+  nh->get_parameter_or(name + "." + "dyn_gate_roi_left", obstacles.dyn_gate_roi_left, obstacles.dyn_gate_roi_left);
+  nh->get_parameter_or(name + "." + "dyn_gate_roi_right", obstacles.dyn_gate_roi_right, obstacles.dyn_gate_roi_right);
+  nh->get_parameter_or(name + "." + "dyn_gate_hold_time", obstacles.dyn_gate_hold_time, obstacles.dyn_gate_hold_time);
+  nh->get_parameter_or(name + "." + "delta_omega_scale", obstacles.delta_omega_scale, obstacles.delta_omega_scale);
+  nh->get_parameter_or(name + "." + "publish_near_horizon_debug", obstacles.publish_near_horizon_debug, obstacles.publish_near_horizon_debug);
   nh->get_parameter_or(name + "." + "include_costmap_obstacles", obstacles.include_costmap_obstacles, obstacles.include_costmap_obstacles);
   nh->get_parameter_or(name + "." + "costmap_obstacles_behind_robot_dist", obstacles.costmap_obstacles_behind_robot_dist, obstacles.costmap_obstacles_behind_robot_dist);
   nh->get_parameter_or(name + "." + "obstacle_poses_affected", obstacles.obstacle_poses_affected, obstacles.obstacle_poses_affected);
@@ -528,6 +587,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "weight_inflation", optim.weight_inflation, optim.weight_inflation);
   nh->get_parameter_or(name + "." + "weight_dynamic_obstacle", optim.weight_dynamic_obstacle, optim.weight_dynamic_obstacle);
   nh->get_parameter_or(name + "." + "weight_dynamic_obstacle_inflation", optim.weight_dynamic_obstacle_inflation, optim.weight_dynamic_obstacle_inflation);
+  nh->get_parameter_or(name + "." + "weight_near_horizon_omega_hold", optim.weight_near_horizon_omega_hold, optim.weight_near_horizon_omega_hold);
   nh->get_parameter_or(name + "." + "weight_viapoint", optim.weight_viapoint, optim.weight_viapoint);
   nh->get_parameter_or(name + "." + "weight_prefer_rotdir", optim.weight_prefer_rotdir, optim.weight_prefer_rotdir);
   nh->get_parameter_or(name + "." + "weight_adapt_factor", optim.weight_adapt_factor, optim.weight_adapt_factor);
@@ -870,6 +930,20 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.min_resolution_collision_check_angular = parameter.as_double();
       } else if (name == node_name + ".feasibility_check_lookahead_distance") {
         trajectory.feasibility_check_lookahead_distance = parameter.as_double();
+      } else if (name == node_name + ".feas_contour_margin") {
+        trajectory.feas_contour_margin = parameter.as_double();
+      } else if (name == node_name + ".feas_pred_T") {
+        trajectory.feas_pred_T = parameter.as_double();
+      } else if (name == node_name + ".feas_pred_R") {
+        trajectory.feas_pred_R = parameter.as_double();
+      } else if (name == node_name + ".feas_pred_delta_omega_abs") {
+        trajectory.feas_pred_delta_omega_abs = parameter.as_double();
+      } else if (name == node_name + ".feas_pred_delta_omega_rel") {
+        trajectory.feas_pred_delta_omega_rel = parameter.as_double();
+      } else if (name == node_name + ".feas_pred_v_min") {
+        trajectory.feas_pred_v_min = parameter.as_double();
+      } else if (name == node_name + ".dynamic_obstacle_debug_time_z_scale") {
+        trajectory.dynamic_obstacle_debug_time_z_scale = parameter.as_double();
       } else if (name == node_name + ".theta_threshold") {
         trajectory.theta_threshold = parameter.as_int();
       } else if (name == node_name + ".corner_dist_threshold") {
@@ -1019,6 +1093,8 @@ rcl_interfaces::msg::SetParametersResult
         optim.weight_dynamic_obstacle = parameter.as_double();
       } else if (name == node_name + ".weight_dynamic_obstacle_inflation") {
         optim.weight_dynamic_obstacle_inflation = parameter.as_double();
+      } else if (name == node_name + ".weight_near_horizon_omega_hold") {
+        optim.weight_near_horizon_omega_hold = parameter.as_double();
       } else if (name == node_name + ".weight_viapoint") {
         optim.weight_viapoint = parameter.as_double();
       } else if (name == node_name + ".weight_prefer_rotdir") {
@@ -1272,6 +1348,8 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.max_samples = parameter.as_int();
       } else if (name == node_name + ".feasibility_check_no_poses") {
         trajectory.feasibility_check_no_poses = parameter.as_int();
+      } else if (name == node_name + ".dynamic_obstacle_debug_pose_stride") {
+        trajectory.dynamic_obstacle_debug_pose_stride = std::max(1, static_cast<int>(parameter.as_int()));
       } else if (name == node_name + ".control_look_ahead_poses") {
         trajectory.control_look_ahead_poses = parameter.as_int();
       }
@@ -1312,6 +1390,12 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.exact_arc_length = parameter.as_bool();
       } else if (name == node_name + ".publish_feedback") {
         trajectory.publish_feedback = parameter.as_bool();
+      } else if (name == node_name + ".publish_dynamic_obstacle_debug") {
+        trajectory.publish_dynamic_obstacle_debug = parameter.as_bool();
+      } else if (name == node_name + ".feasibility_check_obstacle_contours") {
+        trajectory.feasibility_check_obstacle_contours = parameter.as_bool();
+      } else if (name == node_name + ".feasibility_check_dynamic_prediction") {
+        trajectory.feasibility_check_dynamic_prediction = parameter.as_bool();
       }
       // Robot
       else if (name == node_name + ".cmd_angle_instead_rotvel") {
@@ -1326,6 +1410,36 @@ rcl_interfaces::msg::SetParametersResult
       // Obstacles
       else if (name == node_name + ".include_dynamic_obstacles") {
         obstacles.include_dynamic_obstacles = parameter.as_bool();
+      } else if (name == node_name + ".dynamic_safety_predictable_mode") {
+        obstacles.dynamic_safety_predictable_mode = parameter.as_bool();
+      } else if (name == node_name + ".dynamic_obstacles_as_static_edges") {
+        obstacles.dynamic_obstacles_as_static_edges = parameter.as_bool();
+      } else if (name == node_name + ".dynamic_obstacle_cache_time") {
+        obstacles.dynamic_obstacle_cache_time = parameter.as_double();
+      } else if (name == node_name + ".dyn_gate_T_near") {
+        obstacles.dyn_gate_T_near = parameter.as_double();
+      } else if (name == node_name + ".dyn_gate_v_x_max") {
+        obstacles.dyn_gate_v_x_max = parameter.as_double();
+      } else if (name == node_name + ".dyn_gate_omega_z_max") {
+        obstacles.dyn_gate_omega_z_max = parameter.as_double();
+      } else if (name == node_name + ".dyn_gate_inflation") {
+        obstacles.dyn_gate_inflation = parameter.as_double();
+      } else if (name == node_name + ".dyn_gate_overlap_dist") {
+        obstacles.dyn_gate_overlap_dist = parameter.as_double();
+      } else if (name == node_name + ".dyn_gate_roi_front") {
+        obstacles.dyn_gate_roi_front = parameter.as_double();
+      } else if (name == node_name + ".dyn_gate_roi_rear") {
+        obstacles.dyn_gate_roi_rear = parameter.as_double();
+      } else if (name == node_name + ".dyn_gate_roi_left") {
+        obstacles.dyn_gate_roi_left = parameter.as_double();
+      } else if (name == node_name + ".dyn_gate_roi_right") {
+        obstacles.dyn_gate_roi_right = parameter.as_double();
+      } else if (name == node_name + ".dyn_gate_hold_time") {
+        obstacles.dyn_gate_hold_time = parameter.as_double();
+      } else if (name == node_name + ".delta_omega_scale") {
+        obstacles.delta_omega_scale = parameter.as_double();
+      } else if (name == node_name + ".publish_near_horizon_debug") {
+        obstacles.publish_near_horizon_debug = parameter.as_bool();
       } else if (name == node_name + ".include_costmap_obstacles") {
         obstacles.include_costmap_obstacles = parameter.as_bool();
       } else if (name == node_name + ".legacy_obstacle_association") {
@@ -1367,10 +1481,13 @@ rcl_interfaces::msg::SetParametersResult
 
     else if (type == rcl_interfaces::msg::ParameterType::PARAMETER_STRING) {
       // Trajectory
+      if (name == node_name + ".feas_pred_gate_mode") {
+        trajectory.feas_pred_gate_mode = parameter.as_string();
+      }
       // Robot
       // GoalTolerance
       // Obstacles
-      if (name == node_name + ".costmap_converter_plugin") {
+      else if (name == node_name + ".costmap_converter_plugin") {
         obstacles.costmap_converter_plugin = parameter.as_string();
       }
       // Optimization

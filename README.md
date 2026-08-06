@@ -59,3 +59,5 @@ Install dependencies (listed in the *package.xml* and *CMakeLists.txt* file) usi
     rosdep install teb_local_planner
 
 
+动态障碍物避让逻辑：
+1、当前采用的是固定权重方法

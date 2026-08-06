@@ -45,6 +45,7 @@
 // g2o custom edges and vertices for the TEB planner
 #include <teb_local_planner/g2o_types/edge_velocity.h>
 #include <teb_local_planner/g2o_types/edge_velocity_obstacle_ratio.h>
+#include <teb_local_planner/g2o_types/edge_near_horizon_omega_hold.h>
 #include <teb_local_planner/g2o_types/edge_acceleration.h>
 #include <teb_local_planner/g2o_types/edge_kinematics.h>
 #include <teb_local_planner/g2o_types/edge_time_optimal.h>
@@ -127,7 +128,15 @@ void TebOptimalPlanner::visualize()
   
   if (cfg_->trajectory.publish_feedback)
     visualization_->publishFeedbackMessage(*this, *obstacles_);
- 
+
+  if (cfg_->trajectory.publish_dynamic_obstacle_debug && obstacles_)
+  {
+    visualization_->publishDynamicObstacleDebug(
+        teb_,
+        dyn_obst_edge_build_snapshot_valid_ ? &dyn_obst_edge_build_snapshot_ : nullptr,
+        *obstacles_,
+        *cfg_->robot_model);
+  }
 }
 
 /*
@@ -153,6 +162,7 @@ void TebOptimalPlanner::registerG2OTypes()
   factory->registerType("EDGE_OBSTACLE", std::make_shared<g2o::HyperGraphElementCreator<EdgeObstacle>>());
   factory->registerType("EDGE_INFLATED_OBSTACLE", std::make_shared<g2o::HyperGraphElementCreator<EdgeInflatedObstacle>>());
   factory->registerType("EDGE_DYNAMIC_OBSTACLE", std::make_shared<g2o::HyperGraphElementCreator<EdgeDynamicObstacle>>());
+  factory->registerType("EDGE_NEAR_HORIZON_OMEGA_HOLD", std::make_shared<g2o::HyperGraphElementCreator<EdgeNearHorizonOmegaHold>>());
   factory->registerType("EDGE_VIA_POINT", std::make_shared<g2o::HyperGraphElementCreator<EdgeViaPoint>>());
   factory->registerType("EDGE_WALL_LINE_DIST", std::make_shared<g2o::HyperGraphElementCreator<EdgeDistanceToWall>>());
   factory->registerType("EDGE_WALL_LINE_DIRECTION", std::make_shared<g2o::HyperGraphElementCreator<EdgeParallelToWall>>());
@@ -345,8 +355,25 @@ bool TebOptimalPlanner::buildGraph(double weight_multiplier)
   else
     AddEdgesObstacles(weight_multiplier);
 
-  if (cfg_->obstacles.include_dynamic_obstacles)
+  // Dynamic obstacle edges:
+  // - safety predictable mode: do NOT use AddEdgesDynamicObstacles as the main path;
+  //   optional NearHorizonOmegaHold is added instead (gated via cfg_->near_horizon_runtime).
+  // - legacy mode: keep constant-velocity spatiotemporal edges.
+  if (cfg_->obstacles.dynamic_safety_predictable_mode)
+  {
+    dyn_obst_edge_build_snapshot_.clear();
+    dyn_obst_edge_build_snapshot_valid_ = false;
+    AddEdgesNearHorizonOmegaHold();
+  }
+  else if (cfg_->obstacles.include_dynamic_obstacles)
+  {
     AddEdgesDynamicObstacles();
+  }
+  else
+  {
+    dyn_obst_edge_build_snapshot_.clear();
+    dyn_obst_edge_build_snapshot_valid_ = false;
+  }
   
   AddEdgesViaPoints();
   
@@ -502,8 +529,11 @@ void TebOptimalPlanner::AddEdgesObstacles(double weight_multiplier)
       // iterate obstacles
       for (const ObstaclePtr& obst : *obstacles_)
       {
-        // we handle dynamic obstacles differently below
-        if(cfg_->obstacles.include_dynamic_obstacles && obst->isDynamic())
+        // Legacy: skip dynamic obstacles here and handle them in AddEdgesDynamicObstacles.
+        // Safety mode: optional switch dynamic_obstacles_as_static_edges builds static edges
+        // from the obstacle's current pose (do not hard-code; controlled by parameter).
+        if (cfg_->obstacles.include_dynamic_obstacles && obst->isDynamic() &&
+            !cfg_->obstacles.dynamic_obstacles_as_static_edges)
           continue;
 
           // calculate distance to robot model
@@ -519,8 +549,10 @@ void TebOptimalPlanner::AddEdgesObstacles(double weight_multiplier)
           if (dist > cfg_->obstacles.min_obstacle_dist*cfg_->obstacles.obstacle_association_cutoff_factor)
             continue;
           
-          // determine side (left or right) and assign obstacle if closer than the previous one
-          if (cross2d(pose_orient, obst->getCentroid()) > 0) // left
+          // Determine side (left or right) using the obstacle position relative to this pose.
+          // Must use (centroid - pose), not absolute centroid — otherwise map-frame quadrant
+          // dominates and left/right association is wrong (upstream teb PR #415).
+          if (cross2d(pose_orient, obst->getCentroid() - teb_.Pose(i).position()) > 0) // left
           {
               if (dist < left_min_dist)
               {
@@ -575,7 +607,9 @@ void TebOptimalPlanner::AddEdgesObstaclesLegacy(double weight_multiplier)
     
   for (ObstContainer::const_iterator obst = obstacles_->begin(); obst != obstacles_->end(); ++obst)
   {
-    if (cfg_->obstacles.include_dynamic_obstacles && (*obst)->isDynamic()) // we handle dynamic obstacles differently below
+    // Same skip policy as AddEdgesObstacles (see dynamic_obstacles_as_static_edges).
+    if (cfg_->obstacles.include_dynamic_obstacles && (*obst)->isDynamic() &&
+        !cfg_->obstacles.dynamic_obstacles_as_static_edges)
       continue; 
     
     int index;
@@ -653,15 +687,95 @@ void TebOptimalPlanner::AddEdgesObstaclesLegacy(double weight_multiplier)
 }
 
 
+void TebOptimalPlanner::AddEdgesNearHorizonOmegaHold()
+{
+  // Soft constraint on near-horizon angular velocity: |omega - omega_ref| <= scale*max_vel_theta
+  if (!cfg_->obstacles.dynamic_safety_predictable_mode)
+  {
+    return;
+  }
+  if (!cfg_->near_horizon_runtime.omega_hold_enable)
+  {
+    RCLCPP_DEBUG(node_->get_logger(),
+                 "[NearHorizon] OmegaHold skipped: gate disabled this cycle");
+    return;
+  }
+  if (cfg_->optim.weight_near_horizon_omega_hold <= 0.0 || teb_.sizePoses() < 2)
+  {
+    return;
+  }
+
+  const double omega_ref = cfg_->near_horizon_runtime.omega_ref;
+  const double delta_allow =
+      std::max(0.0, cfg_->obstacles.delta_omega_scale * cfg_->robot.max_vel_theta);
+  const double T_near = cfg_->obstacles.dyn_gate_T_near;
+
+  Eigen::Matrix<double, 1, 1> information;
+  information.fill(cfg_->optim.weight_near_horizon_omega_hold);
+
+  double t_acc = 0.0;
+  int edges_added = 0;
+  for (int i = 0; i < teb_.sizePoses() - 1; ++i)
+  {
+    if (t_acc > T_near)
+    {
+      break;
+    }
+
+    EdgeNearHorizonOmegaHold* edge = new EdgeNearHorizonOmegaHold;
+    edge->setVertex(0, teb_.PoseVertex(i));
+    edge->setVertex(1, teb_.PoseVertex(i + 1));
+    edge->setVertex(2, teb_.TimeDiffVertex(i));
+    edge->setInformation(information);
+    edge->setTebConfig(*cfg_);
+    edge->setOmegaRef(omega_ref);
+    edge->setDeltaOmegaAllow(delta_allow);
+    optimizer_->addEdge(edge);
+    ++edges_added;
+
+    t_acc += teb_.TimeDiff(i);
+  }
+
+  if (node_)
+  {
+    RCLCPP_INFO_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 1000,
+        "[NearHorizon] AddEdgesNearHorizonOmegaHold: edges=%d omega_ref=%.3f delta_allow=%.3f T_near=%.2f",
+        edges_added, omega_ref, delta_allow, T_near);
+  }
+}
+
 void TebOptimalPlanner::AddEdgesDynamicObstacles(double weight_multiplier)
 {
   if (cfg_->optim.weight_obstacle==0 || weight_multiplier==0 || obstacles_==NULL )
+  {
+    dyn_obst_edge_build_snapshot_.clear();
+    dyn_obst_edge_build_snapshot_valid_ = false;
     return; // if weight equals zero skip adding edges!
+  }
 
   Eigen::Matrix<double,2,2> information;
   information(0,0) = cfg_->optim.weight_dynamic_obstacle * weight_multiplier;
   information(1,1) = cfg_->optim.weight_dynamic_obstacle_inflation;
   information(0,1) = information(1,0) = 0;
+
+  // Capture TEB pose/time used while constructing dynamic-obstacle edges (pre-optimize snapshot for this outer loop)
+  dyn_obst_edge_build_snapshot_.clear();
+  dyn_obst_edge_build_snapshot_valid_ = false;
+  if (cfg_->trajectory.publish_dynamic_obstacle_debug && teb_.sizePoses() >= 3)
+  {
+    double snap_time = teb_.TimeDiff(0);
+    for (int i = 1; i < teb_.sizePoses() - 1; ++i)
+    {
+      TebPoseTimeSample sample;
+      sample.pose_idx = i;
+      sample.t = snap_time;
+      sample.pose = teb_.Pose(i);
+      dyn_obst_edge_build_snapshot_.push_back(sample);
+      snap_time += teb_.TimeDiff(i);
+    }
+    dyn_obst_edge_build_snapshot_valid_ = !dyn_obst_edge_build_snapshot_.empty();
+  }
   
   for (ObstContainer::const_iterator obst = obstacles_->begin(); obst != obstacles_->end(); ++obst)
   {
@@ -1350,6 +1464,207 @@ bool TebOptimalPlanner::isTrajectoryFeasible(dwb_critics::ObstacleFootprintCriti
       }
     }
   }
+
+  // Contour hard veto against obstacles_ (static + dynamic current; gated prediction)
+  if (!isTrajectoryContourFeasible(inscribed_radius))
+  {
+    return false;
+  }
+  return true;
+}
+
+bool TebOptimalPlanner::isTrajectoryContourFeasible(double inscribed_radius)
+{
+  if (!cfg_ || !obstacles_ || !cfg_->robot_model)
+  {
+    return true;
+  }
+  if (!cfg_->trajectory.feasibility_check_obstacle_contours &&
+      !cfg_->trajectory.feasibility_check_dynamic_prediction)
+  {
+    return true;
+  }
+  if (teb_.sizePoses() < 1)
+  {
+    return true;
+  }
+
+  const double margin = std::max(0.0, cfg_->trajectory.feas_contour_margin);
+  const double pip_radius = std::max(0.0, inscribed_radius);
+
+  auto collidesCurrent = [&](const PoseSE2& pose, const Obstacle* obst) -> bool {
+    if (cfg_->robot_model->calculateDistance(pose, obst) <= margin)
+    {
+      return true;
+    }
+    // Catch deep interior of large polygons (unsigned boundary distance can stay large)
+    if (obst->checkCollision(pose.position(), std::max(margin, pip_radius)))
+    {
+      return true;
+    }
+    return false;
+  };
+
+  // --- A: full path, static contours + dynamic at current pose ---
+  if (cfg_->trajectory.feasibility_check_obstacle_contours)
+  {
+    for (int i = 0; i < teb_.sizePoses(); ++i)
+    {
+      const PoseSE2& pose = teb_.Pose(i);
+      for (const ObstaclePtr& obst : *obstacles_)
+      {
+        if (!obst)
+        {
+          continue;
+        }
+        if (collidesCurrent(pose, obst.get()))
+        {
+          if (visualization_)
+          {
+            visualization_->publishInfeasibleRobotPose(pose, *cfg_->robot_model);
+          }
+          if (node_)
+          {
+            RCLCPP_WARN_THROTTLE(
+                node_->get_logger(), *node_->get_clock(), 1000,
+                "[FeasContour] current-contour collision at pose %d (dynamic=%d)",
+                i, obst->isDynamic() ? 1 : 0);
+          }
+          return false;
+        }
+      }
+    }
+  }
+
+  // --- B: gated short-horizon dynamic prediction ---
+  if (!cfg_->trajectory.feasibility_check_dynamic_prediction || teb_.sizePoses() < 2)
+  {
+    return true;
+  }
+
+  const double T_pred = std::max(0.0, cfg_->trajectory.feas_pred_T);
+  const double R_check = std::max(0.0, cfg_->trajectory.feas_pred_R);
+  const double v_min = std::max(0.0, cfg_->trajectory.feas_pred_v_min);
+  const double v_x_max = std::max(1e-3, cfg_->obstacles.dyn_gate_v_x_max);
+  const double omega_ref = cfg_->near_horizon_runtime.omega_ref;
+  double delta_rel = cfg_->trajectory.feas_pred_delta_omega_rel;
+  if (delta_rel <= 0.0)
+  {
+    delta_rel = cfg_->obstacles.delta_omega_scale * cfg_->robot.max_vel_theta;
+  }
+  const double delta_abs = std::max(0.0, cfg_->trajectory.feas_pred_delta_omega_abs);
+  const std::string& mode = cfg_->trajectory.feas_pred_gate_mode;
+
+  // Omega gate over segments with cumulative time <= T_pred
+  double max_abs_omega = 0.0;
+  double max_rel_omega = 0.0;
+  double t_acc = 0.0;
+  for (int i = 0; i < teb_.sizePoses() - 1; ++i)
+  {
+    const double dt = teb_.TimeDiff(i);
+    if (t_acc > T_pred + 1e-9)
+    {
+      break;
+    }
+    if (dt >= 1e-6)
+    {
+      const double angle_diff =
+          g2o::normalize_theta(teb_.Pose(i + 1).theta() - teb_.Pose(i).theta());
+      const double omega = angle_diff / dt;
+      max_abs_omega = std::max(max_abs_omega, std::abs(omega));
+      max_rel_omega = std::max(max_rel_omega, std::abs(omega - omega_ref));
+    }
+    t_acc += dt;
+  }
+
+  const bool gate_abs = (mode == "abs" || mode == "both_or") && (max_abs_omega > delta_abs);
+  const bool gate_rel = (mode == "rel" || mode == "both_or") && (max_rel_omega > delta_rel);
+  if (mode != "abs" && mode != "rel" && mode != "both_or")
+  {
+    // Unknown mode: treat as both_or
+    if (!(max_abs_omega > delta_abs || max_rel_omega > delta_rel))
+    {
+      return true;
+    }
+  }
+  else if (!gate_abs && !gate_rel)
+  {
+    return true;
+  }
+
+  const char* gate_reason = gate_abs && gate_rel ? "abs|rel" : (gate_abs ? "abs" : "rel");
+  const Eigen::Vector2d robot0 = teb_.Pose(0).position();
+
+  for (const ObstaclePtr& obst : *obstacles_)
+  {
+    if (!obst || !obst->isDynamic())
+    {
+      continue;
+    }
+    const Eigen::Vector2d v = obst->getCentroidVelocity();
+    const double vn = v.norm();
+    if (vn < v_min)
+    {
+      continue;
+    }
+    if ((obst->getCentroid() - robot0).norm() > R_check)
+    {
+      continue;
+    }
+
+    // Clamp velocity via effective time: x + v*t_eff ≈ x + v_clamped*t
+    const double t_scale = (vn > v_x_max) ? (v_x_max / vn) : 1.0;
+    Eigen::Vector2d v_clamped = v * t_scale;
+
+    t_acc = 0.0;
+    for (int i = 0; i < teb_.sizePoses(); ++i)
+    {
+      if (t_acc > T_pred + 1e-9)
+      {
+        break;
+      }
+      const PoseSE2& pose = teb_.Pose(i);
+      const double t_eff = t_acc * t_scale;
+
+      bool hit = false;
+      if (cfg_->robot_model->estimateSpatioTemporalDistance(pose, obst.get(), t_eff) <= margin)
+      {
+        hit = true;
+      }
+      else
+      {
+        // Interior test in obstacle frame at t=0 equivalent to predicted obstacle at t
+        const Eigen::Vector2d p_rel = pose.position() - v_clamped * t_acc;
+        if (obst->checkCollision(p_rel, std::max(margin, pip_radius)))
+        {
+          hit = true;
+        }
+      }
+
+      if (hit)
+      {
+        if (visualization_)
+        {
+          visualization_->publishInfeasibleRobotPose(pose, *cfg_->robot_model);
+        }
+        if (node_)
+        {
+          RCLCPP_WARN_THROTTLE(
+              node_->get_logger(), *node_->get_clock(), 1000,
+              "[FeasContour] predicted-dynamic collision pose=%d t=%.2f gate=%s "
+              "|w|=%.3f |w-wref|=%.3f (thr abs=%.3f rel=%.3f)",
+              i, t_acc, gate_reason, max_abs_omega, max_rel_omega, delta_abs, delta_rel);
+        }
+        return false;
+      }
+
+      if (i < teb_.sizePoses() - 1)
+      {
+        t_acc += teb_.TimeDiff(i);
+      }
+    }
+  }
+
   return true;
 }
 

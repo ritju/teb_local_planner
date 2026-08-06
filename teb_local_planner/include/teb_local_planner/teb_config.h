@@ -96,7 +96,21 @@ public:
     double force_reinit_new_goal_angular; //!< Reinitialize the trajectory if a previous goal is updated with an angular difference of more than the specified value in radians (skip hot-starting)
     int feasibility_check_no_poses; //!< Specify up to which pose (under the feasibility_check_lookahead_distance) on the predicted plan the feasibility should be checked each sampling interval; if -1, all poses up to feasibility_check_lookahead_distance are checked.
     double feasibility_check_lookahead_distance; //!< Specify up to which distance (and with an index below feasibility_check_no_poses) from the robot the feasibility should be checked each sampling interval; if -1, all poses up to feasibility_check_no_poses are checked.
+    //!< 全路径：静态轮廓 + 动态当前位置轮廓 vs footprint（补齐非代价图障碍硬检查）
+    bool feasibility_check_obstacle_contours;
+    //!< 附加：短时动态预测轮廓碰撞（角速度门控 OR 命中时才执行）
+    bool feasibility_check_dynamic_prediction;
+    double feas_contour_margin; //!< 轮廓碰撞裕度 [m]；距离 <= margin 判碰撞
+    double feas_pred_T; //!< 预测检查时间窗 [s]
+    double feas_pred_R; //!< 仅质心距机器人起点小于该距离的动态物参与预测检查 [m]
+    std::string feas_pred_gate_mode; //!< rel | abs | both_or
+    double feas_pred_delta_omega_abs; //!< max|ω| 门控阈值 [rad/s]
+    double feas_pred_delta_omega_rel; //!< max|ω−ω_ref| 门控阈值 [rad/s]；<=0 则用 delta_omega_scale*max_vel_theta
+    double feas_pred_v_min; //!< 参与预测检查的障碍最小速度模长 [m/s]
     bool publish_feedback; //!< Publish planner feedback containing the full trajectory and a list of active obstacles (should be enabled only for evaluation or debugging purposes)
+    bool publish_dynamic_obstacle_debug; //!< Publish predicted dynamic-obstacle contours vs TEB poses (optimized + edge-build snapshot) for debugging
+    int dynamic_obstacle_debug_pose_stride; //!< Publish every N-th dynamic-obstacle edge pose (1 = all); must be >= 1
+    double dynamic_obstacle_debug_time_z_scale; //!< Lift same-time footprint+obstacle to z=scale*t so pairs share height in RViz (0 = flat xy)
     double min_resolution_collision_check_angular; //! Min angular resolution used during the costmap collision check. If not respected, intermediate samples are added. [rad]
     int control_look_ahead_poses; //! Index of the pose used to extract the velocity command
     int theta_threshold; //!< 角点判定阈值 [deg]，用于识别路径急转角
@@ -182,6 +196,23 @@ public:
     double inflation_dist; //!< buffer zone around obstacles with non-zero penalty costs (should be larger than min_obstacle_dist in order to take effect)
     double dynamic_obstacle_inflation_dist; //!< Buffer zone around predicted locations of dynamic obstacles with non-zero penalty costs (should be larger than min_obstacle_dist in order to take effect)
     bool include_dynamic_obstacles; //!< Specify whether the movement of dynamic obstacles should be predicted by a constant velocity model (this also effects homotopy class planning); If false, all obstacles are considered to be static.
+    //!< 安全可预测模式：不以 AddEdgesDynamicObstacles 为主，启用近场 OmegaHold 门控（见 动态障碍物避让.md）
+    bool dynamic_safety_predictable_mode;
+    //!< 动态障碍是否按【当前位置】建静态障碍边（独立开关，勿写死）
+    bool dynamic_obstacles_as_static_edges;
+    double dynamic_obstacle_cache_time; //!< 动态障碍断帧缓存保持时间 [s]
+    double dyn_gate_T_near; //!< 门控/OmegaHold 近场时间窗 [s]
+    double dyn_gate_v_x_max; //!< 外推前障碍平面速度模长上限 [m/s]
+    double dyn_gate_omega_z_max; //!< 外推前障碍角速度上限 [rad/s]（预留；当前平面速度以 v_x_max 夹紧）
+    double dyn_gate_inflation; //!< 门控时障碍轮廓膨胀 [m]
+    double dyn_gate_overlap_dist; //!< 与机器人当前轮廓过近则排除 OmegaHold [m]
+    double dyn_gate_roi_front; //!< 相对 footprint 前边外扩触发带 [m]
+    double dyn_gate_roi_rear; //!< 相对 footprint 后边外扩触发带 [m]
+    double dyn_gate_roi_left; //!< 相对 footprint 左边外扩触发带 [m]
+    double dyn_gate_roi_right; //!< 相对 footprint 右边外扩触发带 [m]
+    double dyn_gate_hold_time; //!< 威胁消失后仍保持 OmegaHold 的时间迟滞 [s]
+    double delta_omega_scale; //!< |omega-omega_ref| <= scale * max_vel_theta
+    bool publish_near_horizon_debug; //!< 发布 teb_near_horizon_debug MarkerArray 与调试日志
     bool include_costmap_obstacles; //!< Specify whether the obstacles in the costmap should be taken into account directly
     double costmap_obstacles_behind_robot_dist; //!< Limit the occupied local costmap obstacles taken into account for planning behind the robot (specify distance in meters)
     int obstacle_poses_affected; //!< The obstacle position is attached to the closest pose on the trajectory to reduce computational effort, but take a number of neighbors into account as well
@@ -314,6 +345,7 @@ public:
     double weight_inflation; //!< Optimization weight for the inflation penalty (should be small)
     double weight_dynamic_obstacle; //!< Optimization weight for satisfying a minimum separation from dynamic obstacles
     double weight_dynamic_obstacle_inflation; //!< Optimization weight for the inflation penalty of dynamic obstacles (should be small)
+    double weight_near_horizon_omega_hold; //!< Soft weight for EdgeNearHorizonOmegaHold
     double weight_velocity_obstacle_ratio; //!< Optimization weight for satisfying a maximum allowed velocity with respect to the distance to a static obstacle
     double weight_viapoint; //!< Optimization weight for minimizing the distance to via-points
     double weight_prefer_rotdir; //!< Optimization weight for preferring a specific turning direction (-> currently only activated if an oscillation is detected, see 'oscillation_recovery'
@@ -392,6 +424,16 @@ public:
     double rotation_limit_distance; //!< Distance threshold to suppress repeated in-place rotation [m], <=0 disables
   } rotation; //!< Parameters related to in-place rotation
 
+  /**
+   * @brief Per-cycle runtime flags for near-horizon OmegaHold (not ROS parameters).
+   * Set by TebLocalPlannerROS before plan(); read by TebOptimalPlanner::buildGraph.
+   */
+  struct NearHorizonRuntime
+  {
+    bool omega_hold_enable = false; //!< Threat gate (with hysteresis) requests OmegaHold edges
+    double omega_ref = 0.0;         //!< Current executed angular velocity [rad/s]
+  } near_horizon_runtime;
+
 
   /**
   * @brief Construct the TebConfig using default values.
@@ -445,7 +487,19 @@ public:
     trajectory.force_reinit_new_goal_angular = 0.5 * M_PI;
     trajectory.feasibility_check_no_poses = 5;
     trajectory.feasibility_check_lookahead_distance = -1;
+    trajectory.feasibility_check_obstacle_contours = true;
+    trajectory.feasibility_check_dynamic_prediction = true;
+    trajectory.feas_contour_margin = 0.0;
+    trajectory.feas_pred_T = 1.0;
+    trajectory.feas_pred_R = 3.0;
+    trajectory.feas_pred_gate_mode = "both_or";
+    trajectory.feas_pred_delta_omega_abs = 0.8;
+    trajectory.feas_pred_delta_omega_rel = -1.0; // <=0 → delta_omega_scale * max_vel_theta
+    trajectory.feas_pred_v_min = 0.05;
     trajectory.publish_feedback = false;
+    trajectory.publish_dynamic_obstacle_debug = false;
+    trajectory.dynamic_obstacle_debug_pose_stride = 1;
+    trajectory.dynamic_obstacle_debug_time_z_scale = 1.0;
     trajectory.min_resolution_collision_check_angular = M_PI;
     trajectory.control_look_ahead_poses = 1;
     trajectory.max_plan_length_extend_on_trajectory_obstacle_m = 3.0;
@@ -491,6 +545,21 @@ public:
     obstacles.inflation_dist = 0.6;
     obstacles.dynamic_obstacle_inflation_dist = 0.6;
     obstacles.include_dynamic_obstacles = true;
+    obstacles.dynamic_safety_predictable_mode = true;
+    obstacles.dynamic_obstacles_as_static_edges = true;
+    obstacles.dynamic_obstacle_cache_time = 0.3;
+    obstacles.dyn_gate_T_near = 1.0;
+    obstacles.dyn_gate_v_x_max = 2.0;
+    obstacles.dyn_gate_omega_z_max = 1.0;
+    obstacles.dyn_gate_inflation = 0.3;
+    obstacles.dyn_gate_overlap_dist = 0.05;
+    obstacles.dyn_gate_roi_front = 1.0;
+    obstacles.dyn_gate_roi_rear = 1.0;
+    obstacles.dyn_gate_roi_left = 1.0;
+    obstacles.dyn_gate_roi_right = 1.0;
+    obstacles.dyn_gate_hold_time = 0.3;
+    obstacles.delta_omega_scale = 0.3;
+    obstacles.publish_near_horizon_debug = true;
     obstacles.include_costmap_obstacles = true;
     obstacles.costmap_obstacles_behind_robot_dist = 1.5;
     obstacles.obstacle_poses_affected = 25;
@@ -609,6 +678,7 @@ public:
     optim.weight_inflation = 0.1;
     optim.weight_dynamic_obstacle = 50;
     optim.weight_dynamic_obstacle_inflation = 0.1;
+    optim.weight_near_horizon_omega_hold = 50.0;
     optim.weight_velocity_obstacle_ratio = 0;
     optim.weight_viapoint = 1;
     optim.weight_prefer_rotdir = 50;

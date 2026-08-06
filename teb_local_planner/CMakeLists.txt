@@ -92,6 +92,7 @@ add_library(teb_local_planner SHARED
    src/front_scan_protrusion.cpp
    src/wall_protrusion_check.cpp
    src/graph_search.cpp
+   src/near_horizon_dynamic_safety.cpp
 )
 
 set(ament_dependencies

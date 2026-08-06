@@ -40,6 +40,12 @@
 #include "teb_local_planner/visualization.h"
 #include "teb_local_planner/optimal_planner.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <string>
+#include <vector>
+
 namespace teb_local_planner
 {
 
@@ -346,6 +352,310 @@ void TebVisualization::publishObstacles(const ObstContainer& obstacles) const
   }
 }
 
+namespace
+{
+
+geometry_msgs::msg::Point toPoint(double x, double y, double z = 0.0)
+{
+  geometry_msgs::msg::Point p;
+  p.x = x;
+  p.y = y;
+  p.z = z;
+  return p;
+}
+
+void appendCirclePoints(double cx, double cy, double radius, int segments,
+                        std::vector<geometry_msgs::msg::Point>& points, double z = 0.0)
+{
+  if (radius <= 0.0 || segments < 3)
+  {
+    points.push_back(toPoint(cx, cy, z));
+    return;
+  }
+  for (int k = 0; k <= segments; ++k)
+  {
+    const double ang = 2.0 * M_PI * static_cast<double>(k) / static_cast<double>(segments);
+    points.push_back(toPoint(cx + radius * std::cos(ang), cy + radius * std::sin(ang), z));
+  }
+}
+
+void predictObstacleContour(const Obstacle& obst, double t, std::vector<geometry_msgs::msg::Point>& points,
+                            double* line_width, double z = 0.0)
+{
+  points.clear();
+  if (line_width)
+    *line_width = 0.03;
+
+  if (const PointObstacle* pobst = dynamic_cast<const PointObstacle*>(&obst))
+  {
+    Eigen::Vector2d pred;
+    pobst->predictCentroidConstantVelocity(t, pred);
+    points.push_back(toPoint(pred.x(), pred.y(), z));
+    return;
+  }
+  if (const CircularObstacle* cobst = dynamic_cast<const CircularObstacle*>(&obst))
+  {
+    Eigen::Vector2d pred;
+    cobst->predictCentroidConstantVelocity(t, pred);
+    appendCirclePoints(pred.x(), pred.y(), cobst->radius(), 24, points, z);
+    return;
+  }
+  if (const LineObstacle* lobst = dynamic_cast<const LineObstacle*>(&obst))
+  {
+    const Eigen::Vector2d offset = t * lobst->getCentroidVelocity();
+    const Eigen::Vector2d s = lobst->start() + offset;
+    const Eigen::Vector2d e = lobst->end() + offset;
+    points.push_back(toPoint(s.x(), s.y(), z));
+    points.push_back(toPoint(e.x(), e.y(), z));
+    return;
+  }
+  if (const PillObstacle* pill = dynamic_cast<const PillObstacle*>(&obst))
+  {
+    const Eigen::Vector2d offset = t * pill->getCentroidVelocity();
+    const Eigen::Vector2d s = pill->start() + offset;
+    const Eigen::Vector2d e = pill->end() + offset;
+    points.push_back(toPoint(s.x(), s.y(), z));
+    points.push_back(toPoint(e.x(), e.y(), z));
+    if (line_width)
+      *line_width = 0.06;
+    return;
+  }
+  if (const PolygonObstacle* poly = dynamic_cast<const PolygonObstacle*>(&obst))
+  {
+    Point2dContainer pred;
+    poly->predictVertices(t, pred);
+    for (const Eigen::Vector2d& v : pred)
+      points.push_back(toPoint(v.x(), v.y(), z));
+    if (!points.empty())
+      points.push_back(points.front());
+    return;
+  }
+
+  Eigen::Vector2d pred;
+  obst.predictCentroidConstantVelocity(t, pred);
+  points.push_back(toPoint(pred.x(), pred.y(), z));
+}
+
+std_msgs::msg::ColorRGBA colorBySpatioTemporalDist(double dist, double min_dist, double inflation_dist,
+                                                   double alpha)
+{
+  if (dist < min_dist)
+    return TebVisualization::toColorMsg(alpha, 1.0, 0.15, 0.15);
+  if (dist < inflation_dist)
+    return TebVisualization::toColorMsg(alpha, 1.0, 0.85, 0.1);
+  return TebVisualization::toColorMsg(alpha, 0.15, 0.85, 0.2);
+}
+
+TebPoseTimeSnapshot buildPoseTimeSamplesFromTeb(const TimedElasticBand& teb, int stride)
+{
+  TebPoseTimeSnapshot samples;
+  if (teb.sizePoses() < 3)
+    return samples;
+
+  stride = std::max(1, stride);
+  double time = teb.TimeDiff(0);
+  for (int i = 1; i < teb.sizePoses() - 1; ++i)
+  {
+    if (((i - 1) % stride) == 0)
+    {
+      TebPoseTimeSample sample;
+      sample.pose_idx = i;
+      sample.t = time;
+      sample.pose = teb.Pose(i);
+      samples.push_back(sample);
+    }
+    time += teb.TimeDiff(i);
+  }
+  return samples;
+}
+
+TebPoseTimeSnapshot filterSnapshotByStride(const TebPoseTimeSnapshot& snapshot, int stride)
+{
+  if (stride <= 1)
+    return snapshot;
+  TebPoseTimeSnapshot filtered;
+  for (std::size_t i = 0; i < snapshot.size(); ++i)
+  {
+    if ((static_cast<int>(i) % stride) == 0)
+      filtered.push_back(snapshot[i]);
+  }
+  return filtered;
+}
+
+void appendDynamicObstacleDebugLayer(visualization_msgs::msg::MarkerArray& marker_array,
+                                     const TebPoseTimeSnapshot& samples,
+                                     const ObstContainer& obstacles,
+                                     const BaseRobotFootprintModel& robot_model,
+                                     const TebConfig& cfg,
+                                     const std::string& ns_prefix,
+                                     double alpha,
+                                     int& marker_id,
+                                     const std_msgs::msg::Header& header)
+{
+  const double min_dist = cfg.obstacles.min_obstacle_dist;
+  const double inflation_dist = cfg.obstacles.dynamic_obstacle_inflation_dist;
+  const double z_scale = cfg.trajectory.dynamic_obstacle_debug_time_z_scale;
+
+  for (std::size_t obst_i = 0; obst_i < obstacles.size(); ++obst_i)
+  {
+    const ObstaclePtr& obst = obstacles[obst_i];
+    if (!obst || !obst->isDynamic())
+      continue;
+
+    for (const TebPoseTimeSample& sample : samples)
+    {
+      // Same t for robot pose and obstacle prediction — lift both to z=scale*t so they share a "time plane"
+      const double z = z_scale * sample.t;
+      const double dist = robot_model.estimateSpatioTemporalDistance(sample.pose, obst.get(), sample.t);
+      const std_msgs::msg::ColorRGBA color = colorBySpatioTemporalDist(dist, min_dist, inflation_dist, alpha);
+
+      std::vector<geometry_msgs::msg::Point> contour;
+      double line_width = 0.03;
+      predictObstacleContour(*obst, sample.t, contour, &line_width, z);
+
+      visualization_msgs::msg::Marker obst_marker;
+      obst_marker.header = header;
+      obst_marker.ns = ns_prefix + "/obstacle";
+      obst_marker.id = marker_id++;
+      obst_marker.action = visualization_msgs::msg::Marker::ADD;
+      obst_marker.lifetime = rclcpp::Duration(2, 0);
+      obst_marker.pose.orientation.w = 1.0;
+      obst_marker.color = color;
+      obst_marker.scale.x = line_width;
+      obst_marker.scale.y = line_width;
+      obst_marker.scale.z = line_width;
+
+      if (contour.size() <= 1)
+      {
+        obst_marker.type = visualization_msgs::msg::Marker::SPHERE;
+        obst_marker.pose.position = contour.empty() ? toPoint(0, 0, z) : contour.front();
+        obst_marker.scale.x = obst_marker.scale.y = obst_marker.scale.z = 0.08;
+      }
+      else
+      {
+        obst_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+        obst_marker.points = contour;
+      }
+      marker_array.markers.push_back(obst_marker);
+
+      std::vector<visualization_msgs::msg::Marker> robot_markers;
+      robot_model.visualizeRobot(sample.pose, robot_markers, color);
+      for (visualization_msgs::msg::Marker& rm : robot_markers)
+      {
+        rm.header = header;
+        rm.ns = ns_prefix + "/robot";
+        rm.id = marker_id++;
+        rm.action = visualization_msgs::msg::Marker::ADD;
+        rm.lifetime = rclcpp::Duration(2, 0);
+        rm.color = color;
+        rm.pose.position.z += z;
+        for (geometry_msgs::msg::Point& pt : rm.points)
+          pt.z += z;
+        marker_array.markers.push_back(rm);
+      }
+
+      Eigen::Vector2d obst_centroid;
+      obst->predictCentroidConstantVelocity(sample.t, obst_centroid);
+      visualization_msgs::msg::Marker link;
+      link.header = header;
+      link.ns = ns_prefix + "/pair";
+      link.id = marker_id++;
+      link.type = visualization_msgs::msg::Marker::LINE_LIST;
+      link.action = visualization_msgs::msg::Marker::ADD;
+      link.lifetime = rclcpp::Duration(2, 0);
+      link.pose.orientation.w = 1.0;
+      link.scale.x = 0.015;
+      link.color = color;
+      link.points.push_back(toPoint(sample.pose.x(), sample.pose.y(), z));
+      link.points.push_back(toPoint(obst_centroid.x(), obst_centroid.y(), z));
+      marker_array.markers.push_back(link);
+
+      // Label shared by this (pose_idx, t) pair for easy RViz identification
+      visualization_msgs::msg::Marker text;
+      text.header = header;
+      text.ns = ns_prefix + "/label";
+      text.id = marker_id++;
+      text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+      text.action = visualization_msgs::msg::Marker::ADD;
+      text.lifetime = rclcpp::Duration(2, 0);
+      text.pose.orientation.w = 1.0;
+      text.pose.position.x = 0.5 * (sample.pose.x() + obst_centroid.x());
+      text.pose.position.y = 0.5 * (sample.pose.y() + obst_centroid.y());
+      text.pose.position.z = z + 0.05;
+      text.scale.z = 0.08;
+      text.color = color;
+      char buf[64];
+      std::snprintf(buf, sizeof(buf), "i=%d t=%.2f", sample.pose_idx, sample.t);
+      text.text = buf;
+      marker_array.markers.push_back(text);
+    }
+  }
+}
+
+} // namespace
+
+void TebVisualization::publishDynamicObstacleDebug(const TimedElasticBand& teb_optimized,
+                                                   const TebPoseTimeSnapshot* edge_build_snapshot,
+                                                   const ObstContainer& obstacles,
+                                                   const BaseRobotFootprintModel& robot_model) const
+{
+  if (printErrorWhenNotInitialized() || !teb_dyn_obst_debug_pub_)
+    return;
+
+  visualization_msgs::msg::MarkerArray marker_array;
+  visualization_msgs::msg::Marker del;
+  del.header.frame_id = cfg_->map_frame;
+  del.header.stamp = nh_->now();
+  del.ns = "";
+  del.id = 0;
+  del.action = visualization_msgs::msg::Marker::DELETEALL;
+  marker_array.markers.push_back(del);
+
+  if (!cfg_->trajectory.publish_dynamic_obstacle_debug ||
+      !cfg_->obstacles.include_dynamic_obstacles ||
+      obstacles.empty() ||
+      teb_optimized.sizePoses() < 3)
+  {
+    teb_dyn_obst_debug_pub_->publish(marker_array);
+    return;
+  }
+
+  bool has_dynamic = false;
+  for (const ObstaclePtr& obst : obstacles)
+  {
+    if (obst && obst->isDynamic())
+    {
+      has_dynamic = true;
+      break;
+    }
+  }
+  if (!has_dynamic)
+  {
+    teb_dyn_obst_debug_pub_->publish(marker_array);
+    return;
+  }
+
+  std_msgs::msg::Header header;
+  header.frame_id = cfg_->map_frame;
+  header.stamp = nh_->now();
+
+  const int stride = std::max(1, cfg_->trajectory.dynamic_obstacle_debug_pose_stride);
+  const TebPoseTimeSnapshot opt_samples = buildPoseTimeSamplesFromTeb(teb_optimized, stride);
+
+  int marker_id = 1;
+  appendDynamicObstacleDebugLayer(marker_array, opt_samples, obstacles, robot_model, *cfg_,
+                                  "DynObstOpt", 0.95, marker_id, header);
+
+  if (edge_build_snapshot && !edge_build_snapshot->empty())
+  {
+    const TebPoseTimeSnapshot build_samples = filterSnapshotByStride(*edge_build_snapshot, stride);
+    appendDynamicObstacleDebugLayer(marker_array, build_samples, obstacles, robot_model, *cfg_,
+                                    "DynObstBuild", 0.35, marker_id, header);
+  }
+
+  teb_dyn_obst_debug_pub_->publish(marker_array);
+}
+
 
 void TebVisualization::publishViaPoints(const std::vector< Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d> >& via_points, const std::string& ns) const
 {
@@ -537,6 +847,7 @@ nav2_util::CallbackReturn TebVisualization::on_configure()
   teb_poses_pub_ = nh_->create_publisher<geometry_msgs::msg::PoseArray>("teb_poses", 1);
   teb_marker_pub_ = nh_->create_publisher<visualization_msgs::msg::Marker>("teb_markers", 1);
   teb_marker_array_pub_ = nh_->create_publisher<visualization_msgs::msg::MarkerArray>("teb_marker_array", 1);
+  teb_dyn_obst_debug_pub_ = nh_->create_publisher<visualization_msgs::msg::MarkerArray>("teb_dynamic_obstacle_debug", 1);
   feedback_pub_ = nh_->create_publisher<teb_msgs::msg::FeedbackMsg>("teb_feedback", 1);
 
   initialized_ = true;
@@ -551,6 +862,7 @@ TebVisualization::on_activate()
   teb_poses_pub_->on_activate();
   teb_marker_pub_->on_activate();
   teb_marker_array_pub_->on_activate();
+  teb_dyn_obst_debug_pub_->on_activate();
   feedback_pub_->on_activate();
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -563,6 +875,7 @@ TebVisualization::on_deactivate()
   teb_poses_pub_->on_deactivate();
   teb_marker_pub_->on_deactivate();
   teb_marker_array_pub_->on_deactivate();
+  teb_dyn_obst_debug_pub_->on_deactivate();
   feedback_pub_->on_deactivate();
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -575,6 +888,7 @@ TebVisualization::on_cleanup()
   teb_poses_pub_.reset();
   teb_marker_pub_.reset();
   teb_marker_array_pub_.reset();
+  teb_dyn_obst_debug_pub_.reset();
   feedback_pub_.reset();
 
   return nav2_util::CallbackReturn::SUCCESS;

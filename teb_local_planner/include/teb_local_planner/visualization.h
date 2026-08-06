@@ -45,6 +45,7 @@
 #include "teb_local_planner/teb_config.h"
 #include "teb_local_planner/timed_elastic_band.h"
 #include "teb_local_planner/robot_footprint_model.h"
+#include "teb_local_planner/obstacles.h"
 
 #include <teb_msgs/msg/feedback_msg.hpp>
 
@@ -54,6 +55,7 @@
 
 // std
 #include <iterator>
+#include <vector>
 
 #include <nav2_util/lifecycle_node.hpp>
 
@@ -72,7 +74,18 @@
 namespace teb_local_planner
 {
   
-class TebOptimalPlanner; //!< Forward Declaration 
+class TebOptimalPlanner; //!< Forward Declaration
+
+/**
+ * @brief One TEB pose with cumulative time, matching EdgeDynamicObstacle sampling (poses 1..N-2)
+ */
+struct TebPoseTimeSample
+{
+  int pose_idx = 0;
+  double t = 0.0;
+  PoseSE2 pose;
+};
+using TebPoseTimeSnapshot = std::vector<TebPoseTimeSample>;
 
   
 /**
@@ -138,6 +151,21 @@ public:
    * @param obstacles Obstacle container
    */
   void publishObstacles(const ObstContainer& obstacles) const;
+
+  /**
+   * @brief Debug-publish predicted dynamic obstacle contours vs TEB poses at matching times.
+   *
+   * Publishes optimized TEB samples and optionally the edge-build snapshot for comparison
+   * on topic \c teb_dynamic_obstacle_debug.
+   * @param teb_optimized Final (optimized) TEB
+   * @param edge_build_snapshot Pose/time samples captured in AddEdgesDynamicObstacles (may be nullptr)
+   * @param obstacles Obstacle container
+   * @param robot_model Robot footprint model
+   */
+  void publishDynamicObstacleDebug(const TimedElasticBand& teb_optimized,
+                                   const TebPoseTimeSnapshot* edge_build_snapshot,
+                                   const ObstContainer& obstacles,
+                                   const BaseRobotFootprintModel& robot_model) const;
 
   /**
    * @brief Publish via-points to the ros topic \e ../../teb_markers
@@ -247,6 +275,7 @@ protected:
   rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseArray>::SharedPtr teb_poses_pub_; //!< Publisher for the trajectory pose sequence
   rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::Marker>::SharedPtr teb_marker_pub_; //!< Publisher for visualization markers
   rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr teb_marker_array_pub_; //!< Publisher for visualization marker arrays
+  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr teb_dyn_obst_debug_pub_; //!< Publisher for dynamic-obstacle spatiotemporal debug markers
   rclcpp_lifecycle::LifecyclePublisher<teb_msgs::msg::FeedbackMsg>::SharedPtr feedback_pub_; //!< Publisher for the feedback message for analysis and debug purposes
   
   const TebConfig* cfg_; //!< Config class that stores and manages all related parameters

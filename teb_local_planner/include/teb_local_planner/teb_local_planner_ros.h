@@ -72,6 +72,7 @@
  #include <costmap_converter/costmap_converter_interface.h>
  #include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
  #include <nav2_costmap_2d/footprint_collision_checker.hpp>
+ #include <teb_local_planner/near_horizon_dynamic_safety.h>
  
  #include <nav2_util/lifecycle_node.hpp>
  #include <nav2_costmap_2d/costmap_2d_ros.hpp>
@@ -717,6 +718,8 @@
    // void rotation_sigh_callback(const std_msgs::msg::Bool &msg);
    std::mutex custom_obst_mutex_; //!< Mutex that locks the obstacle array (multi-threaded)
    costmap_converter_msgs::msg::ObstacleArrayMsg custom_obstacle_msg_; //!< Copy of the most recent obstacle message
+   rclcpp::Time custom_obstacle_receive_time_{0, 0, RCL_ROS_TIME}; //!< Local receive time of last custom obstacle CB
+   bool custom_obstacle_msg_valid_ = false; //!< True after at least one CB; cleared on timeout
  
    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr via_points_sub_; //!< Subscriber for custom via-points received via a Path msg.
    bool custom_via_points_active_; //!< Keep track whether valid via-points have been received from via_points_sub_
@@ -773,6 +776,9 @@
    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr monitor_corridor_marker_pub_;
    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr protruding_obstacle_marker_pub_;
    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr corner_approach_footprint_marker_pub_;
+   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr near_horizon_debug_marker_pub_;
+   DynamicObstacleCache dynamic_obstacle_cache_;
+   NearHorizonThreatGate near_horizon_threat_gate_;
    int last_published_protruding_obstacle_marker_count_{0};
    int last_published_corner_footprint_marker_count_{0};
    WallMonitorCorridor protrusion_monitor_corridor_;

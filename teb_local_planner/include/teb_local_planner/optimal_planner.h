@@ -357,6 +357,12 @@ public:
    * @see setVisualization
    */
   virtual void visualize();
+
+  /**
+   * @brief Pose/time samples captured when AddEdgesDynamicObstacles last built edges
+   */
+  const TebPoseTimeSnapshot& dynamicObstacleEdgeBuildSnapshot() const { return dyn_obst_edge_build_snapshot_; }
+  bool hasDynamicObstacleEdgeBuildSnapshot() const { return dyn_obst_edge_build_snapshot_valid_; }
   
   //@}
   
@@ -540,6 +546,12 @@ public:
           double circumscribed_radius=0.0, int look_ahead_idx=-1, double feasibility_check_lookahead_distance=-1);
   
   /**
+   * @brief Hard veto: collide TEB poses with obstacles_ contours (current + gated prediction).
+   * @see 动态障碍物避让.md — 轨迹可行性 / 轮廓碰撞检查
+   */
+  bool isTrajectoryContourFeasible(double inscribed_radius = 0.0);
+
+  /**
    * @brief Check whether the footprint of the robot at the pose touches an obstacle or not.
    *
    * @param pose2d Pose to check
@@ -696,6 +708,14 @@ protected:
   void AddEdgesDynamicObstacles(double weight_multiplier=1.0);
 
   /**
+   * @brief Soft near-horizon angular-velocity hold edges (|omega - omega_ref| <= delta).
+   * Only added when dynamic_safety_predictable_mode and near_horizon_runtime.omega_hold_enable.
+   * @see EdgeNearHorizonOmegaHold
+   * @see buildGraph
+   */
+  void AddEdgesNearHorizonOmegaHold();
+
+  /**
    * @brief Add all edges (local cost functions) for satisfying kinematic constraints of a differential drive robot
    * @warning do not combine with AddEdgesKinematicsCarlike()
    * @see AddEdgesKinematicsCarlike
@@ -757,6 +777,9 @@ protected:
 
   bool initialized_; //!< Keeps track about the correct initialization of this class
   bool optimized_; //!< This variable is \c true as long as the last optimization has been completed successful
+
+  TebPoseTimeSnapshot dyn_obst_edge_build_snapshot_; //!< Pose/time at last dynamic-obstacle edge construction
+  bool dyn_obst_edge_build_snapshot_valid_ = false;
   
 public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW    

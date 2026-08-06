@@ -32,7 +32,20 @@ controller_server:
       rough_global_plan_prune_max_accum_dist: -1.0  # coarse-pass search range [m]; <=0 searches entire plan
       exact_arc_length: False
       feasibility_check_no_poses: 2
+      # Contour feasibility (see 动态障碍物避让.md)
+      feasibility_check_obstacle_contours: True
+      feasibility_check_dynamic_prediction: True
+      feas_contour_margin: 0.0
+      feas_pred_T: 1.0
+      feas_pred_R: 3.0
+      feas_pred_gate_mode: "both_or"  # rel | abs | both_or
+      feas_pred_delta_omega_abs: 0.8
+      feas_pred_delta_omega_rel: -1.0  # <=0 → delta_omega_scale * max_vel_theta
+      feas_pred_v_min: 0.05
       publish_feedback: False
+      publish_dynamic_obstacle_debug: False  # RViz: teb_dynamic_obstacle_debug
+      dynamic_obstacle_debug_pose_stride: 1
+      dynamic_obstacle_debug_time_z_scale: 1.0  # z=scale*t; same-t footprint & obstacle share height (0=flat)
           
       # Robot
               
@@ -58,7 +71,25 @@ controller_server:
       obstacle_poses_affected: 15
 
       dynamic_obstacle_inflation_dist: 0.6
-      include_dynamic_obstacles: True 
+      include_dynamic_obstacles: True
+
+      # Near-horizon predictable dynamic safety (see 动态障碍物避让.md)
+      dynamic_safety_predictable_mode: True
+      dynamic_obstacles_as_static_edges: True
+      dynamic_obstacle_cache_time: 0.3
+      dyn_gate_T_near: 1.0
+      dyn_gate_v_x_max: 2.0
+      dyn_gate_omega_z_max: 1.0
+      dyn_gate_inflation: 0.3
+      dyn_gate_overlap_dist: 0.05
+      dyn_gate_roi_front: 1.0
+      dyn_gate_roi_rear: 1.0
+      dyn_gate_roi_left: 1.0
+      dyn_gate_roi_right: 1.0
+      dyn_gate_hold_time: 0.3
+      delta_omega_scale: 0.3
+      publish_near_horizon_debug: True
+      weight_near_horizon_omega_hold: 50.0
 
       costmap_converter_plugin: "costmap_converter::CostmapToPolygonsDBSMCCH"
       costmap_converter_spin_thread: True

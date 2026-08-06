@@ -1132,8 +1132,13 @@ bool clippedFootprintOutlineTouchesBlockingCost(
       node->create_publisher<visualization_msgs::msg::MarkerArray>("teb_protruding_obstacle_markers", 1);
     corner_approach_footprint_marker_pub_ =
       node->create_publisher<visualization_msgs::msg::MarkerArray>("teb_corner_approach_footprint_markers", 1);
+    near_horizon_debug_marker_pub_ =
+      node->create_publisher<visualization_msgs::msg::MarkerArray>("teb_near_horizon_debug", 1);
     edge_distance_publisher_  = node->create_publisher<std_msgs::msg::Float32>("edge_distance", 1);
-    RCLCPP_INFO(logger_, "TEB 创建发布话题 /teb_selected_wall_line、/teb_monitor_corridor_markers、/teb_protruding_obstacle_markers、/teb_corner_approach_footprint_markers、/edge_distance、/teb_transformed_path、/teb_global_plan");
+    RCLCPP_INFO(logger_,
+                "TEB 创建发布话题 /teb_selected_wall_line、/teb_monitor_corridor_markers、"
+                "/teb_protruding_obstacle_markers、/teb_corner_approach_footprint_markers、"
+                "/teb_near_horizon_debug、/edge_distance、/teb_transformed_path、/teb_global_plan");
 
     // Create persistent client for static_layer parameter updates
     static_layer_client_ = node->create_client<rcl_interfaces::srv::SetParameters>("/local_costmap/local_costmap/set_parameters");
@@ -1936,6 +1941,59 @@ void TebLocalPlannerROS::configure(
    
    // also consider custom obstacles (must be called after other updates, since the container is not cleared)
    updateObstacleContainerWithCustomObstacles();
+
+   // ---- Near-horizon dynamic safety (cache + threat gate + OmegaHold runtime) ----
+   // Must run after obstacles_ are filled and before planner_->plan().
+   {
+     const rclcpp::Time now = clock_->now();
+     dynamic_obstacle_cache_.configure(cfg_->obstacles.dynamic_obstacle_cache_time);
+     dynamic_obstacle_cache_.update(obstacles_, now);
+
+     // Footprint in robot frame from costmap (fallback handled inside computeFootprintRoiBox)
+     std::vector<geometry_msgs::msg::Point> footprint_rf;
+     if (costmap_ros_)
+     {
+       footprint_rf = costmap_ros_->getRobotFootprint();
+     }
+     const FootprintRoiBox fp_roi = computeFootprintRoiBox(footprint_rf);
+
+     PoseSE2 robot_pose_se2(robot_pose);
+     NearHorizonThreatResult threat = near_horizon_threat_gate_.evaluate(
+         robot_pose_se2, cfg_->robot_model, fp_roi, dynamic_obstacle_cache_.get(), *cfg_, now);
+
+     cfg_->near_horizon_runtime.omega_hold_enable = threat.enable_omega_hold;
+     cfg_->near_horizon_runtime.omega_ref = robot_vel_.angular.z;
+
+     RCLCPP_INFO_THROTTLE(
+         logger_, *clock_, 1000,
+         "[NearHorizon] mode=%d as_static_edges=%d cache=%zu raw_threat=%d enable=%d "
+         "overlap_excl=%d trig_id=%d reason=%s omega_ref=%.3f delta=%.3f "
+         "(roi f/r/l/r=%.2f/%.2f/%.2f/%.2f T_near=%.2f hold=%.2f)",
+         cfg_->obstacles.dynamic_safety_predictable_mode ? 1 : 0,
+         cfg_->obstacles.dynamic_obstacles_as_static_edges ? 1 : 0,
+         dynamic_obstacle_cache_.get().size(),
+         threat.raw_threat ? 1 : 0,
+         threat.enable_omega_hold ? 1 : 0,
+         threat.excluded_overlap ? 1 : 0,
+         threat.trigger_obstacle_id,
+         threat.reason.c_str(),
+         cfg_->near_horizon_runtime.omega_ref,
+         cfg_->obstacles.delta_omega_scale * cfg_->robot.max_vel_theta,
+         cfg_->obstacles.dyn_gate_roi_front, cfg_->obstacles.dyn_gate_roi_rear,
+         cfg_->obstacles.dyn_gate_roi_left, cfg_->obstacles.dyn_gate_roi_right,
+         cfg_->obstacles.dyn_gate_T_near, cfg_->obstacles.dyn_gate_hold_time);
+
+     if (cfg_->obstacles.publish_near_horizon_debug && near_horizon_debug_marker_pub_)
+     {
+       visualization_msgs::msg::MarkerArray ma;
+       const std::string frame_id =
+           costmap_ros_ ? costmap_ros_->getGlobalFrameID() : cfg_->map_frame;
+       buildNearHorizonDebugMarkers(
+           ma, frame_id, now, robot_pose_se2, fp_roi, *cfg_, dynamic_obstacle_cache_.get(), threat,
+           near_horizon_threat_gate_.lastExtrapolatedSamples(), footprint_rf);
+       near_horizon_debug_marker_pub_->publish(ma);
+     }
+   }
    
      
    // Do not allow config changes during the following optimization step
@@ -2317,6 +2375,25 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
    
    // Add custom obstacles obtained via message
    std::lock_guard<std::mutex> l(custom_obst_mutex_);
+
+   // TEB historically latches the last ObstacleArray forever. When a dynamic-obstacle
+   // publisher stops, that leaves stale dynamic objects (and OmegaHold) active forever.
+   // In predictable mode, expire the latched message if no new CB arrives in time.
+   if (cfg_->obstacles.dynamic_safety_predictable_mode && custom_obstacle_msg_valid_)
+   {
+     const double timeout = std::max(cfg_->obstacles.dynamic_obstacle_cache_time,
+                                     cfg_->obstacles.dyn_gate_hold_time);
+     const double age = (clock_->now() - custom_obstacle_receive_time_).seconds();
+     if (timeout > 0.0 && age > timeout)
+     {
+       RCLCPP_INFO_THROTTLE(
+           logger_, *clock_, 2000,
+           "[NearHorizon] custom obstacles expired (age=%.2fs > timeout=%.2fs); clearing latch",
+           age, timeout);
+       custom_obstacle_msg_.obstacles.clear();
+       custom_obstacle_msg_valid_ = false;
+     }
+   }
  
    if (!custom_obstacle_msg_.obstacles.empty())
    {
@@ -3301,13 +3378,11 @@ bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
   {
     geometry_msgs::msg::PoseStamped occupied_global;
     tf2::doTransform(original_last_pose_plan_frame, occupied_global, plan_to_global_transform);
-    RCLCPP_INFO(
-      logger_,
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000,
       "transformGlobalPlan: last path point footprint collides — starting plan-frame grid search "
       "(frame=%s, tolerance=%.3f m, resolution=%.3f m)",
       original_last_pose_plan_frame.header.frame_id.c_str(), tol, res);
-    RCLCPP_INFO(
-      logger_,
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000,
       "transformGlobalPlan: last path point before adjust — plan[%s]: x=%.3f y=%.3f yaw=%.3f | "
       "controller[%s]: x=%.3f y=%.3f yaw=%.3f",
       original_last_pose_plan_frame.header.frame_id.c_str(),
@@ -3341,8 +3416,7 @@ bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
     }
   }
   if (!found) {
-    RCLCPP_WARN(
-      logger_,
+    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 1000,
       "transformGlobalPlan: last global plan pose occupied, no free pose within tolerance %.3f m "
       "(plan-frame grid search)",
       tol);
@@ -3353,8 +3427,7 @@ bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
     const double dy = best.pose.position.y - original_last_pose_plan_frame.pose.position.y;
     geometry_msgs::msg::PoseStamped best_global;
     tf2::doTransform(best, best_global, plan_to_global_transform);
-    RCLCPP_INFO(
-      logger_,
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000,
       "transformGlobalPlan: last path point after adjust — plan[%s]: x=%.3f y=%.3f yaw=%.3f | "
       "controller[%s]: x=%.3f y=%.3f yaw=%.3f",
       best.header.frame_id.c_str(),
@@ -3365,8 +3438,7 @@ bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
       best_global.pose.position.x,
       best_global.pose.position.y,
       tf2::getYaw(best_global.pose.orientation));
-    RCLCPP_INFO(
-      logger_,
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000,
       "transformGlobalPlan: last path point adjust delta (plan frame): dx=%.3f m dy=%.3f m | "
       "horizontal offset=%.3f m",
       dx, dy, std::hypot(dx, dy));
@@ -4722,7 +4794,9 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
  {
    
    std::lock_guard<std::mutex> l(custom_obst_mutex_);
-   custom_obstacle_msg_ = *obst_msg;  
+   custom_obstacle_msg_ = *obst_msg;
+   custom_obstacle_receive_time_ = clock_->now();
+   custom_obstacle_msg_valid_ = true;
  }
  
  void TebLocalPlannerROS::customViaPointsCB(const nav_msgs::msg::Path::ConstSharedPtr via_points_msg)
