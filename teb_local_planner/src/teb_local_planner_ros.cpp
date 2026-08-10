@@ -160,6 +160,63 @@ double segmentToSegmentDistance2d(
     std::min(second_to_first_start, second_to_first_end));
 }
 
+/**
+ * @brief 在折线上找距 query 最近的相邻段，若弧长不足 target_length 则向两端扩展，
+ *        返回扩展窗首尾顶点作为局部贴边线段。
+ */
+bool extractNearestExpandedPolylineSegment(
+  const std::vector<Eigen::Vector2d>& polyline,
+  const Eigen::Vector2d& query_point,
+  const double target_length,
+  Eigen::Vector2d& segment_start,
+  Eigen::Vector2d& segment_end)
+{
+  if (polyline.size() < 2) {
+    return false;
+  }
+
+  std::size_t best_segment_index = 0;
+  double best_distance = std::numeric_limits<double>::max();
+  for (std::size_t segment_index = 0; segment_index + 1 < polyline.size(); ++segment_index) {
+    const double distance_to_segment = pointToSegmentDistance2d(
+      query_point, polyline[segment_index], polyline[segment_index + 1]);
+    if (distance_to_segment < best_distance) {
+      best_distance = distance_to_segment;
+      best_segment_index = segment_index;
+    }
+  }
+
+  std::size_t left_index = best_segment_index;
+  std::size_t right_index = best_segment_index + 1;
+  double window_arc_length = (polyline[right_index] - polyline[left_index]).norm();
+  const double expand_target =
+    (target_length > 1e-6) ? target_length : window_arc_length;
+
+  while (window_arc_length + 1e-9 < expand_target) {
+    bool expanded = false;
+    if (left_index > 0) {
+      --left_index;
+      window_arc_length += (polyline[left_index + 1] - polyline[left_index]).norm();
+      expanded = true;
+      if (window_arc_length + 1e-9 >= expand_target) {
+        break;
+      }
+    }
+    if (right_index + 1 < polyline.size()) {
+      ++right_index;
+      window_arc_length += (polyline[right_index] - polyline[right_index - 1]).norm();
+      expanded = true;
+    }
+    if (!expanded) {
+      break;
+    }
+  }
+
+  segment_start = polyline[left_index];
+  segment_end = polyline[right_index];
+  return (segment_end - segment_start).norm() > 1e-6;
+}
+
 }  // namespace
 
 bool segmentsCloseForFusion(
@@ -6575,6 +6632,8 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
   Eigen::Vector2d best_reference_segment_start;
   Eigen::Vector2d best_reference_segment_end;
   double best_robot_perpendicular_distance_to_edge_line = 0.0;
+  const Eigen::Vector2d robot_xy(
+    robot_pose.pose.position.x, robot_pose.pose.position.y);
 
   for (const auto& raw_reference_path : reference_path_candidates) {
     if (raw_reference_path.poses.size() < 2) {
@@ -6584,53 +6643,83 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
         raw_reference_path.poses.size());
       continue;
     }
-    // TF：用 TimePointZero 取缓冲区内最新可用变换，避免 now() 略超前于已发布 TF 导致外推失败。
-    // 几何 header.stamp：有变换时用返回变换的时间戳与 TF 一致；已在 map 时用当前时钟刷新陈旧 latched stamp。
-    nav_msgs::msg::Path reference_path_in_map_frame;
-    reference_path_in_map_frame.header.frame_id = cfg_->map_frame;
+    // TF：用 TimePointZero 取最新变换；将整条折线变换到 map，再取机器人最近邻段（不足则扩到约 L）。
+    nav_msgs::msg::Path reference_local_segment_in_map;
+    reference_local_segment_in_map.header.frame_id = cfg_->map_frame;
     try {
-      geometry_msgs::msg::PoseStamped reference_pose_start_in_map = raw_reference_path.poses.front();
-      geometry_msgs::msg::PoseStamped reference_pose_end_in_map = raw_reference_path.poses.back();
       rclcpp::Time reference_geometry_stamp_in_map;
-      if (!raw_reference_path.header.frame_id.empty() &&
-          raw_reference_path.header.frame_id != cfg_->map_frame) {
-        geometry_msgs::msg::TransformStamped transform_map_from_reference_path_frame =
-          tf_->lookupTransform(
-            cfg_->map_frame,
-            raw_reference_path.header.frame_id,
-            tf2::TimePointZero,
-            tf2::durationFromSec(0.5));
-        tf2::doTransform(reference_pose_start_in_map, reference_pose_start_in_map,
-          transform_map_from_reference_path_frame);
-        tf2::doTransform(reference_pose_end_in_map, reference_pose_end_in_map,
-          transform_map_from_reference_path_frame);
+      geometry_msgs::msg::TransformStamped transform_map_from_reference_path_frame;
+      const bool needs_tf =
+        !raw_reference_path.header.frame_id.empty() &&
+        raw_reference_path.header.frame_id != cfg_->map_frame;
+      if (needs_tf) {
+        transform_map_from_reference_path_frame = tf_->lookupTransform(
+          cfg_->map_frame,
+          raw_reference_path.header.frame_id,
+          tf2::TimePointZero,
+          tf2::durationFromSec(0.5));
         reference_geometry_stamp_in_map =
           rclcpp::Time(transform_map_from_reference_path_frame.header.stamp);
       } else {
         reference_geometry_stamp_in_map = clock_->now();
       }
-      reference_pose_start_in_map.header.frame_id = cfg_->map_frame;
-      reference_pose_end_in_map.header.frame_id = cfg_->map_frame;
-      reference_pose_start_in_map.header.stamp = reference_geometry_stamp_in_map;
-      reference_pose_end_in_map.header.stamp = reference_geometry_stamp_in_map;
-      reference_path_in_map_frame.header.stamp = reference_geometry_stamp_in_map;
-      reference_path_in_map_frame.poses.clear();
-      reference_path_in_map_frame.poses.push_back(reference_pose_start_in_map);
-      reference_path_in_map_frame.poses.push_back(reference_pose_end_in_map);
 
-      const Eigen::Vector2d segment_start_map(
-        reference_pose_start_in_map.pose.position.x,
-        reference_pose_start_in_map.pose.position.y);
-      const Eigen::Vector2d segment_end_map(
-        reference_pose_end_in_map.pose.position.x,
-        reference_pose_end_in_map.pose.position.y);
-      const Eigen::Vector2d robot_xy(
-        robot_pose.pose.position.x, robot_pose.pose.position.y);
+      std::vector<Eigen::Vector2d> reference_polyline_in_map;
+      reference_polyline_in_map.reserve(raw_reference_path.poses.size());
+      for (const auto& raw_pose : raw_reference_path.poses) {
+        geometry_msgs::msg::PoseStamped pose_in_map = raw_pose;
+        if (needs_tf) {
+          tf2::doTransform(
+            pose_in_map, pose_in_map, transform_map_from_reference_path_frame);
+        }
+        reference_polyline_in_map.emplace_back(
+          pose_in_map.pose.position.x, pose_in_map.pose.position.y);
+      }
+
+      Eigen::Vector2d local_segment_start;
+      Eigen::Vector2d local_segment_end;
+      if (!extractNearestExpandedPolylineSegment(
+            reference_polyline_in_map,
+            robot_xy,
+            min_wall_line_length_,
+            local_segment_start,
+            local_segment_end))
+      {
+        RCLCPP_WARN_THROTTLE(
+          logger_, *(clock_), 2000,
+          "[trySelectBestReferencePathFromList] Edge following: 无法从贴边参考折线提取局部段");
+        continue;
+      }
+
       if (!robotOnReferenceSegmentWithinDistance(
-            segment_start_map, segment_end_map, robot_xy, distance_tolerance_meters))
+            local_segment_start, local_segment_end, robot_xy, distance_tolerance_meters))
       {
         continue;
       }
+
+      geometry_msgs::msg::PoseStamped local_pose_start;
+      geometry_msgs::msg::PoseStamped local_pose_end;
+      local_pose_start.header.frame_id = cfg_->map_frame;
+      local_pose_end.header.frame_id = cfg_->map_frame;
+      local_pose_start.header.stamp = reference_geometry_stamp_in_map;
+      local_pose_end.header.stamp = reference_geometry_stamp_in_map;
+      local_pose_start.pose.position.x = local_segment_start.x();
+      local_pose_start.pose.position.y = local_segment_start.y();
+      local_pose_end.pose.position.x = local_segment_end.x();
+      local_pose_end.pose.position.y = local_segment_end.y();
+      reference_local_segment_in_map.header.stamp = reference_geometry_stamp_in_map;
+      reference_local_segment_in_map.poses.clear();
+      reference_local_segment_in_map.poses.push_back(local_pose_start);
+      reference_local_segment_in_map.poses.push_back(local_pose_end);
+
+      RCLCPP_INFO_THROTTLE(
+        logger_, *(clock_), 2000,
+        "[trySelectBestReferencePathFromList] Edge following: 局部贴边段 "
+        "(%.2f, %.2f)->(%.2f, %.2f), 弧长目标 L=%.2f, 弦长=%.2f",
+        local_segment_start.x(), local_segment_start.y(),
+        local_segment_end.x(), local_segment_end.y(),
+        min_wall_line_length_,
+        (local_segment_end - local_segment_start).norm());
     } catch (const tf2::TransformException& transform_exception) {
       RCLCPP_INFO_THROTTLE(
         logger_, *(clock_), 2000, "[trySelectBestReferencePathFromList] Edge following: 贴边参考线TF跳过: %s", 
@@ -6641,8 +6730,9 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
     Eigen::Vector2d candidate_segment_end;
     double candidate_minimum_average_distance = 0.0;
     double candidate_robot_perpendicular_distance = 0.0;
+    // 判定沿用 trySelectSegmentFromTwoPointPath（平行、距离、航向等现有逻辑）。
     if (trySelectSegmentFromTwoPointPath(
-          reference_path_in_map_frame,
+          reference_local_segment_in_map,
           input_path,
           robot_pose,
           parallel_tolerance_degrees,

@@ -346,7 +346,10 @@
     Eigen::Vector2d& selected_edge_segment_end,
     double& minimum_average_distance_to_plan,
     double& robot_perpendicular_distance_to_edge_line);
-  /** @brief 在参考路径列表中搜索最优线段并输出评估结果。 */
+  /**
+   * @brief 在参考路径上取机器人最近邻折线段（弧长不足则向两端扩到约 min_wall_line_length_），
+   *        再用现有两点段门控选出可用贴边线。
+   */
   bool trySelectBestReferencePathFromList(
     const std::vector<nav_msgs::msg::Path>& reference_path_candidates,
     const nav_msgs::msg::Path& input_path,
