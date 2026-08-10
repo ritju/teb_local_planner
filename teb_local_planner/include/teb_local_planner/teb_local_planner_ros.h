@@ -347,7 +347,10 @@
     Eigen::Vector2d& selected_edge_segment_end,
     double& minimum_average_distance_to_plan,
     double& robot_perpendicular_distance_to_edge_line);
-  /** @brief 在参考路径列表中搜索最优线段并输出评估结果。 */
+  /**
+   * @brief 在参考路径上取机器人最近邻折线段（弧长不足则向两端扩到约 min_wall_line_length_），
+   *        再用现有两点段门控选出可用贴边线。
+   */
   bool trySelectBestReferencePathFromList(
     const std::vector<nav_msgs::msg::Path>& reference_path_candidates,
     const nav_msgs::msg::Path& input_path,
@@ -372,6 +375,10 @@
    */
   double computeWallLineDistWeightFromRobotDistance(
     double robot_perpendicular_distance_to_edge_line) const;
+  /**
+   * @brief 按机器人到贴边线垂距调度 weight_wall_line_dist 与 weight_wall_side_pull。
+   */
+  void updateScheduledWallDistWeights(double robot_perpendicular_distance_to_edge_line);
   /**
    * @brief 融合主来源（墙线/路沿）与参考路径，按优先级与锁定策略选择最终贴边线。
    */
@@ -766,6 +773,7 @@
    bool initialized_; //!< Keeps track about the correct initialization of this class
    std::string name_; //!< Name of plugin ID
    double weight_wall_line_direction_, weight_wall_line_dist_;
+   double weight_wall_side_pull_; //!< 配置基值，贴边时按垂距比例调度
    double weight_via_point_;
    double min_obstacle_dist_;
    geometry_msgs::msg::PoseStamped last_corner_pose_;
@@ -815,10 +823,12 @@
    double prune_angle_threshold_;  // rad, default 90deg
    double normal_weight_optimaltime_;
    double normal_min_obstacle_dist_;
+   double normal_weight_inflation_;
    std::string normal_footprint_vertices_;
    // Parameters for edge-following mode
    double edge_weight_optimaltime_;
    double edge_min_obstacle_dist_;
+   double edge_weight_inflation_;
    double min_wall_line_length_;
    std::string edge_footprint_vertices_;
    bool is_edge_following_mode_;

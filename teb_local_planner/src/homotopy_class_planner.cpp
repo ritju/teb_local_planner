@@ -354,36 +354,30 @@ void HomotopyClassPlanner::updateReferenceTrajectoryViaPoints(bool all_trajector
 
 void HomotopyClassPlanner::updateReferenceTrajectoryWallLinePoints(bool all_trajectories)
 {
-  if (!wall_line_ || (cfg_->optim.weight_wall_line_direction <= 0 && cfg_->optim.weight_wall_line_dist <= 0))
+  // all_trajectories 仅用于 via-points；贴边墙线必须挂到所有候选。
+  // 若按拓扑只挂 initial_plan 类，best 落在其它拓扑时会被 setWallLine(NULL)，
+  // 出现“Edge following 已选墙线，但 TEB cost dbg wall_line=no”的假象与真实不贴边。
+  (void)all_trajectories;
+
+  // 侧隙模式用 weight_wall_side_pull；旧中心距用 weight_wall_line_dist / direction
+  const bool wall_weights_active =
+      cfg_->optim.weight_wall_line_direction > 0 ||
+      cfg_->optim.weight_wall_line_dist > 0 ||
+      cfg_->optim.weight_wall_side_pull > 0 ||
+      cfg_->optim.weight_wall_side_push > 0;
+  if (!wall_line_ || !wall_weights_active)
     return;
-  if(equivalence_classes_.size() < tebs_.size())
+  if (equivalence_classes_.size() < tebs_.size())
   {
-    RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"), "HomotopyClassPlanner::updateReferenceTrajectoryWithViaPoints(): Number of h-signatures does not match number of trajectories.");
+    RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"),
+                 "HomotopyClassPlanner::updateReferenceTrajectoryWallLinePoints(): "
+                 "Number of h-signatures does not match number of trajectories.");
     return;
   }
 
-  if (all_trajectories)
+  for (std::size_t i = 0; i < tebs_.size(); ++i)
   {
-    // enable wall-line-points for all tebs
-    for (std::size_t i=0; i < equivalence_classes_.size(); ++i)
-    {
-        tebs_[i]->setWallLine(wall_line_);
-    }
-  }
-  else
-  {
-    // enable wall-line-points for teb in the same hommotopy class as the initial_plan and deactivate it for all other ones
-    for (std::size_t i=0; i < equivalence_classes_.size(); ++i)
-    {
-      if(initial_plan_eq_class_->isEqual(*equivalence_classes_[i].first))
-      {
-        tebs_[i]->setWallLine(wall_line_);
-      }
-      else
-      {
-        tebs_[i]->setWallLine(NULL);
-      }
-    }
+    tebs_[i]->setWallLine(wall_line_);
   }
 }
 
@@ -413,7 +407,8 @@ TebOptimalPlannerPtr HomotopyClassPlanner::addAndInitNewTeb(const PoseSE2& start
 {
   if(tebs_.size() >= cfg_->hcp.max_number_classes)
     return TebOptimalPlannerPtr();
-  TebOptimalPlannerPtr candidate =  TebOptimalPlannerPtr( new TebOptimalPlanner(node_, *cfg_, obstacles_, visualization_));
+  TebOptimalPlannerPtr candidate = TebOptimalPlannerPtr(
+      new TebOptimalPlanner(node_, *cfg_, obstacles_, visualization_, via_points_, wall_line_));
 
   candidate->teb().initTrajectoryToGoal(start, goal, 0, cfg_->robot.max_vel_x, cfg_->trajectory.min_samples, cfg_->trajectory.allow_init_with_backwards_motion);
 
@@ -468,7 +463,8 @@ TebOptimalPlannerPtr HomotopyClassPlanner::addAndInitNewTeb(const std::vector<ge
 {
   if(tebs_.size() >= cfg_->hcp.max_number_classes)
     return TebOptimalPlannerPtr();
-  TebOptimalPlannerPtr candidate = TebOptimalPlannerPtr( new TebOptimalPlanner(node_, *cfg_, obstacles_, visualization_));
+  TebOptimalPlannerPtr candidate = TebOptimalPlannerPtr(
+      new TebOptimalPlanner(node_, *cfg_, obstacles_, visualization_, via_points_, wall_line_));
 
   candidate->teb().initTrajectoryToGoal(initial_plan, cfg_->robot.max_vel_x, cfg_->robot.max_vel_theta,
     cfg_->trajectory.global_plan_overwrite_orientation, cfg_->trajectory.min_samples, cfg_->trajectory.allow_init_with_backwards_motion);
@@ -518,6 +514,17 @@ void HomotopyClassPlanner::updateAllTEBs(const PoseSE2* start, const PoseSE2* go
 
 void HomotopyClassPlanner::optimizeAllTEBs(int iter_innerloop, int iter_outerloop)
 {
+  // cost dbg 仅打印当前 best（本周期 selectBestTeb 之前的 best / last_best）
+  TebOptimalPlannerPtr log_teb = bestTeb();
+  if (!log_teb)
+    log_teb = last_best_teb_;
+  if (!log_teb && !tebs_.empty())
+    log_teb = tebs_.front();
+  for (TebOptPlannerContainer::iterator it_teb = tebs_.begin(); it_teb != tebs_.end(); ++it_teb)
+    (*it_teb)->setEnableWallObstacleCostLog(false);
+  if (log_teb)
+    log_teb->setEnableWallObstacleCostLog(true);
+
   // optimize TEBs in parallel since they are independend of each other
   if (cfg_->hcp.enable_multithreading)
   {

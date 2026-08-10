@@ -98,7 +98,12 @@ public:
     const VertexPose* bandpt = static_cast<const VertexPose*>(_vertices[0]);
     if (_measurement && _measurement->size())
     {
-      _error[0] = fabs(perpendicularDistance(bandpt->position(), *_measurement) -  cfg_->wall_line.min_wall_dist);
+      const double d = perpendicularDistance(bandpt->position(), *_measurement);
+      // 超出匹配容差时不施加中心距吸引（勿用假测量值制造零误差）
+      if (d > cfg_->wall_line.distance_tolerance)
+        _error[0] = 0;
+      else
+        _error[0] = fabs(d - cfg_->wall_line.min_wall_dist);
     }
     else
     {
@@ -153,11 +158,8 @@ public:
     if (denominator < 1e-9) { // 处理两点重合的情况
       return cfg_->wall_line.min_wall_dist;
     }
-     double distance = (numerator / denominator) <= cfg_->wall_line.distance_tolerance ? numerator / denominator : cfg_->wall_line.min_wall_dist;
-
-    // std::cout << "DistanceToWall : " << numerator / denominator << " !" << std::endl;
-
-    return distance;
+    // 始终返回真实垂距；远距是否施加代价由 computeError / 权重调度决定，禁止用 min_wall_dist 冒充测量值
+    return numerator / denominator;
   }
 
 

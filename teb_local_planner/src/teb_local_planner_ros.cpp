@@ -160,6 +160,63 @@ double segmentToSegmentDistance2d(
     std::min(second_to_first_start, second_to_first_end));
 }
 
+/**
+ * @brief 在折线上找距 query 最近的相邻段，若弧长不足 target_length 则向两端扩展，
+ *        返回扩展窗首尾顶点作为局部贴边线段。
+ */
+bool extractNearestExpandedPolylineSegment(
+  const std::vector<Eigen::Vector2d>& polyline,
+  const Eigen::Vector2d& query_point,
+  const double target_length,
+  Eigen::Vector2d& segment_start,
+  Eigen::Vector2d& segment_end)
+{
+  if (polyline.size() < 2) {
+    return false;
+  }
+
+  std::size_t best_segment_index = 0;
+  double best_distance = std::numeric_limits<double>::max();
+  for (std::size_t segment_index = 0; segment_index + 1 < polyline.size(); ++segment_index) {
+    const double distance_to_segment = pointToSegmentDistance2d(
+      query_point, polyline[segment_index], polyline[segment_index + 1]);
+    if (distance_to_segment < best_distance) {
+      best_distance = distance_to_segment;
+      best_segment_index = segment_index;
+    }
+  }
+
+  std::size_t left_index = best_segment_index;
+  std::size_t right_index = best_segment_index + 1;
+  double window_arc_length = (polyline[right_index] - polyline[left_index]).norm();
+  const double expand_target =
+    (target_length > 1e-6) ? target_length : window_arc_length;
+
+  while (window_arc_length + 1e-9 < expand_target) {
+    bool expanded = false;
+    if (left_index > 0) {
+      --left_index;
+      window_arc_length += (polyline[left_index + 1] - polyline[left_index]).norm();
+      expanded = true;
+      if (window_arc_length + 1e-9 >= expand_target) {
+        break;
+      }
+    }
+    if (right_index + 1 < polyline.size()) {
+      ++right_index;
+      window_arc_length += (polyline[right_index] - polyline[right_index - 1]).norm();
+      expanded = true;
+    }
+    if (!expanded) {
+      break;
+    }
+  }
+
+  segment_start = polyline[left_index];
+  segment_end = polyline[right_index];
+  return (segment_end - segment_start).norm() > 1e-6;
+}
+
 }  // namespace
 
 bool segmentsCloseForFusion(
@@ -817,12 +874,15 @@ bool clippedFootprintOutlineTouchesBlockingCost(
                                             costmap_converter_loader_("costmap_converter", "costmap_converter::BaseCostmapToPolygons"),
                                             custom_via_points_active_(false), no_infeasible_plans_(0),
                                             last_preferred_rotdir_(RotType::none), initialized_(false),
+                                            weight_wall_side_pull_(80.0),
                                             weight_via_point_(1.0),
                                             cfg_max_angular_vel_(0.6), cfg_max_vel_x_(0.5), cfg_max_angular_acc_(0.6), wall_line_update_time_(0),
                                             curb_line_update_time_(0), min_obstacle_dist_(0.5), wall_line_ptr_(nullptr), curb_line_subscriber_(nullptr),
                                             normal_weight_optimaltime_(2.0), normal_min_obstacle_dist_(0.2),
+                                            normal_weight_inflation_(0.1),
                                             normal_footprint_vertices_("[[1.25, 0.55], [1.25, -0.55], [-0.65, -0.55], [-0.65, 0.55]]"),
-                                            edge_weight_optimaltime_(10.0), edge_min_obstacle_dist_(0.05), min_wall_line_length_(1.0),
+                                            edge_weight_optimaltime_(10.0), edge_min_obstacle_dist_(0.05),
+                                            edge_weight_inflation_(0.0), min_wall_line_length_(1.0),
                                             edge_footprint_vertices_("[[1.25, 0.5], [1.25, -0.5], [-0.65, -0.5], [-0.65, 0.5]]"),
                                             prune_angle_threshold_(1.57079632679),
                                             is_edge_following_mode_(false),
@@ -836,6 +896,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
    // Initialize edge mode parameters from config defaults (will be overridden by parameters if available)
    edge_weight_optimaltime_ = cfg_->wall_line.edge_weight_optimaltime;
    edge_min_obstacle_dist_ = cfg_->wall_line.edge_min_obstacle_dist;
+   edge_weight_inflation_ = cfg_->wall_line.edge_weight_inflation;
    edge_footprint_vertices_ = cfg_->wall_line.edge_footprint_vertices;
  }
  
@@ -861,6 +922,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
     cfg_->loadRosParamFromNodeHandle(node, name_);
     weight_wall_line_direction_ = cfg_->optim.weight_wall_line_direction;
     weight_wall_line_dist_ = cfg_->optim.weight_wall_line_dist;
+    weight_wall_side_pull_ = cfg_->optim.weight_wall_side_pull;
     weight_via_point_ = cfg_->optim.weight_viapoint;
     cfg_max_angular_vel_ = cfg_->robot.max_vel_theta;
     cfg_max_vel_x_ = cfg_->robot.max_vel_x;
@@ -870,6 +932,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
     // Save normal mode parameters
     normal_weight_optimaltime_ = cfg_->optim.weight_optimaltime;
     normal_min_obstacle_dist_ = cfg_->obstacles.min_obstacle_dist;
+    normal_weight_inflation_ = cfg_->optim.weight_inflation;
     // Try to get footprint vertices from parameter server
     std::string footprint_string;
     if (node->get_parameter(name_ + "." + "footprint_model.vertices", footprint_string)) {
@@ -879,6 +942,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
     // Load edge-following mode parameters from config
     edge_weight_optimaltime_ = cfg_->wall_line.edge_weight_optimaltime;
     edge_min_obstacle_dist_ = cfg_->wall_line.edge_min_obstacle_dist;
+    edge_weight_inflation_ = cfg_->wall_line.edge_weight_inflation;
     edge_footprint_vertices_ = cfg_->wall_line.edge_footprint_vertices;
     // via_sep_ = cfg_->trajectory.global_plan_viapoint_sep;
     RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %.2f, max_vel_x: %.2f! In initialize!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
@@ -2202,28 +2266,41 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
       double cur_angle = std::atan2(cur_dir.y(), cur_dir.x());
 
       // --- Wall line locking: compare current vs locked ---
+      // 距离用相对锁定无限直线的法向偏移（两端点取 max），忽略沿墙伸缩/中点滑动；
+      // 角度按无向线段处理（0° 与 180° 视为同一墙）。
       if (wall_line_locked_)
       {
         Eigen::Vector2d locked_dir = locked_wall_end_ - locked_wall_start_;
-        double locked_len = locked_dir.norm();
-        double locked_angle = (locked_len > 1e-6)
-          ? std::atan2(locked_dir.y() / locked_len, locked_dir.x() / locked_len) : 0.0;
-
-        Eigen::Vector2d locked_mid = (locked_wall_start_ + locked_wall_end_) * 0.5;
-        Eigen::Vector2d cur_mid = (cur_start + cur_end) * 0.5;
-        double dist_change = (cur_mid - locked_mid).norm();
-        double angle_diff = cur_angle - locked_angle;
-        while (angle_diff > M_PI) angle_diff -= 2.0 * M_PI;
-        while (angle_diff < -M_PI) angle_diff += 2.0 * M_PI;
-
-        double angle_threshold_rad = cfg_->wall_line.wall_line_lock_angle_threshold * M_PI / 180.0;
-        if (dist_change > cfg_->wall_line.wall_line_lock_distance_threshold ||
-            std::abs(angle_diff) > angle_threshold_rad)
+        const double locked_len = locked_dir.norm();
+        if (locked_len > 1e-6)
         {
-          wall_line_locked_ = false;
-          wall_line_stable_count_ = 0;
-          RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
-            "Wall line unlocked: dist_change=%.3f, angle_change=%.3f", dist_change, std::abs(angle_diff));
+          locked_dir /= locked_len;
+          const Eigen::Vector2d locked_normal(-locked_dir.y(), locked_dir.x());
+          const double lat_start =
+            std::abs((cur_start - locked_wall_start_).dot(locked_normal));
+          const double lat_end =
+            std::abs((cur_end - locked_wall_start_).dot(locked_normal));
+          const double lateral_change = std::max(lat_start, lat_end);
+
+          const double locked_angle = std::atan2(locked_dir.y(), locked_dir.x());
+          double angle_diff = cur_angle - locked_angle;
+          while (angle_diff > M_PI) angle_diff -= 2.0 * M_PI;
+          while (angle_diff < -M_PI) angle_diff += 2.0 * M_PI;
+          angle_diff = std::abs(angle_diff);
+          if (angle_diff > M_PI_2)
+            angle_diff = M_PI - angle_diff;
+
+          const double angle_threshold_rad =
+            cfg_->wall_line.wall_line_lock_angle_threshold * M_PI / 180.0;
+          if (lateral_change > cfg_->wall_line.wall_line_lock_distance_threshold ||
+              angle_diff > angle_threshold_rad)
+          {
+            wall_line_locked_ = false;
+            wall_line_stable_count_ = 0;
+            RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+              "Wall line unlocked: lateral_change=%.3f, angle_change=%.3f",
+              lateral_change, angle_diff);
+          }
         }
       }
 
@@ -2355,12 +2432,14 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
     appendVehicleScanInflatedHullObstacles();
   }
 
-  // --- Add the effective wall line as a clean LineObstacle ---
+  // --- Add the effective wall line as a wall-guide LineObstacle (side-clearance only) ---
   if (use_wall_line_filter)
   {
-    obstacles_.push_back(ObstaclePtr(new LineObstacle(
+    ObstaclePtr wall_guide(new LineObstacle(
       eff_wall_start.x(), eff_wall_start.y(),
-      eff_wall_end.x(), eff_wall_end.y())));
+      eff_wall_end.x(), eff_wall_end.y()));
+    wall_guide->setWallGuide(true);
+    obstacles_.push_back(wall_guide);
   }
 
   // OccupancyGrid 仅在 costmap_converter 流程末尾发布（不在纯 costmap 点障碍路径后发布）
@@ -2556,6 +2635,8 @@ void TebLocalPlannerROS::updateWallLineVec(
    if (input_path.poses.size() < 2)
    {
      if(wall_line_points_.size() > 0) wall_line_points_.clear();
+     RCLCPP_WARN(logger_, "Edge following: 路径点数太少(%zu)，退出贴边模式，清空贴边配置",
+                 input_path.poses.size());
      switchParameterMode(false);
      return;
    }
@@ -2570,6 +2651,7 @@ void TebLocalPlannerROS::updateWallLineVec(
      if (have_wall_segment) {
        w0 = wall_line_points_[0];
        w1 = wall_line_points_[1];
+       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 墙线起点: (%.2f, %.2f), 终点: (%.2f, %.2f)", w0.x(), w0.y(), w1.x(), w1.y());
      }
      for (const auto& vehicle : global_vehicle_poses_) {
        bool in_exit_region = false;
@@ -2584,10 +2666,10 @@ void TebLocalPlannerROS::updateWallLineVec(
        }
        if (in_exit_region) {
          if (have_wall_segment) {
-           RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+           RCLCPP_INFO(logger_,
              "Edge following: 车辆在贴边检查区域范围内，退出贴边模式");
          } else {
-           RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+           RCLCPP_INFO(logger_,
              "Edge following: 车辆距离机器人太近：%.2f m，小于阈值：%.2f m，退出贴边模式",
              distance_points2d(robot_pose.pose.position, vehicle.pose.position),
              cfg_->wall_line.close_vehicle_distance_threshold);
@@ -2600,7 +2682,7 @@ void TebLocalPlannerROS::updateWallLineVec(
    if (has_near_vehicles)
    {
     if(wall_line_points_.size() > 0) wall_line_points_.clear();
-    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "Edge following: 机器人附近有车辆，退出贴边模式");
+    RCLCPP_WARN(logger_, "Edge following: 机器人附近有车辆，退出贴边模式，清空贴边配置");
     switchParameterMode(false);
     return;
    }
@@ -2608,7 +2690,7 @@ void TebLocalPlannerROS::updateWallLineVec(
    // Check for protruding obstacles that prohibit entering edge-following mode
    if (hasProtrudingObstacleInMonitorCorridor(robot_pose))
    {
-     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 机器人附近有障碍物，退出贴边模式");
+     RCLCPP_INFO(logger_, "Edge following: 机器人附近有障碍物，退出贴边模式，清空贴边配置");
      if(wall_line_points_.size() > 0) wall_line_points_.clear();
      switchParameterMode(false);
      return;
@@ -2624,6 +2706,7 @@ void TebLocalPlannerROS::updateWallLineVec(
     const double dx_path = end_pose.x - start_pose.x;
     const double dy_path = end_pose.y - start_pose.y;
     const double path_length = std::hypot(dx_path, dy_path);
+    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 路径长度: %.2f", path_length);
     if (path_length > cfg_->wall_line.min_path_line_length) {
       // 计算路径方向角度（相对于世界坐标系）
       const double path_yaw = std::atan2(dy_path, dx_path);
@@ -2638,14 +2721,14 @@ void TebLocalPlannerROS::updateWallLineVec(
       // 检查夹角是否超出±45度范围
       if (std::fabs(angle_diff) > M_PI / 4) {
         if(wall_line_points_.size() > 0) wall_line_points_.clear();
-        RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "Edge following: 机器人方向与路径方向夹角太大: %.2f，退出贴边模式", 
-                            angle_diff * 180.0 / M_PI);
+        RCLCPP_WARN(logger_, "Edge following: 机器人方向与路径方向夹角太大: %.2f，退出贴边模式，清空贴边配置",
+                    angle_diff * 180.0 / M_PI);
         switchParameterMode(false);
         return;
       }
     } else {
       if(wall_line_points_.size() > 0) wall_line_points_.clear();
-      RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "Edge following: 路径长度太短，退出贴边模式");
+      RCLCPP_WARN(logger_, "Edge following: 路径长度太短(%.2f)，退出贴边模式，清空贴边配置", path_length);
       switchParameterMode(false);
       return;
     }
@@ -2661,7 +2744,6 @@ void TebLocalPlannerROS::updateWallLineVec(
     for(const auto& wall_path : wall_line) 
     {
       if(wall_path.poses.size() < 2) continue; // 无效墙线
-      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 墙线点数量: %ld !", wall_path.poses.size());
       
       // 提取墙线端点
       const auto& wall_start = wall_path.poses.front().pose.position;
@@ -2672,7 +2754,6 @@ void TebLocalPlannerROS::updateWallLineVec(
       const double dy_wall = wall_end.y - wall_start.y;
       const double wall_length = std::hypot(dx_wall, dy_wall);
       if(wall_length < min_wall_line_length_) continue; // 无效墙线
-      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 墙线长度: %.2f !", wall_length);
       
       const double dir_wall_x = dx_wall / wall_length;
       const double dir_wall_y = dy_wall / wall_length;
@@ -2697,7 +2778,7 @@ void TebLocalPlannerROS::updateWallLineVec(
         std::fabs(A * robot_pose.pose.position.x + B * robot_pose.pose.position.y + C) / denominator;
       
       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 墙线与路径平行度: %.2f, 距离: %.2f", 
-                           cos_theta * 180.0 / M_PI, avg_distance);
+                           acos(cos_theta) * 180.0 / M_PI, avg_distance);
       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 机器人到墙线距离: %.2f", 
                            robot_to_edge_distance);
       
@@ -2710,6 +2791,9 @@ void TebLocalPlannerROS::updateWallLineVec(
         best_wall_path = wall_path;
         best_wall_start = wall_start;
         best_wall_end = wall_end;
+      } else {
+        RCLCPP_INFO(logger_, "Edge following: 墙线与路径平行度不满足要求: %.2f, 距离: %.2f", 
+                             acos(cos_theta) * 180.0 / M_PI, avg_distance);
       }
     }
 
@@ -2729,8 +2813,7 @@ void TebLocalPlannerROS::updateWallLineVec(
       if(wall_line_points_.size() > 0) wall_line_points_.clear();
       wall_line_points_.emplace_back(Eigen::Vector2d(best_wall_start.x, best_wall_start.y));
       wall_line_points_.emplace_back(Eigen::Vector2d(best_wall_end.x, best_wall_end.y));
-      cfg_->optim.weight_wall_line_dist =
-        computeWallLineDistWeightFromRobotDistance(best_robot_to_edge_distance);
+      updateScheduledWallDistWeights(best_robot_to_edge_distance);
       wall_line_update_time_ = clock_->now();
       std_msgs::msg::Float32 distance;
       distance.data = static_cast<float>(best_robot_to_edge_distance);
@@ -2740,9 +2823,9 @@ void TebLocalPlannerROS::updateWallLineVec(
       switchParameterMode(true);
       
       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 选择最佳墙线距离: %.2f", min_distance);
-      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 最小障碍物距离: %.2f, 最优时间权重: %.2f, 墙线距离权重: %.2f", 
+      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 最小障碍物距离: %.2f, 最优时间权重: %.2f, 墙线距离权重: %.2f, 侧隙Pull: %.2f", 
                            cfg_->obstacles.min_obstacle_dist, cfg_->optim.weight_optimaltime, 
-                           cfg_->optim.weight_wall_line_dist);
+                           cfg_->optim.weight_wall_line_dist, cfg_->optim.weight_wall_side_pull);
       
       // 发布可视化标记
       visualization_msgs::msg::Marker marker_msg;
@@ -2775,7 +2858,7 @@ void TebLocalPlannerROS::updateWallLineVec(
     }
     else 
     {
-      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 没有找到合适的墙线，退出贴边模式，清空贴边配置");
+      RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "Edge following: 没有找到合适的墙线，准备退出贴边/清空贴边配置");
       // 6. 如果没有找到合适的墙线，检查是否需要清除现有配置
       if(wall_line_points_.size() > 0)
       {
@@ -2783,7 +2866,6 @@ void TebLocalPlannerROS::updateWallLineVec(
         if (time_diff.seconds() > keep_wall_line_time_)
         {
           wall_line_points_.clear();
-          
           // Switch back to normal mode parameters
           switchParameterMode(false);
         }
@@ -2804,7 +2886,8 @@ void TebLocalPlannerROS::updateWallLineVec(
    // 如果输入路径长度小于2，则清空wall_line_points_并退出
    if (input_path.poses.size() < 2) {
      if(wall_line_points_.size() > 0) wall_line_points_.clear();
-    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 路沿路径长度太短，退出贴边模式");
+    RCLCPP_WARN(logger_, "[updateCurbLineVec] Edge following: 路径点数太少(%zu)，退出贴边模式，清空贴边配置",
+                input_path.poses.size());
     switchParameterMode(false);
     return;
    }
@@ -2831,10 +2914,10 @@ void TebLocalPlannerROS::updateWallLineVec(
        }
        if (in_exit_region) {
          if (have_wall_segment) {
-           RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+           RCLCPP_INFO(logger_,
              "[updateCurbLineVec] Edge following: 车辆在贴边检查区域范围内，退出贴边模式");
          } else {
-           RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+           RCLCPP_INFO(logger_,
              "[updateCurbLineVec] Edge following: 车辆距离机器人太近：%.2f m，小于阈值：%.2f m，退出贴边模式",
              distance_points2d(robot_pose.pose.position, vehicle.pose.position),
              cfg_->wall_line.close_vehicle_distance_threshold);
@@ -2847,7 +2930,7 @@ void TebLocalPlannerROS::updateWallLineVec(
    if (has_near_vehicles)
    {
     if(wall_line_points_.size() > 0) wall_line_points_.clear();
-    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 机器人附近有车辆，退出贴边模式");
+    RCLCPP_WARN(logger_, "[updateCurbLineVec] Edge following: 机器人附近有车辆，退出贴边模式，清空贴边配置");
     switchParameterMode(false);
     return;
    }
@@ -2855,7 +2938,7 @@ void TebLocalPlannerROS::updateWallLineVec(
    // Check for protruding obstacles that prohibit entering edge-following mode
    if (hasProtrudingObstacleInMonitorCorridor(robot_pose))
    {
-     RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 机器人附近有障碍物，退出贴边模式");
+     RCLCPP_WARN(logger_, "[updateCurbLineVec] Edge following: 机器人附近有障碍物，退出贴边模式，清空贴边配置");
      if(wall_line_points_.size() > 0) wall_line_points_.clear();
      switchParameterMode(false);
      return;
@@ -2887,13 +2970,12 @@ void TebLocalPlannerROS::updateWallLineVec(
       // 检查夹角是否超出±45度范围,如果超出则清空wall_line_points_并退出
       if (std::fabs(angle_diff) > M_PI / 4) {
         if(wall_line_points_.size() > 0) wall_line_points_.clear();
-        RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 机器人方向与路径方向夹角太大: %.2f，退出贴边模式", 
-                            angle_diff * 180.0 / M_PI);
+        RCLCPP_WARN(logger_, "[updateCurbLineVec] Edge following: 机器人方向与路径方向夹角太大: %.2f，退出贴边模式，清空贴边配置",
+                    angle_diff * 180.0 / M_PI);
         switchParameterMode(false);
         return;
       }
     } else {
-      RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 墙线长度太短，退出贴边模式，清空贴边配置");
       // 6. 如果没有找到合适的墙线，检查是否需要清除现有配置
       if(wall_line_points_.size() > 0) wall_line_points_.clear();
       switchParameterMode(false);
@@ -2984,8 +3066,7 @@ void TebLocalPlannerROS::updateWallLineVec(
      wall_line_points_.emplace_back(Eigen::Vector2d(best_wall_start.x, best_wall_start.y));
      wall_line_points_.emplace_back(Eigen::Vector2d(best_wall_end.x, best_wall_end.y));
      
-     cfg_->optim.weight_wall_line_dist =
-       computeWallLineDistWeightFromRobotDistance(best_robot_to_edge_distance);
+     updateScheduledWallDistWeights(best_robot_to_edge_distance);
      wall_line_update_time_ = clock_->now();
      std_msgs::msg::Float32 distance;
      distance.data = static_cast<float>(best_robot_to_edge_distance);
@@ -2995,9 +3076,10 @@ void TebLocalPlannerROS::updateWallLineVec(
      switchParameterMode(true);
      
      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 选择最佳墙线距离: %.2f", min_distance);
-     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 最小障碍物距离: %.2f, 最优时间权重: %.2f, 墙线距离权重: %.2f", 
+     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 最小障碍物距离: %.2f, 最优时间权重: %.2f, 墙线距离权重: %.2f, 侧隙Pull: %.2f", 
                           cfg_->obstacles.min_obstacle_dist, 
-                          cfg_->optim.weight_optimaltime, cfg_->optim.weight_wall_line_dist);
+                          cfg_->optim.weight_optimaltime, cfg_->optim.weight_wall_line_dist,
+                          cfg_->optim.weight_wall_side_pull);
      
      // 发布可视化标记
      visualization_msgs::msg::Marker marker_msg;
@@ -3030,7 +3112,7 @@ void TebLocalPlannerROS::updateWallLineVec(
    }
    else 
    {
-     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 没有找到合适的墙线，退出贴边模式，清空贴边配置");
+     RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 没有找到合适的墙线，准备退出贴边/清空贴边配置");
      // 6. 如果没有找到合适的墙线，检查是否需要清除现有配置
      if(wall_line_points_.size() > 0)
      {
@@ -3038,6 +3120,9 @@ void TebLocalPlannerROS::updateWallLineVec(
        if (time_diff.seconds() > keep_wall_line_time_)
        {
          wall_line_points_.clear();
+         RCLCPP_INFO(logger_,
+                     "[updateCurbLineVec] Edge following: 超过 keep_wall_line_time(%.2fs)，清空贴边配置并退出贴边模式",
+                     keep_wall_line_time_);
          
          // Switch back to normal mode parameters
          switchParameterMode(false);
@@ -4455,6 +4540,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
        RCLCPP_INFO(logger_, "Switching to edge-following mode parameters");
        cfg_->optim.weight_optimaltime = cfg_->wall_line.edge_weight_optimaltime;
        cfg_->obstacles.min_obstacle_dist = cfg_->wall_line.edge_min_obstacle_dist;
+       cfg_->optim.weight_inflation = cfg_->wall_line.edge_weight_inflation;
        cfg_->robot.acc_lim_theta = cfg_->wall_line.edge_acc_lim_theta;
        cfg_->robot.max_vel_theta = cfg_->wall_line.edge_max_vel_theta;
 
@@ -4466,6 +4552,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
        RCLCPP_INFO(logger_, "Switching to normal mode parameters");
        cfg_->optim.weight_optimaltime = normal_weight_optimaltime_;
        cfg_->obstacles.min_obstacle_dist = normal_min_obstacle_dist_;
+       cfg_->optim.weight_inflation = normal_weight_inflation_;
        cfg_->robot.acc_lim_theta = cfg_max_angular_acc_;
        cfg_->robot.max_vel_theta = cfg_max_angular_vel_;
        // Set footprint vertices
@@ -6619,6 +6706,8 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
   Eigen::Vector2d best_reference_segment_start;
   Eigen::Vector2d best_reference_segment_end;
   double best_robot_perpendicular_distance_to_edge_line = 0.0;
+  const Eigen::Vector2d robot_xy(
+    robot_pose.pose.position.x, robot_pose.pose.position.y);
 
   for (const auto& raw_reference_path : reference_path_candidates) {
     if (raw_reference_path.poses.size() < 2) {
@@ -6628,53 +6717,83 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
         raw_reference_path.poses.size());
       continue;
     }
-    // TF：用 TimePointZero 取缓冲区内最新可用变换，避免 now() 略超前于已发布 TF 导致外推失败。
-    // 几何 header.stamp：有变换时用返回变换的时间戳与 TF 一致；已在 map 时用当前时钟刷新陈旧 latched stamp。
-    nav_msgs::msg::Path reference_path_in_map_frame;
-    reference_path_in_map_frame.header.frame_id = cfg_->map_frame;
+    // TF：用 TimePointZero 取最新变换；将整条折线变换到 map，再取机器人最近邻段（不足则扩到约 L）。
+    nav_msgs::msg::Path reference_local_segment_in_map;
+    reference_local_segment_in_map.header.frame_id = cfg_->map_frame;
     try {
-      geometry_msgs::msg::PoseStamped reference_pose_start_in_map = raw_reference_path.poses.front();
-      geometry_msgs::msg::PoseStamped reference_pose_end_in_map = raw_reference_path.poses.back();
       rclcpp::Time reference_geometry_stamp_in_map;
-      if (!raw_reference_path.header.frame_id.empty() &&
-          raw_reference_path.header.frame_id != cfg_->map_frame) {
-        geometry_msgs::msg::TransformStamped transform_map_from_reference_path_frame =
-          tf_->lookupTransform(
-            cfg_->map_frame,
-            raw_reference_path.header.frame_id,
-            tf2::TimePointZero,
-            tf2::durationFromSec(0.5));
-        tf2::doTransform(reference_pose_start_in_map, reference_pose_start_in_map,
-          transform_map_from_reference_path_frame);
-        tf2::doTransform(reference_pose_end_in_map, reference_pose_end_in_map,
-          transform_map_from_reference_path_frame);
+      geometry_msgs::msg::TransformStamped transform_map_from_reference_path_frame;
+      const bool needs_tf =
+        !raw_reference_path.header.frame_id.empty() &&
+        raw_reference_path.header.frame_id != cfg_->map_frame;
+      if (needs_tf) {
+        transform_map_from_reference_path_frame = tf_->lookupTransform(
+          cfg_->map_frame,
+          raw_reference_path.header.frame_id,
+          tf2::TimePointZero,
+          tf2::durationFromSec(0.5));
         reference_geometry_stamp_in_map =
           rclcpp::Time(transform_map_from_reference_path_frame.header.stamp);
       } else {
         reference_geometry_stamp_in_map = clock_->now();
       }
-      reference_pose_start_in_map.header.frame_id = cfg_->map_frame;
-      reference_pose_end_in_map.header.frame_id = cfg_->map_frame;
-      reference_pose_start_in_map.header.stamp = reference_geometry_stamp_in_map;
-      reference_pose_end_in_map.header.stamp = reference_geometry_stamp_in_map;
-      reference_path_in_map_frame.header.stamp = reference_geometry_stamp_in_map;
-      reference_path_in_map_frame.poses.clear();
-      reference_path_in_map_frame.poses.push_back(reference_pose_start_in_map);
-      reference_path_in_map_frame.poses.push_back(reference_pose_end_in_map);
 
-      const Eigen::Vector2d segment_start_map(
-        reference_pose_start_in_map.pose.position.x,
-        reference_pose_start_in_map.pose.position.y);
-      const Eigen::Vector2d segment_end_map(
-        reference_pose_end_in_map.pose.position.x,
-        reference_pose_end_in_map.pose.position.y);
-      const Eigen::Vector2d robot_xy(
-        robot_pose.pose.position.x, robot_pose.pose.position.y);
+      std::vector<Eigen::Vector2d> reference_polyline_in_map;
+      reference_polyline_in_map.reserve(raw_reference_path.poses.size());
+      for (const auto& raw_pose : raw_reference_path.poses) {
+        geometry_msgs::msg::PoseStamped pose_in_map = raw_pose;
+        if (needs_tf) {
+          tf2::doTransform(
+            pose_in_map, pose_in_map, transform_map_from_reference_path_frame);
+        }
+        reference_polyline_in_map.emplace_back(
+          pose_in_map.pose.position.x, pose_in_map.pose.position.y);
+      }
+
+      Eigen::Vector2d local_segment_start;
+      Eigen::Vector2d local_segment_end;
+      if (!extractNearestExpandedPolylineSegment(
+            reference_polyline_in_map,
+            robot_xy,
+            min_wall_line_length_,
+            local_segment_start,
+            local_segment_end))
+      {
+        RCLCPP_WARN_THROTTLE(
+          logger_, *(clock_), 2000,
+          "[trySelectBestReferencePathFromList] Edge following: 无法从贴边参考折线提取局部段");
+        continue;
+      }
+
       if (!robotOnReferenceSegmentWithinDistance(
-            segment_start_map, segment_end_map, robot_xy, distance_tolerance_meters))
+            local_segment_start, local_segment_end, robot_xy, distance_tolerance_meters))
       {
         continue;
       }
+
+      geometry_msgs::msg::PoseStamped local_pose_start;
+      geometry_msgs::msg::PoseStamped local_pose_end;
+      local_pose_start.header.frame_id = cfg_->map_frame;
+      local_pose_end.header.frame_id = cfg_->map_frame;
+      local_pose_start.header.stamp = reference_geometry_stamp_in_map;
+      local_pose_end.header.stamp = reference_geometry_stamp_in_map;
+      local_pose_start.pose.position.x = local_segment_start.x();
+      local_pose_start.pose.position.y = local_segment_start.y();
+      local_pose_end.pose.position.x = local_segment_end.x();
+      local_pose_end.pose.position.y = local_segment_end.y();
+      reference_local_segment_in_map.header.stamp = reference_geometry_stamp_in_map;
+      reference_local_segment_in_map.poses.clear();
+      reference_local_segment_in_map.poses.push_back(local_pose_start);
+      reference_local_segment_in_map.poses.push_back(local_pose_end);
+
+      RCLCPP_INFO_THROTTLE(
+        logger_, *(clock_), 2000,
+        "[trySelectBestReferencePathFromList] Edge following: 局部贴边段 "
+        "(%.2f, %.2f)->(%.2f, %.2f), 弧长目标 L=%.2f, 弦长=%.2f",
+        local_segment_start.x(), local_segment_start.y(),
+        local_segment_end.x(), local_segment_end.y(),
+        min_wall_line_length_,
+        (local_segment_end - local_segment_start).norm());
     } catch (const tf2::TransformException& transform_exception) {
       RCLCPP_INFO_THROTTLE(
         logger_, *(clock_), 2000, "[trySelectBestReferencePathFromList] Edge following: 贴边参考线TF跳过: %s", 
@@ -6685,8 +6804,9 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
     Eigen::Vector2d candidate_segment_end;
     double candidate_minimum_average_distance = 0.0;
     double candidate_robot_perpendicular_distance = 0.0;
+    // 判定沿用 trySelectSegmentFromTwoPointPath（平行、距离、航向等现有逻辑）。
     if (trySelectSegmentFromTwoPointPath(
-          reference_path_in_map_frame,
+          reference_local_segment_in_map,
           input_path,
           robot_pose,
           parallel_tolerance_degrees,
@@ -6760,6 +6880,17 @@ double TebLocalPlannerROS::computeWallLineDistWeightFromRobotDistance(
   return std::min(weight_hi, std::max(weight_lo, interpolated));
 }
 
+void TebLocalPlannerROS::updateScheduledWallDistWeights(
+  const double robot_perpendicular_distance_to_edge_line)
+{
+  cfg_->optim.weight_wall_line_dist =
+    computeWallLineDistWeightFromRobotDistance(robot_perpendicular_distance_to_edge_line);
+  if (weight_wall_line_dist_ > 1e-9 && weight_wall_side_pull_ > 0.0) {
+    const double scale = cfg_->optim.weight_wall_line_dist / weight_wall_line_dist_;
+    cfg_->optim.weight_wall_side_pull = weight_wall_side_pull_ * scale;
+  }
+}
+
 void TebLocalPlannerROS::applyWallLineSegmentAndVisual(
   const Eigen::Vector2d& wall_line_segment_start,
   const Eigen::Vector2d& wall_line_segment_end,
@@ -6779,12 +6910,12 @@ void TebLocalPlannerROS::applyWallLineSegmentAndVisual(
   }
   wall_line_points_.push_back(wall_line_segment_start);
   wall_line_points_.push_back(wall_line_segment_end);
-  cfg_->optim.weight_wall_line_dist =
-    computeWallLineDistWeightFromRobotDistance(robot_perpendicular_distance_to_edge_line);
+  updateScheduledWallDistWeights(robot_perpendicular_distance_to_edge_line);
   RCLCPP_INFO_THROTTLE(
     logger_, *(clock_), 2000,
-    "[applyWallLineSegmentAndVisual] Edge following: 机器人到贴边线距离 %.3f m, 贴边权重: %.2f",
-    robot_perpendicular_distance_to_edge_line, cfg_->optim.weight_wall_line_dist);
+    "[applyWallLineSegmentAndVisual] Edge following: 机器人到贴边线距离 %.3f m, 贴边权重: %.2f, 侧隙Pull: %.2f",
+    robot_perpendicular_distance_to_edge_line, cfg_->optim.weight_wall_line_dist,
+    cfg_->optim.weight_wall_side_pull);
   (void)minimum_average_distance_to_plan;
   wall_line_update_time_ = clock_->now();
   std_msgs::msg::Float32 edge_distance_message;
@@ -6955,10 +7086,8 @@ void TebLocalPlannerROS::exitEdgeFollowingMode(
     costmap_ros_->getGlobalFrameID() : cfg_->map_frame;
   clearEdgeMonitorCorridors(map_frame);
   switchParameterMode(false);
-  RCLCPP_INFO_THROTTLE(
+  RCLCPP_INFO(
     logger_,
-    *(clock_),
-    2000,
     "[%s] Edge following: %s",
     log_context != nullptr ? log_context : "exitEdgeFollowingMode",
     reason != nullptr ? reason : "退出贴边模式");
