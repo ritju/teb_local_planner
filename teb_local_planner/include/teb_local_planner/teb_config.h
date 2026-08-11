@@ -288,7 +288,7 @@ public:
     double vehicle_exit_corridor_wall_robot_side_m; //!< 墙线沿法向朝机器人侧扩展 [m]
     double min_wall_line_length; //!< 候选墙线最小长度 [m]
     double min_path_line_length; //!< 输入路径最小长度 [m]
-    double transform_path_line_length; //!< transformed_plan 截取用于贴边匹配的长度 [m]
+    double transform_path_line_length; //!< transformed_plan 截取/贴边所需最小弧长 [m]（非弦长）
     double static_layer_enable_delay; //!< 切换 static_layer 的延时 [s]
     std::string edge_footprint_vertices; //!< footprint vertices parameter for edge-following mode
     double wall_line_safety_offset; //!< Offset the wall line toward the wall side for safety margin [m]

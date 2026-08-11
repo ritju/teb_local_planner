@@ -35,7 +35,7 @@
 
 ## 保留
 
-- `transform_path_line_length` 最小局部路径弦长  
+- `transform_path_line_length`：在 `runEdgeFollowingPathUpdate` 按**弧长**截断；不足则退出贴边（不再在 `shouldRunEdgeFollowingForTransformedPlan` 用弦长复查）
 - `paths_near_edge_enter_hit_count` / `exit_miss_count` 滞后  
 - 机器人相对路径航向差（`trySelectSegmentFromTwoPointPath` 内 ±45°，属车头与 path，不是边线平行度）  
 - 最近邻段扩窗写 `wall_line_points_`  
@@ -44,6 +44,7 @@
 
 | 参数 | 用途 |
 |------|------|
+| `transform_path_line_length` | 局部 path 截取/贴边所需最小**弧长** [m] |
 | `paths_near_edge_match_distance_threshold` | mission 走廊：path 点到 mission 折线最大允许距离 |
 | `distance_tolerance` | reference/边线：path 点到参考折线/线段最大允许距离 |
 | `paths_near_edge_match_angle_threshold_deg` | 门控中不再使用（可保留参数以免破坏配置加载） |
