@@ -242,7 +242,7 @@ public:
   {
     double min_wall_dist; //!< 进入贴边/中心距匹配用；侧隙模式下不作为优化目标
     double min_wall_direction; //!< buffer zone around obstacles with non-zero penalty costs (should be larger than min_obstacle_dist in order to take effect)
-    double parallel_tolerance; //!< 路径与边线平行度阈值（通常为 cos 夹角）
+    double parallel_tolerance; //!< 墙线激光候选等仍可能使用；reference/mission 门控已改为只距离
     double distance_tolerance; //!< 路径与边线匹配的最大允许距离 [m]
     //!< 侧隙贴边（方案 A）：footprint 到墙线 guide 的侧隙 g，Pull 钉 g*，Push 在 g<g_push 时推远
     bool wall_side_clearance_mode; //!< true=侧隙 EdgeWallSideClearance；false=旧中心距 EdgeDistanceToWall
@@ -270,8 +270,8 @@ public:
     std::string paired_mission_and_reference_path_topic; //!< Paired mission segment + edge reference paths
     std::string removed_plan_topic; //!< Remaining mission goals; front pose selects active reference pair
     double mission_segment_front_pose_match_threshold_m; //!< front_pose to mission segment max distance [m]
-    double paths_near_edge_match_distance_threshold; //!< transformed_plan segment-to-segment max distance [m]
-    double paths_near_edge_match_angle_threshold_deg; //!< max heading difference for parallel match [deg]
+    double paths_near_edge_match_distance_threshold; //!< transformed_plan 各点到 mission 折线最大距离 [m]
+    double paths_near_edge_match_angle_threshold_deg; //!< 已废弃：门控改为只距离；保留以兼容旧配置
     int paths_near_edge_enter_hit_count; //!< Consecutive hits required to enter edge-following
     int paths_near_edge_exit_miss_count; //!< Consecutive misses required to exit edge-following
     double fusion_primary_lock_duration; //!< When WALL/CURB matches Reference, lock primary for this duration [s]

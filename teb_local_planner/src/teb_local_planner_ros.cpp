@@ -217,6 +217,68 @@ bool extractNearestExpandedPolylineSegment(
   return (segment_end - segment_start).norm() > 1e-6;
 }
 
+double pointToPolylineDistance2d(
+  const Eigen::Vector2d& query_point,
+  const std::vector<Eigen::Vector2d>& polyline)
+{
+  if (polyline.empty()) {
+    return std::numeric_limits<double>::infinity();
+  }
+  if (polyline.size() == 1) {
+    return (query_point - polyline.front()).norm();
+  }
+  double best_distance = std::numeric_limits<double>::infinity();
+  for (std::size_t segment_index = 0; segment_index + 1 < polyline.size(); ++segment_index) {
+    best_distance = std::min(
+      best_distance,
+      pointToSegmentDistance2d(
+        query_point, polyline[segment_index], polyline[segment_index + 1]));
+  }
+  return best_distance;
+}
+
+/**
+ * @brief 路径各点到折线距离：通过条件为 max_dist <= max_allowed_distance。
+ * @return 路径非空且折线有效时为 true（无论是否超距）；输出 max/mean。
+ */
+bool computePathPointsToPolylineDistances(
+  const std::vector<geometry_msgs::msg::PoseStamped>& path_poses,
+  const std::vector<Eigen::Vector2d>& polyline,
+  double& max_distance,
+  double& mean_distance)
+{
+  max_distance = 0.0;
+  mean_distance = 0.0;
+  if (path_poses.empty() || polyline.empty()) {
+    return false;
+  }
+  double sum_distance = 0.0;
+  for (const auto& pose_stamped : path_poses) {
+    const Eigen::Vector2d point(
+      pose_stamped.pose.position.x, pose_stamped.pose.position.y);
+    const double distance = pointToPolylineDistance2d(point, polyline);
+    max_distance = std::max(max_distance, distance);
+    sum_distance += distance;
+  }
+  mean_distance = sum_distance / static_cast<double>(path_poses.size());
+  return true;
+}
+
+bool pathPointsWithinPolylineDistance(
+  const std::vector<geometry_msgs::msg::PoseStamped>& path_poses,
+  const std::vector<Eigen::Vector2d>& polyline,
+  const double max_allowed_distance,
+  double& max_distance,
+  double& mean_distance)
+{
+  if (!computePathPointsToPolylineDistances(
+        path_poses, polyline, max_distance, mean_distance))
+  {
+    return false;
+  }
+  return max_distance <= max_allowed_distance;
+}
+
 }  // namespace
 
 bool segmentsCloseForFusion(
@@ -6254,6 +6316,16 @@ bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
   const std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan)
 {
   
+  if (transformed_plan.size() < 2) {
+    paths_near_edge_hit_count_ = 0;
+    paths_near_edge_miss_count_++;
+    if (paths_near_edge_miss_count_ >= cfg_->wall_line.paths_near_edge_exit_miss_count) {
+      paths_near_edge_active_ = false;
+    }
+    RCLCPP_WARN_THROTTLE(logger_, *clock_, 2000, "Edge following: 路径点数太少，退出贴边模式");
+    return paths_near_edge_active_;
+  }
+
   nav_msgs::msg::Path transformed_path_segment;
   transformed_path_segment.header = transformed_plan.front().header;
   transformed_path_segment.poses.assign(transformed_plan.begin(), transformed_plan.end());
@@ -6300,13 +6372,7 @@ bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
   }
 
   const nav_msgs::msg::Path active_mission_segment = snapshotActiveMissionSegment();
-  Eigen::Vector2d candidate_segment_start;
-  Eigen::Vector2d candidate_segment_end;
-  if (!extractLineSegmentFromPath(
-      active_mission_segment,
-      candidate_segment_start,
-      candidate_segment_end))
-  {
+  if (active_mission_segment.poses.size() < 2) {
     paths_near_edge_hit_count_ = 0;
     paths_near_edge_miss_count_++;
     if (paths_near_edge_miss_count_ >= cfg_->wall_line.paths_near_edge_exit_miss_count) {
@@ -6316,45 +6382,29 @@ bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
     return paths_near_edge_active_;
   }
 
-  const double segment_distance =
-    segmentToSegmentDistance(
-      transformed_segment_start,
-      transformed_segment_end,
-      candidate_segment_start,
-      candidate_segment_end);
-  const double heading_difference_deg =
-    segmentDirectionAngleDifferenceDeg(
-      transformed_segment_start,
-      transformed_segment_end,
-      candidate_segment_start,
-      candidate_segment_end);
+  // 只距离、不平行：transformed_plan 各点到 mission 折线的最大距离。
+  std::vector<Eigen::Vector2d> mission_polyline;
+  mission_polyline.reserve(active_mission_segment.poses.size());
+  for (const auto& pose_stamped : active_mission_segment.poses) {
+    mission_polyline.emplace_back(
+      pose_stamped.pose.position.x, pose_stamped.pose.position.y);
+  }
+  double max_distance_to_mission = 0.0;
+  double mean_distance_to_mission = 0.0;
+  const bool distance_ok = pathPointsWithinPolylineDistance(
+    transformed_plan,
+    mission_polyline,
+    cfg_->wall_line.paths_near_edge_match_distance_threshold,
+    max_distance_to_mission,
+    mean_distance_to_mission);
   RCLCPP_INFO_THROTTLE(
     logger_, *clock_, 2000,
-    "Edge following: 当前路径与激活 mission 段距离: %.2f, 夹角: %.2f 度",
-    segment_distance,
-    heading_difference_deg);
+    "Edge following: transformed_plan 到 mission 折线 max=%.2f mean=%.2f (阈值 %.2f)",
+    max_distance_to_mission,
+    mean_distance_to_mission,
+    cfg_->wall_line.paths_near_edge_match_distance_threshold);
 
-  bool has_matching_paths_near_edge = false;
-  bool has_close_but_not_parallel_candidate = false;
-  if (segment_distance <= cfg_->wall_line.paths_near_edge_match_distance_threshold) {
-    if (heading_difference_deg <= cfg_->wall_line.paths_near_edge_match_angle_threshold_deg) {
-      has_matching_paths_near_edge = true;
-    } else {
-      has_close_but_not_parallel_candidate = true;
-    }
-  }
-
-  if (has_close_but_not_parallel_candidate && !has_matching_paths_near_edge) {
-    paths_near_edge_hit_count_ = 0;
-    paths_near_edge_active_ = false;
-    RCLCPP_INFO_THROTTLE(
-      logger_, *clock_, 2000,
-      "Edge following: 距离匹配但夹角 > 阈值 %.2f 度, 退出贴边模式",
-      cfg_->wall_line.paths_near_edge_match_angle_threshold_deg);
-    return false;
-  }
-
-  if (has_matching_paths_near_edge) {
+  if (distance_ok) {
     paths_near_edge_hit_count_++;
     paths_near_edge_miss_count_ = 0;
     if (paths_near_edge_hit_count_ >= cfg_->wall_line.paths_near_edge_enter_hit_count) {
@@ -6367,7 +6417,12 @@ bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
       paths_near_edge_active_ = false;
     }
   }
-  RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000, "Edge following: 找到贴边参考线，继续贴边模式");
+  RCLCPP_INFO_THROTTLE(
+    logger_, *clock_, 2000,
+    "Edge following: mission 距离门控 hit=%d miss=%d active=%s",
+    paths_near_edge_hit_count_,
+    paths_near_edge_miss_count_,
+    paths_near_edge_active_ ? "true" : "false");
   return paths_near_edge_active_;
 }
 
@@ -6567,6 +6622,7 @@ bool TebLocalPlannerROS::trySelectSegmentFromTwoPointPath(
   double& minimum_average_distance_to_plan,
   double& robot_perpendicular_distance_to_edge_line)
 {
+  (void)parallel_tolerance_degrees;  // 只距离、不平行：保留参数以兼容调用方。
   minimum_average_distance_to_plan = std::numeric_limits<double>::max();
   robot_perpendicular_distance_to_edge_line = std::numeric_limits<double>::max();
   if (two_point_line_path.poses.size() < 2 || input_path.poses.size() < 2) {
@@ -6601,92 +6657,47 @@ bool TebLocalPlannerROS::trySelectSegmentFromTwoPointPath(
                          path_heading_minus_robot_heading * 180.0 / M_PI);
     return false;
   }
-  const double input_path_direction_x = input_path_delta_x / input_path_segment_length;
-  const double input_path_direction_y = input_path_delta_y / input_path_segment_length;
 
   const auto& edge_line_start_position = two_point_line_path.poses.front().pose.position;
   const auto& edge_line_end_position = two_point_line_path.poses.back().pose.position;
-  const double edge_line_delta_x = edge_line_end_position.x - edge_line_start_position.x;
-  const double edge_line_delta_y = edge_line_end_position.y - edge_line_start_position.y;
-  const double edge_line_segment_length = std::hypot(edge_line_delta_x, edge_line_delta_y);
+  const Eigen::Vector2d edge_start(
+    edge_line_start_position.x, edge_line_start_position.y);
+  const Eigen::Vector2d edge_end(
+    edge_line_end_position.x, edge_line_end_position.y);
+  const double edge_line_segment_length = (edge_end - edge_start).norm();
   if (edge_line_segment_length < min_wall_line_length_) {
     RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[trySelectSegmentFromTwoPointPath] Edge following:"
                          "墙线长度太短: %.2f, 最小墙线长度阈值: %.2f", 
                          edge_line_segment_length, min_wall_line_length_);
     return false;
   }
-  const double edge_line_direction_x = edge_line_delta_x / edge_line_segment_length;
-  const double edge_line_direction_y = edge_line_delta_y / edge_line_segment_length;
-  const double direction_dot_product =
-    input_path_direction_x * edge_line_direction_x +
-    input_path_direction_y * edge_line_direction_y;
-  const double absolute_cosine_parallelism = std::fabs(direction_dot_product);
-  const double parallelism_cosine_threshold =
-    std::fabs(std::cos(parallel_tolerance_degrees / 180.0 * M_PI));
-  if (absolute_cosine_parallelism <= parallelism_cosine_threshold) {
-    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[trySelectSegmentFromTwoPointPath] Edge following:"
-                         "墙线与路径不平行: %.2f 度, 平行度阈值: %.2f 度", 
-                         absolute_cosine_parallelism * 180.0 / M_PI, parallel_tolerance_degrees);
-    return false;
-  }
-  const double edge_line_implicit_x_coefficient = edge_line_delta_y;
-  const double edge_line_implicit_y_coefficient = -edge_line_delta_x;
-  const double edge_line_implicit_constant_term =
-    edge_line_end_position.x * edge_line_start_position.y -
-    edge_line_start_position.x * edge_line_end_position.y;
-  const double line_equation_normalization =
-    std::hypot(edge_line_implicit_x_coefficient, edge_line_implicit_y_coefficient);
-  const double average_distance_path_to_edge_line =
-    std::fabs(
-      edge_line_implicit_x_coefficient * input_path_start_position.x +
-      edge_line_implicit_y_coefficient * input_path_start_position.y +
-      edge_line_implicit_constant_term) /
-    (line_equation_normalization + 1e-18);
-  const double robot_perpendicular_distance_to_edge_line_value =
-    std::fabs(
-      edge_line_implicit_x_coefficient * robot_pose.pose.position.x +
-      edge_line_implicit_y_coefficient * robot_pose.pose.position.y +
-      edge_line_implicit_constant_term) /
-    (line_equation_normalization + 1e-18);
-  if (average_distance_path_to_edge_line > distance_tolerance_meters) {
-    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[trySelectSegmentFromTwoPointPath] Edge following:"
-                         "路径与墙线距离太大: %.2f, 距离阈值: %.2f",
-                         average_distance_path_to_edge_line, distance_tolerance_meters);
-    return false;
-  }
-  selected_edge_segment_start =
-    Eigen::Vector2d(edge_line_start_position.x, edge_line_start_position.y);
-  selected_edge_segment_end =
-    Eigen::Vector2d(edge_line_end_position.x, edge_line_end_position.y);
-  minimum_average_distance_to_plan = average_distance_path_to_edge_line;
-  robot_perpendicular_distance_to_edge_line = robot_perpendicular_distance_to_edge_line_value;
-  return true;
-}
 
-bool robotOnReferenceSegmentWithinDistance(
-  const Eigen::Vector2d& segment_start,
-  const Eigen::Vector2d& segment_end,
-  const Eigen::Vector2d& robot_xy,
-  double max_distance_m)
-{
-  // 先检查投影点是否落在线段内部，再比较机器人到投影点的垂距阈值。
-  const Eigen::Vector2d segment_vector = segment_end - segment_start;
-  const double segment_length_squared = segment_vector.squaredNorm();
-  if (segment_length_squared < 1e-12) {
+  const std::vector<Eigen::Vector2d> edge_polyline{edge_start, edge_end};
+  double max_distance_path_to_edge = 0.0;
+  double mean_distance_path_to_edge = 0.0;
+  if (!pathPointsWithinPolylineDistance(
+        input_path.poses,
+        edge_polyline,
+        distance_tolerance_meters,
+        max_distance_path_to_edge,
+        mean_distance_path_to_edge))
+  {
+    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[trySelectSegmentFromTwoPointPath] Edge following:"
+                         "路径各点到边线 max=%.2f mean=%.2f, 距离阈值: %.2f",
+                         max_distance_path_to_edge, mean_distance_path_to_edge,
+                         distance_tolerance_meters);
     return false;
   }
-  const double along_parameter =
-    (robot_xy - segment_start).dot(segment_vector) / segment_length_squared;
-  if (along_parameter < 0.0 || along_parameter > 1.0) {
-    return false;
-  }
-  const Eigen::Vector2d closest_point_on_segment =
-    segment_start + along_parameter * segment_vector;
-  RCLCPP_INFO_THROTTLE(rclcpp::get_logger("teb_local_planner"), edgeFollowingLogClock(), 2000, 
-                       "[robotOnReferenceSegmentWithinDistance] Edge following:"
-                       "机器人到贴边参考线距离: %.2f, 最大距离: %.2f",
-                       (robot_xy - closest_point_on_segment).norm(), max_distance_m);
-  return (robot_xy - closest_point_on_segment).norm() <= max_distance_m;
+  const Eigen::Vector2d robot_xy(
+    robot_pose.pose.position.x, robot_pose.pose.position.y);
+  const double robot_distance_to_edge =
+    pointToPolylineDistance2d(robot_xy, edge_polyline);
+
+  selected_edge_segment_start = edge_start;
+  selected_edge_segment_end = edge_end;
+  minimum_average_distance_to_plan = mean_distance_path_to_edge;
+  robot_perpendicular_distance_to_edge_line = robot_distance_to_edge;
+  return true;
 }
 
 bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
@@ -6700,7 +6711,8 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
   double& minimum_average_distance_to_plan,
   double& robot_perpendicular_distance_to_edge_line)
 {
-  
+  (void)parallel_tolerance_degrees;  // 只距离、不平行：保留参数以兼容调用方。
+
   bool found_any_matching_reference_segment = false;
   double best_minimum_average_distance_to_plan = std::numeric_limits<double>::max();
   Eigen::Vector2d best_reference_segment_start;
@@ -6708,6 +6720,40 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
   double best_robot_perpendicular_distance_to_edge_line = 0.0;
   const Eigen::Vector2d robot_xy(
     robot_pose.pose.position.x, robot_pose.pose.position.y);
+
+  if (input_path.poses.size() < 2) {
+    return false;
+  }
+  const auto& input_path_start_position = input_path.poses.front().pose.position;
+  const auto& input_path_end_position = input_path.poses.back().pose.position;
+  const double input_path_segment_length = std::hypot(
+    input_path_end_position.x - input_path_start_position.x,
+    input_path_end_position.y - input_path_start_position.y);
+  if (input_path_segment_length <= cfg_->wall_line.min_path_line_length) {
+    RCLCPP_WARN_THROTTLE(
+      logger_, *(clock_), 2000,
+      "[trySelectBestReferencePathFromList] Edge following: 路径长度太短: %.2f",
+      input_path_segment_length);
+    return false;
+  }
+  const double robot_yaw_radians = tf2::getYaw(robot_pose.pose.orientation);
+  const double input_path_yaw_radians = std::atan2(
+    input_path_end_position.y - input_path_start_position.y,
+    input_path_end_position.x - input_path_start_position.x);
+  double path_heading_minus_robot_heading = input_path_yaw_radians - robot_yaw_radians;
+  while (path_heading_minus_robot_heading > M_PI) {
+    path_heading_minus_robot_heading -= 2 * M_PI;
+  }
+  while (path_heading_minus_robot_heading < -M_PI) {
+    path_heading_minus_robot_heading += 2 * M_PI;
+  }
+  if (std::fabs(path_heading_minus_robot_heading) > M_PI / 4) {
+    RCLCPP_WARN_THROTTLE(
+      logger_, *(clock_), 2000,
+      "[trySelectBestReferencePathFromList] Edge following: 机器人与路径夹角过大: %.2f 度",
+      path_heading_minus_robot_heading * 180.0 / M_PI);
+    return false;
+  }
 
   for (const auto& raw_reference_path : reference_path_candidates) {
     if (raw_reference_path.poses.size() < 2) {
@@ -6717,11 +6763,7 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
         raw_reference_path.poses.size());
       continue;
     }
-    // TF：用 TimePointZero 取最新变换；将整条折线变换到 map，再取机器人最近邻段（不足则扩到约 L）。
-    nav_msgs::msg::Path reference_local_segment_in_map;
-    reference_local_segment_in_map.header.frame_id = cfg_->map_frame;
     try {
-      rclcpp::Time reference_geometry_stamp_in_map;
       geometry_msgs::msg::TransformStamped transform_map_from_reference_path_frame;
       const bool needs_tf =
         !raw_reference_path.header.frame_id.empty() &&
@@ -6732,10 +6774,6 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
           raw_reference_path.header.frame_id,
           tf2::TimePointZero,
           tf2::durationFromSec(0.5));
-        reference_geometry_stamp_in_map =
-          rclcpp::Time(transform_map_from_reference_path_frame.header.stamp);
-      } else {
-        reference_geometry_stamp_in_map = clock_->now();
       }
 
       std::vector<Eigen::Vector2d> reference_polyline_in_map;
@@ -6748,6 +6786,31 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
         }
         reference_polyline_in_map.emplace_back(
           pose_in_map.pose.position.x, pose_in_map.pose.position.y);
+      }
+
+      // 只距离、不平行：input_path 各点到整条 reference 折线。
+      double max_distance_to_reference = 0.0;
+      double mean_distance_to_reference = 0.0;
+      if (!pathPointsWithinPolylineDistance(
+            input_path.poses,
+            reference_polyline_in_map,
+            distance_tolerance_meters,
+            max_distance_to_reference,
+            mean_distance_to_reference))
+      {
+        RCLCPP_INFO_THROTTLE(
+          logger_, *(clock_), 2000,
+          "[trySelectBestReferencePathFromList] Edge following: "
+          "路径到参考折线 max=%.2f mean=%.2f > 阈值 %.2f",
+          max_distance_to_reference, mean_distance_to_reference,
+          distance_tolerance_meters);
+        continue;
+      }
+
+      const double robot_distance_to_reference =
+        pointToPolylineDistance2d(robot_xy, reference_polyline_in_map);
+      if (robot_distance_to_reference > distance_tolerance_meters) {
+        continue;
       }
 
       Eigen::Vector2d local_segment_start;
@@ -6764,66 +6827,30 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
           "[trySelectBestReferencePathFromList] Edge following: 无法从贴边参考折线提取局部段");
         continue;
       }
-
-      if (!robotOnReferenceSegmentWithinDistance(
-            local_segment_start, local_segment_end, robot_xy, distance_tolerance_meters))
-      {
+      if ((local_segment_end - local_segment_start).norm() < min_wall_line_length_) {
         continue;
       }
-
-      geometry_msgs::msg::PoseStamped local_pose_start;
-      geometry_msgs::msg::PoseStamped local_pose_end;
-      local_pose_start.header.frame_id = cfg_->map_frame;
-      local_pose_end.header.frame_id = cfg_->map_frame;
-      local_pose_start.header.stamp = reference_geometry_stamp_in_map;
-      local_pose_end.header.stamp = reference_geometry_stamp_in_map;
-      local_pose_start.pose.position.x = local_segment_start.x();
-      local_pose_start.pose.position.y = local_segment_start.y();
-      local_pose_end.pose.position.x = local_segment_end.x();
-      local_pose_end.pose.position.y = local_segment_end.y();
-      reference_local_segment_in_map.header.stamp = reference_geometry_stamp_in_map;
-      reference_local_segment_in_map.poses.clear();
-      reference_local_segment_in_map.poses.push_back(local_pose_start);
-      reference_local_segment_in_map.poses.push_back(local_pose_end);
 
       RCLCPP_INFO_THROTTLE(
         logger_, *(clock_), 2000,
         "[trySelectBestReferencePathFromList] Edge following: 局部贴边段 "
-        "(%.2f, %.2f)->(%.2f, %.2f), 弧长目标 L=%.2f, 弦长=%.2f",
+        "(%.2f, %.2f)->(%.2f, %.2f), path->ref max=%.2f mean=%.2f",
         local_segment_start.x(), local_segment_start.y(),
         local_segment_end.x(), local_segment_end.y(),
-        min_wall_line_length_,
-        (local_segment_end - local_segment_start).norm());
+        max_distance_to_reference, mean_distance_to_reference);
+
+      if (mean_distance_to_reference < best_minimum_average_distance_to_plan) {
+        best_minimum_average_distance_to_plan = mean_distance_to_reference;
+        best_reference_segment_start = local_segment_start;
+        best_reference_segment_end = local_segment_end;
+        best_robot_perpendicular_distance_to_edge_line = robot_distance_to_reference;
+        found_any_matching_reference_segment = true;
+      }
     } catch (const tf2::TransformException& transform_exception) {
       RCLCPP_INFO_THROTTLE(
         logger_, *(clock_), 2000, "[trySelectBestReferencePathFromList] Edge following: 贴边参考线TF跳过: %s", 
         transform_exception.what());
       continue;
-    }
-    Eigen::Vector2d candidate_segment_start;
-    Eigen::Vector2d candidate_segment_end;
-    double candidate_minimum_average_distance = 0.0;
-    double candidate_robot_perpendicular_distance = 0.0;
-    // 判定沿用 trySelectSegmentFromTwoPointPath（平行、距离、航向等现有逻辑）。
-    if (trySelectSegmentFromTwoPointPath(
-          reference_local_segment_in_map,
-          input_path,
-          robot_pose,
-          parallel_tolerance_degrees,
-          distance_tolerance_meters,
-          candidate_segment_start,
-          candidate_segment_end,
-          candidate_minimum_average_distance,
-          candidate_robot_perpendicular_distance)) {
-      if (candidate_minimum_average_distance < best_minimum_average_distance_to_plan) {
-        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[trySelectBestReferencePathFromList] Edge following:"
-                            "选择最佳贴边参考线平均距离: %.2f", candidate_minimum_average_distance);
-        best_minimum_average_distance_to_plan = candidate_minimum_average_distance;
-        best_reference_segment_start = candidate_segment_start;
-        best_reference_segment_end = candidate_segment_end;
-        best_robot_perpendicular_distance_to_edge_line = candidate_robot_perpendicular_distance;
-        found_any_matching_reference_segment = true;
-      }
     }
   }
   if (!found_any_matching_reference_segment) {

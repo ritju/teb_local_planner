@@ -296,7 +296,10 @@
   void runEdgeFollowingPathUpdate(
     std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan,
     const geometry_msgs::msg::PoseStamped& robot_pose);
-  /** @brief 判断当前 transformed_plan 是否满足进入/维持贴边模式。 */
+  /**
+   * @brief 判断当前 transformed_plan 是否满足进入/维持贴边：各点到 active mission 折线的
+   *        最大距离门控（只距离、不平行）+ 滞后计数。
+   */
   bool shouldRunEdgeFollowingForTransformedPlan(
     const std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan);
   /** @brief 从路径中提取可用于拟合的线段（通常取首尾）。 */
@@ -336,7 +339,7 @@
     Eigen::Vector2d& selected_edge_segment_end,
     double& minimum_average_distance_to_plan,
     double& robot_perpendicular_distance_to_edge_line);
-  /** @brief 从两点路径（典型路沿）中提取并验证可用线段。 */
+  /** @brief 从两点路径（典型路沿）中提取线段；input_path 各点到该线段距离门控（不平行）。 */
   bool trySelectSegmentFromTwoPointPath(
     const nav_msgs::msg::Path& two_point_line_path,
     const nav_msgs::msg::Path& input_path,
@@ -348,8 +351,8 @@
     double& minimum_average_distance_to_plan,
     double& robot_perpendicular_distance_to_edge_line);
   /**
-   * @brief 在参考路径上取机器人最近邻折线段（弧长不足则向两端扩到约 min_wall_line_length_），
-   *        再用现有两点段门控选出可用贴边线。
+   * @brief 参考折线：input_path 各点到整条 reference 距离门控（不平行），再取机器人最近邻段
+   *        （不足则扩到约 min_wall_line_length_）作为贴边线。
    */
   bool trySelectBestReferencePathFromList(
     const std::vector<nav_msgs::msg::Path>& reference_path_candidates,
