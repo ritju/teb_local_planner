@@ -696,6 +696,13 @@
     */
    void setGlobalFootprintEnabled(bool enable, bool is_delayed = false);
 
+   /** 退出贴边后：用正常 footprint 做碰撞门控，连续安全帧或超时后恢复 */
+   void updatePendingNormalFootprintRestore();
+   /** 当前机器人位姿下，恢复用的正常 footprint 是否与障碍物碰撞；无法检测时返回 false */
+   bool isNormalFootprintFreeAtRobot() const;
+   void armPendingNormalFootprintRestore();
+   void clearPendingNormalFootprintRestore();
+
  private:
    // Definition of member variables
    rclcpp_lifecycle::LifecycleNode::WeakPtr nh_;
@@ -855,10 +862,13 @@
    std::string global_costmap_footprint_; //!< Stored global costmap footprint for restoration
    rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedPtr local_footprint_client_; //!< Client for local costmap footprint parameter updates
    rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedPtr global_footprint_client_; //!< Client for global costmap footprint parameter updates
-   std::atomic<bool> desired_local_footprint_state_{true}; //!< Desired state: true=normal footprint, false=edge footprint
-   std::atomic<bool> desired_global_footprint_state_{true}; //!< Desired state: true=normal footprint, false=edge footprint
-   std::atomic<bool> current_local_footprint_state_{true}; //!< Current confirmed state of local footprint
-   std::atomic<bool> current_global_footprint_state_{true}; //!< Current confirmed state of global footprint
+   std::atomic<bool> desired_local_footprint_state_{false}; //!< Desired: true=edge footprint, false=normal footprint
+   std::atomic<bool> desired_global_footprint_state_{false}; //!< Desired: true=edge footprint, false=normal footprint
+   std::atomic<bool> current_local_footprint_state_{false}; //!< Current confirmed: true=edge, false=normal
+   std::atomic<bool> current_global_footprint_state_{false}; //!< Current confirmed: true=edge, false=normal
+   bool pending_normal_footprint_restore_{false}; //!< 退出贴边后等待恢复正常 footprint
+   rclcpp::Time footprint_restore_start_time_{0, 0, RCL_ROS_TIME}; //!< 开始等待恢复的时刻
+   int footprint_restore_safe_count_{0}; //!< 连续安全帧计数
    std::atomic<bool> desired_normal_vel_x_restore_{true}; //!< Whether a delayed max_vel_x restore to normal is pending
    double speed_limit_linear_x_{std::numeric_limits<double>::infinity()};
    bool has_speed_limit_;

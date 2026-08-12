@@ -249,6 +249,9 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "min_path_line_length", rclcpp::ParameterValue(wall_line.min_path_line_length));
   declare_parameter_if_not_declared(nh, name + "." + "transform_path_line_length", rclcpp::ParameterValue(wall_line.transform_path_line_length));
   declare_parameter_if_not_declared(nh, name + "." + "static_layer_enable_delay", rclcpp::ParameterValue(wall_line.static_layer_enable_delay));
+  declare_parameter_if_not_declared(nh, name + "." + "footprint_restore_max_wait_sec", rclcpp::ParameterValue(wall_line.footprint_restore_max_wait_sec));
+  declare_parameter_if_not_declared(nh, name + "." + "footprint_restore_safe_frames", rclcpp::ParameterValue(wall_line.footprint_restore_safe_frames));
+  declare_parameter_if_not_declared(nh, name + "." + "footprint_restore_side_inflate", rclcpp::ParameterValue(wall_line.footprint_restore_side_inflate));
   declare_parameter_if_not_declared(nh, name + "." + "min_wall_direction", rclcpp::ParameterValue(wall_line.min_wall_direction));
   declare_parameter_if_not_declared(nh, name + "." + "parallel_tolerance", rclcpp::ParameterValue(wall_line.parallel_tolerance));
   declare_parameter_if_not_declared(nh, name + "." + "distance_tolerance", rclcpp::ParameterValue(wall_line.distance_tolerance));
@@ -614,6 +617,9 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "side_clearance_attract_max", wall_line.side_clearance_attract_max, wall_line.side_clearance_attract_max);
   nh->get_parameter_or(name + "." + "debug_wall_obstacle_cost_interval", wall_line.debug_wall_obstacle_cost_interval, wall_line.debug_wall_obstacle_cost_interval);
   nh->get_parameter_or(name + "." + "static_layer_enable_delay", wall_line.static_layer_enable_delay, wall_line.static_layer_enable_delay);
+  nh->get_parameter_or(name + "." + "footprint_restore_max_wait_sec", wall_line.footprint_restore_max_wait_sec, wall_line.footprint_restore_max_wait_sec);
+  nh->get_parameter_or(name + "." + "footprint_restore_safe_frames", wall_line.footprint_restore_safe_frames, wall_line.footprint_restore_safe_frames);
+  nh->get_parameter_or(name + "." + "footprint_restore_side_inflate", wall_line.footprint_restore_side_inflate, wall_line.footprint_restore_side_inflate);
   nh->get_parameter_or(name + "." + "min_wall_direction", wall_line.min_wall_direction, wall_line.min_wall_direction);
   nh->get_parameter_or(name + "." + "parallel_tolerance", wall_line.parallel_tolerance, wall_line.parallel_tolerance);
   nh->get_parameter_or(name + "." + "distance_tolerance", wall_line.distance_tolerance, wall_line.distance_tolerance);
@@ -1147,6 +1153,12 @@ rcl_interfaces::msg::SetParametersResult
         wall_line.transform_path_line_length = parameter.as_double();
       } else if (name == node_name + ".static_layer_enable_delay") {
         wall_line.static_layer_enable_delay = parameter.as_double();
+      } else if (name == node_name + ".footprint_restore_max_wait_sec") {
+        wall_line.footprint_restore_max_wait_sec = parameter.as_double();
+      } else if (name == node_name + ".footprint_restore_safe_frames") {
+        wall_line.footprint_restore_safe_frames = parameter.as_int();
+      } else if (name == node_name + ".footprint_restore_side_inflate") {
+        wall_line.footprint_restore_side_inflate = parameter.as_double();
       } else if (name == node_name + ".min_wall_direction") {
         wall_line.min_wall_direction = parameter.as_double();
       } else if (name == node_name + ".parallel_tolerance") {

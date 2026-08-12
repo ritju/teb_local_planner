@@ -290,10 +290,13 @@ public:
     double min_path_line_length; //!< 输入路径最小长度 [m]
     double transform_path_line_length; //!< transformed_plan 截取/贴边所需最小弧长 [m]（非弦长）
     double static_layer_enable_delay; //!< 切换 static_layer 的延时 [s]
+    double footprint_restore_max_wait_sec; //!< 退出贴边后恢复正常 footprint 最长等待 [s]，超时强制恢复
+    int footprint_restore_safe_frames; //!< 连续多少帧大轮廓无碰撞后才恢复正常 footprint
+    double footprint_restore_side_inflate; //!< 恢复前碰撞检测时 footprint 向左右两侧各扩展 [m]
     std::string edge_footprint_vertices; //!< footprint vertices parameter for edge-following mode
     double wall_line_safety_offset; //!< Offset the wall line toward the wall side for safety margin [m]
     double wall_line_extension_distance; //!< Extend the wall line segment on both ends [m]
-    double wall_line_lock_distance_threshold; //!< 相对锁定墙线的法向偏移阈值（两端点取 max），超过则解锁；忽略沿墙伸缩 [m]
+    double wall_line_lock_distance_threshold; //!< 相对锁定墙线的法向偏移阈值（两端点取 max），超过则解锁 [m]；沿墙由当前检测重锚定
     double wall_line_lock_angle_threshold; //!< 无向夹角变化阈值，超过则解锁 [deg]
     int wall_line_lock_min_stable_count; //!< Minimum consecutive stable frames before locking
     double wall_line_obstacle_filter_distance; //!< Base nominal: below effective value filters wall noise; above starts exit confirmation [m]
@@ -633,6 +636,9 @@ public:
     wall_line.transform_path_line_length = 2.0;
     wall_line.edge_footprint_vertices = "[[1.25, 0.5], [1.25, -0.5], [-0.65, -0.5], [-0.65, 0.5]]";
     wall_line.static_layer_enable_delay = 5.0;
+    wall_line.footprint_restore_max_wait_sec = 60.0;
+    wall_line.footprint_restore_safe_frames = 5;
+    wall_line.footprint_restore_side_inflate = 0.15;
     wall_line.wall_line_safety_offset = 0.03;
     wall_line.wall_line_extension_distance = 1.0;
     wall_line.wall_line_lock_distance_threshold = 0.08;

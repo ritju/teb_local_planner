@@ -1471,6 +1471,9 @@ void TebLocalPlannerROS::configure(
    geometry_msgs::msg::PoseStamped robot_pose;
    robot_pose.header = pose.header;
    robot_pose_.toPoseMsg(robot_pose.pose);
+
+   // 退出贴边后：大轮廓碰撞门控 / 超时强制恢复
+   updatePendingNormalFootprintRestore();
    
    // Get robot velocity
    robot_vel_ = velocity;
@@ -2327,9 +2330,9 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
       cur_dir /= cur_len;
       double cur_angle = std::atan2(cur_dir.y(), cur_dir.x());
 
-      // --- Wall line locking: compare current vs locked ---
-      // 距离用相对锁定无限直线的法向偏移（两端点取 max），忽略沿墙伸缩/中点滑动；
-      // 角度按无向线段处理（0° 与 180° 视为同一墙）。
+      // --- Wall line locking ---
+      // 法向/角度超阈值则解锁；仍锁定时将当前检测端点投影到锁定支撑线上，
+      // 沿墙平移锁定段（方案 A），避免优化仍使用身后旧短段。
       if (wall_line_locked_)
       {
         Eigen::Vector2d locked_dir = locked_wall_end_ - locked_wall_start_;
@@ -2362,6 +2365,29 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
             RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
               "Wall line unlocked: lateral_change=%.3f, angle_change=%.3f",
               lateral_change, angle_diff);
+          }
+          else
+          {
+            // 沿墙重锚定：当前端点投影到锁定直线，法向位置保持在锁定支撑线上。
+            const Eigen::Vector2d locked_origin = locked_wall_start_;
+            double t0 = (cur_start - locked_origin).dot(locked_dir);
+            double t1 = (cur_end - locked_origin).dot(locked_dir);
+            if (t1 < t0) {
+              std::swap(t0, t1);
+            }
+            // 退化时退回以机器人为中心、长度与当前检测相当的窗口。
+            if (t1 - t0 < 1e-3) {
+              const double t_robot =
+                (robot_pose_.position() - locked_origin).dot(locked_dir);
+              const double half = 0.5 * cur_len;
+              t0 = t_robot - half;
+              t1 = t_robot + half;
+            }
+            locked_wall_start_ = locked_origin + t0 * locked_dir;
+            locked_wall_end_ = locked_origin + t1 * locked_dir;
+            RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+              "Wall line lock slide along-wall: t=[%.2f, %.2f] len=%.2f",
+              t0, t1, t1 - t0);
           }
         }
       }
@@ -4658,24 +4684,10 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
       if (desired_footprint_state == current_local_footprint_state_.load()) {
         RCLCPP_INFO(logger_, "Local footprint already at desired state %d, skipping service call.", desired_footprint_state ? 1 : 0);
       } else if (!desired_footprint_state) {
-        std::thread([this]() {
-          auto start = std::chrono::steady_clock::now();
-          auto delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::duration<double>(cfg_->wall_line.static_layer_enable_delay));
-
-          while (std::chrono::steady_clock::now() - start < delay_ms) {
-            if (desired_local_footprint_state_.load()) {
-              RCLCPP_INFO(logger_, "Delayed local footprint enable cancelled: desired state changed");
-              return;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-          }
-
-          if (!desired_local_footprint_state_.load()) {
-            setLocalFootprintEnabled(false, true);
-          }
-        }).detach();
+        // 退出贴边：等待大轮廓无碰撞后再恢复（见 updatePendingNormalFootprintRestore）
+        armPendingNormalFootprintRestore();
       } else {
+        clearPendingNormalFootprintRestore();
         setLocalFootprintEnabled(true, false);
       }
     }
@@ -4687,24 +4699,9 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
       if (desired_footprint_state == current_global_footprint_state_.load()) {
         RCLCPP_INFO(logger_, "Global footprint already at desired state %d, skipping service call.", desired_footprint_state ? 1 : 0);
       } else if (!desired_footprint_state) {
-        std::thread([this]() {
-          auto start = std::chrono::steady_clock::now();
-          auto delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::duration<double>(cfg_->wall_line.static_layer_enable_delay));
-
-          while (std::chrono::steady_clock::now() - start < delay_ms) {
-            if (desired_global_footprint_state_.load()) {
-              RCLCPP_INFO(logger_, "Delayed global footprint enable cancelled: desired state changed");
-              return;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-          }
-
-          if (!desired_global_footprint_state_.load()) {
-            setGlobalFootprintEnabled(false, true);
-          }
-        }).detach();
+        armPendingNormalFootprintRestore();
       } else {
+        clearPendingNormalFootprintRestore();
         setGlobalFootprintEnabled(true, false);
       }
     }
@@ -4813,6 +4810,145 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
        RCLCPP_ERROR(logger_, "Failed to call set_parameters service for local_costmap: %s", e.what());
      }
    }).detach();
+ }
+
+ void TebLocalPlannerROS::armPendingNormalFootprintRestore()
+ {
+   if (!pending_normal_footprint_restore_) {
+     pending_normal_footprint_restore_ = true;
+     footprint_restore_start_time_ = clock_->now();
+     footprint_restore_safe_count_ = 0;
+     RCLCPP_INFO(
+       logger_,
+       "Pending normal footprint restore: need %d safe frames or force after %.1fs",
+       std::max(1, cfg_->wall_line.footprint_restore_safe_frames),
+       cfg_->wall_line.footprint_restore_max_wait_sec);
+   }
+ }
+
+ void TebLocalPlannerROS::clearPendingNormalFootprintRestore()
+ {
+   if (pending_normal_footprint_restore_) {
+     RCLCPP_DEBUG(logger_, "Cleared pending normal footprint restore");
+   }
+   pending_normal_footprint_restore_ = false;
+   footprint_restore_safe_count_ = 0;
+ }
+
+ bool TebLocalPlannerROS::isNormalFootprintFreeAtRobot() const
+ {
+   if (!costmap_model_) {
+     return false;
+   }
+
+   std::string footprint_str = local_costmap_footprint_;
+   if (footprint_str.empty()) {
+     footprint_str = normal_footprint_vertices_;
+   }
+   if (footprint_str.empty()) {
+     return false;
+   }
+
+   std::vector<geometry_msgs::msg::Point> footprint;
+   if (!nav2_costmap_2d::makeFootprintFromString(footprint_str, footprint) ||
+       footprint.size() < 3)
+   {
+     return false;
+   }
+
+   // 向左右两侧扩展，恢复判定更保守
+   const double side_inflate =
+     std::max(0.0, cfg_->wall_line.footprint_restore_side_inflate);
+   if (side_inflate > 1e-9) {
+     for (auto & p : footprint) {
+       if (p.y >= 0.0) {
+         p.y += side_inflate;
+       } else {
+         p.y -= side_inflate;
+       }
+     }
+   }
+
+   geometry_msgs::msg::Pose2D pose2d;
+   robot_pose_.toPoseMsg(pose2d);
+   try {
+     (void)costmap_model_->scorePose(
+       pose2d, dwb_critics::getOrientedFootprint(pose2d, footprint));
+     return true;
+   } catch (const dwb_core::IllegalTrajectoryException & e) {
+     const char * em = e.what();
+     if (!std::strcmp(em, "Trajectory Hits Obstacle.") ||
+         !std::strcmp(em, "Trajectory Hits Unknown Region."))
+     {
+       return false;
+     }
+     // 出格等无法可靠判定时不视为安全，等待超时强制恢复
+     return false;
+   } catch (...) {
+     return false;
+   }
+ }
+
+ void TebLocalPlannerROS::updatePendingNormalFootprintRestore()
+ {
+   if (!pending_normal_footprint_restore_ || !initialized_) {
+     return;
+   }
+
+   const bool want_local_normal =
+     cfg_->wall_line.switch_local_footprint && !desired_local_footprint_state_.load();
+   const bool want_global_normal =
+     cfg_->wall_line.switch_global_footprint && !desired_global_footprint_state_.load();
+   const bool need_local =
+     want_local_normal && current_local_footprint_state_.load();
+   const bool need_global =
+     want_global_normal && current_global_footprint_state_.load();
+
+   if (!need_local && !need_global) {
+     clearPendingNormalFootprintRestore();
+     return;
+   }
+
+   const double elapsed =
+     std::max(0.0, (clock_->now() - footprint_restore_start_time_).seconds());
+   const double max_wait = std::max(0.0, cfg_->wall_line.footprint_restore_max_wait_sec);
+   const bool force_timeout = elapsed >= max_wait;
+
+   const bool safe = isNormalFootprintFreeAtRobot();
+   if (safe) {
+     ++footprint_restore_safe_count_;
+   } else {
+     footprint_restore_safe_count_ = 0;
+   }
+
+   const int need_frames = std::max(1, cfg_->wall_line.footprint_restore_safe_frames);
+   if (!force_timeout && footprint_restore_safe_count_ < need_frames) {
+     RCLCPP_INFO_THROTTLE(
+       logger_, *(clock_), 2000,
+       "Waiting normal footprint restore: safe_frames=%d/%d elapsed=%.1f/%.1fs collision_free=%d",
+       footprint_restore_safe_count_, need_frames, elapsed, max_wait, safe ? 1 : 0);
+     return;
+   }
+
+   if (force_timeout) {
+     RCLCPP_WARN(
+       logger_,
+       "Force restoring normal footprint after %.1fs (safe_frames=%d/%d)",
+       elapsed, footprint_restore_safe_count_, need_frames);
+   } else {
+     RCLCPP_INFO(
+       logger_,
+       "Restoring normal footprint after %d consecutive safe frames (elapsed=%.1fs)",
+       footprint_restore_safe_count_, elapsed);
+   }
+
+   if (need_local) {
+     setLocalFootprintEnabled(false, true);
+   }
+   if (need_global) {
+     setGlobalFootprintEnabled(false, true);
+   }
+   clearPendingNormalFootprintRestore();
  }
 
  void TebLocalPlannerROS::setLocalFootprintEnabled(bool enable, bool is_delayed)
@@ -5117,6 +5253,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
    desired_global_footprint_state_.store(false);
    current_local_footprint_state_.store(false);
    desired_local_footprint_state_.store(false);
+   clearPendingNormalFootprintRestore();
 
    return;
  }
