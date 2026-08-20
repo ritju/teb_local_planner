@@ -5,6 +5,8 @@
 #include <teb_local_planner/g2o_types/base_teb_edges.h>
 #include <teb_local_planner/g2o_types/vertex_timediff.h>
 #include <teb_local_planner/g2o_types/vertex_pose.h>
+#include <teb_local_planner/g2o_types/penalties.h>
+#include <teb_local_planner/misc.h>
 #include <teb_local_planner/robot_footprint_model.h>
 
 namespace teb_local_planner
@@ -46,6 +48,12 @@ public:
     const VertexPose* conf1 = static_cast<const VertexPose*>(_vertices[0]);
     const VertexPose* conf2 = static_cast<const VertexPose*>(_vertices[1]);
     const VertexTimeDiff* deltaT = static_cast<const VertexTimeDiff*>(_vertices[2]);
+    if (isTimeDiffDegenerate(deltaT->estimate()))
+    {
+      _error[0] = 0.0;
+      _error[1] = 0.0;
+      return;
+    }
 
     const Eigen::Vector2d deltaS = conf2->estimate().position() - conf1->estimate().position();
 

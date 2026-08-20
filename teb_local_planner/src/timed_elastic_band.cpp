@@ -37,6 +37,10 @@
  *********************************************************************/
 
 #include "teb_local_planner/timed_elastic_band.h"
+#include "teb_local_planner/misc.h"
+
+#include <algorithm>
+#include <cmath>
 
 namespace teb_local_planner
 {
@@ -74,6 +78,24 @@ TimedElasticBand::~TimedElasticBand()
   clearTimedElasticBand();
 }
 
+void TimedElasticBand::setMinDt(double min_dt)
+{
+  min_dt_ = min_dt;
+  if (!std::isfinite(min_dt_) || min_dt_ < kTimeDiffEpsilon)
+  {
+    min_dt_ = kTimeDiffEpsilon;
+  }
+  clampAllTimeDiffs();
+}
+
+void TimedElasticBand::clampAllTimeDiffs()
+{
+  for (VertexTimeDiff* timediff_vertex : timediff_vec_)
+  {
+    timediff_vertex->setMinDt(min_dt_);
+  }
+}
+
 
 void TimedElasticBand::addPose(const PoseSE2& pose, bool fixed)
 {
@@ -98,8 +120,12 @@ void TimedElasticBand::addPose(const Eigen::Ref<const Eigen::Vector2d>& position
 
 void TimedElasticBand::addTimeDiff(double dt, bool fixed)
 {
-  assert(dt > 0.0 && "Adding a timediff requires a positive dt");
+  if (!std::isfinite(dt) || dt < min_dt_)
+  {
+    dt = min_dt_;
+  }
   VertexTimeDiff* timediff_vertex = new VertexTimeDiff(dt, fixed);
+  timediff_vertex->setMinDt(min_dt_);
   timediff_vec_.push_back( timediff_vertex );
   return;
 }
@@ -197,7 +223,12 @@ void TimedElasticBand::insertPose(int index, double x, double y, double theta)
 
 void TimedElasticBand::insertTimeDiff(int index, double dt)
 {
+  if (!std::isfinite(dt) || dt < min_dt_)
+  {
+    dt = min_dt_;
+  }
   VertexTimeDiff* timediff_vertex = new VertexTimeDiff(dt);
+  timediff_vertex->setMinDt(min_dt_);
   timediff_vec_.insert(timediff_vec_.begin()+index, timediff_vertex);
 }
 
@@ -273,6 +304,7 @@ void TimedElasticBand::autoResize(double dt_ref, double dt_hysteresis, int min_s
     }
     if (fast_mode) break;
   }
+  clampAllTimeDiffs();
 }
 
 

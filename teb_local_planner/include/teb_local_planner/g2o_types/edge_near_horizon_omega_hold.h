@@ -12,6 +12,7 @@
 #include "teb_local_planner/g2o_types/base_teb_edges.h"
 #include "teb_local_planner/g2o_types/penalties.h"
 #include "teb_local_planner/teb_config.h"
+#include "teb_local_planner/misc.h"
 
 #include <cmath>
 
@@ -41,8 +42,7 @@ public:
     const VertexTimeDiff* deltaT = static_cast<const VertexTimeDiff*>(_vertices[2]);
 
     const double dt = deltaT->estimate();
-    // Guard against degenerate dt from optimization
-    if (dt < 1e-6)
+    if (isTimeDiffDegenerate(dt))
     {
       _error[0] = 0.0;
       return;

@@ -89,6 +89,11 @@
 #include "geometry_msgs/msg/pose_array.hpp"
 #include "garage_utils_msgs/msg/polygons.hpp"
 #include <limits>
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <memory>
+#include <thread>
  namespace teb_local_planner
  {
  using TFBufferPtr = std::shared_ptr<tf2_ros::Buffer>;
@@ -339,7 +344,7 @@
     Eigen::Vector2d& selected_edge_segment_end,
     double& minimum_average_distance_to_plan,
     double& robot_perpendicular_distance_to_edge_line);
-  /** @brief 从两点路径（典型路沿）中提取线段；input_path 各点到该线段距离门控（不平行）。 */
+  /** @brief 从两点路径（典型路沿）中提取线段；重叠窗内 max 垂距门控（不平行）。 */
   bool trySelectSegmentFromTwoPointPath(
     const nav_msgs::msg::Path& two_point_line_path,
     const nav_msgs::msg::Path& input_path,
@@ -351,7 +356,7 @@
     double& minimum_average_distance_to_plan,
     double& robot_perpendicular_distance_to_edge_line);
   /**
-   * @brief 参考折线：input_path 各点到整条 reference 距离门控（不平行），再取机器人最近邻段
+   * @brief 参考折线：重叠窗内 max 垂距门控（不平行），再取机器人最近邻段
    *        （不足则扩到约 min_wall_line_length_）作为贴边线。
    */
   bool trySelectBestReferencePathFromList(
@@ -703,6 +708,14 @@
    void armPendingNormalFootprintRestore();
    void clearPendingNormalFootprintRestore();
 
+   bool isBackgroundWorkAllowed() const;
+   void spawnBackgroundTask(std::function<void()> task);
+   void joinBackgroundTasks(std::chrono::milliseconds timeout);
+   void stopCostmapConverterWorker(std::chrono::milliseconds timeout);
+   bool waitForServiceInterruptible(
+     const rclcpp::ClientBase::SharedPtr & client,
+     std::chrono::milliseconds total_timeout);
+
  private:
    // Definition of member variables
    rclcpp_lifecycle::LifecycleNode::WeakPtr nh_;
@@ -851,6 +864,15 @@
 
    // Protruding obstacles that caused exit from edge-following mode
    std::vector<ProtrudingObstacle> protruding_obstacles_;
+
+   struct BackgroundJob
+   {
+     std::thread thread;
+     std::shared_ptr<std::atomic<bool>> finished;
+   };
+   std::atomic<bool> shutting_down_{false};
+   std::mutex background_threads_mutex_;
+   std::vector<BackgroundJob> background_jobs_;
 
    rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedPtr static_layer_client_; //!< Persistent client for static_layer parameter updates
    std::atomic<bool> desired_static_layer_state_{true}; //!< Desired state of static_layer.enabled

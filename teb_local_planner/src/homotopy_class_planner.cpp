@@ -37,6 +37,9 @@
  *********************************************************************/
 
 #include "teb_local_planner/homotopy_class_planner.h"
+#include "teb_local_planner/misc.h"
+
+#include <exception>
 
 #include <limits>
 
@@ -533,9 +536,18 @@ void HomotopyClassPlanner::optimizeAllTEBs(int iter_innerloop, int iter_outerloo
     for (TebOptPlannerContainer::iterator it_teb = tebs_.begin(); it_teb != tebs_.end(); ++it_teb)
     {
         auto functor = [&, it_teb]() {
-            it_teb->get()->optimizeTEB(iter_innerloop, iter_outerloop,
-                                       true, cfg_->hcp.selection_obst_cost_scale, cfg_->hcp.selection_viapoint_cost_scale,
-                                       cfg_->hcp.selection_alternative_time_cost);
+            try
+            {
+              it_teb->get()->optimizeTEB(iter_innerloop, iter_outerloop,
+                                         true, cfg_->hcp.selection_obst_cost_scale, cfg_->hcp.selection_viapoint_cost_scale,
+                                         cfg_->hcp.selection_alternative_time_cost);
+            }
+            catch (const TebAssertionFailureException& ex)
+            {
+              RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"),
+                           "HCP TEB numeric failure: %s", ex.what());
+              it_teb->get()->clearPlanner();
+            }
         };
 
         teb_threads.emplace_back(functor);
@@ -551,8 +563,17 @@ void HomotopyClassPlanner::optimizeAllTEBs(int iter_innerloop, int iter_outerloo
   {
     for (TebOptPlannerContainer::iterator it_teb = tebs_.begin(); it_teb != tebs_.end(); ++it_teb)
     {
-      it_teb->get()->optimizeTEB(iter_innerloop,iter_outerloop, true, cfg_->hcp.selection_obst_cost_scale,
-                                 cfg_->hcp.selection_viapoint_cost_scale, cfg_->hcp.selection_alternative_time_cost); // compute cost as well inside optimizeTEB (last argument = true)
+      try
+      {
+        it_teb->get()->optimizeTEB(iter_innerloop,iter_outerloop, true, cfg_->hcp.selection_obst_cost_scale,
+                                   cfg_->hcp.selection_viapoint_cost_scale, cfg_->hcp.selection_alternative_time_cost); // compute cost as well inside optimizeTEB (last argument = true)
+      }
+      catch (const TebAssertionFailureException& ex)
+      {
+        RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"),
+                     "HCP TEB numeric failure: %s", ex.what());
+        it_teb->get()->clearPlanner();
+      }
     }
   }
 }

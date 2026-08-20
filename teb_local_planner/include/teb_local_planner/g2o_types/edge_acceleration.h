@@ -97,6 +97,13 @@ public:
     const VertexPose* pose3 = static_cast<const VertexPose*>(_vertices[2]);
     const VertexTimeDiff* dt1 = static_cast<const VertexTimeDiff*>(_vertices[3]);
     const VertexTimeDiff* dt2 = static_cast<const VertexTimeDiff*>(_vertices[4]);
+    if (isTimeDiffDegenerate(dt1->dt()) || isTimeDiffDegenerate(dt2->dt()) ||
+        isTimeDiffDegenerate(dt1->dt() + dt2->dt()))
+    {
+      _error[0] = 0.0;
+      _error[1] = 0.0;
+      return;
+    }
 
     // VELOCITY & ACCELERATION
     const Eigen::Vector2d diff1 = pose2->position() - pose1->position();
@@ -309,6 +316,12 @@ public:
     const VertexPose* pose1 = static_cast<const VertexPose*>(_vertices[0]);
     const VertexPose* pose2 = static_cast<const VertexPose*>(_vertices[1]);
     const VertexTimeDiff* dt = static_cast<const VertexTimeDiff*>(_vertices[2]);
+    if (isTimeDiffDegenerate(dt->dt()))
+    {
+      _error[0] = 0.0;
+      _error[1] = 0.0;
+      return;
+    }
 
     // VELOCITY & ACCELERATION
     const Eigen::Vector2d diff = pose2->position() - pose1->position();
@@ -400,6 +413,12 @@ public:
     const VertexPose* pose_pre_goal = static_cast<const VertexPose*>(_vertices[0]);
     const VertexPose* pose_goal = static_cast<const VertexPose*>(_vertices[1]);
     const VertexTimeDiff* dt = static_cast<const VertexTimeDiff*>(_vertices[2]);
+    if (isTimeDiffDegenerate(dt->dt()))
+    {
+      _error[0] = 0.0;
+      _error[1] = 0.0;
+      return;
+    }
 
     // VELOCITY & ACCELERATION
 
@@ -492,6 +511,14 @@ public:
     const VertexPose* pose3 = static_cast<const VertexPose*>(_vertices[2]);
     const VertexTimeDiff* dt1 = static_cast<const VertexTimeDiff*>(_vertices[3]);
     const VertexTimeDiff* dt2 = static_cast<const VertexTimeDiff*>(_vertices[4]);
+    if (isTimeDiffDegenerate(dt1->dt()) || isTimeDiffDegenerate(dt2->dt()) ||
+        isTimeDiffDegenerate(dt1->dt() + dt2->dt()))
+    {
+      _error[0] = 0.0;
+      _error[1] = 0.0;
+      _error[2] = 0.0;
+      return;
+    }
 
     // VELOCITY & ACCELERATION
     Eigen::Vector2d diff1 = pose2->position() - pose1->position();
@@ -583,6 +610,13 @@ public:
     const VertexPose* pose1 = static_cast<const VertexPose*>(_vertices[0]);
     const VertexPose* pose2 = static_cast<const VertexPose*>(_vertices[1]);
     const VertexTimeDiff* dt = static_cast<const VertexTimeDiff*>(_vertices[2]);
+    if (isTimeDiffDegenerate(dt->dt()))
+    {
+      _error[0] = 0.0;
+      _error[1] = 0.0;
+      _error[2] = 0.0;
+      return;
+    }
 
     // VELOCITY & ACCELERATION
     Eigen::Vector2d diff = pose2->position() - pose1->position();
@@ -674,6 +708,13 @@ public:
     const VertexPose* pose_pre_goal = static_cast<const VertexPose*>(_vertices[0]);
     const VertexPose* pose_goal = static_cast<const VertexPose*>(_vertices[1]);
     const VertexTimeDiff* dt = static_cast<const VertexTimeDiff*>(_vertices[2]);
+    if (isTimeDiffDegenerate(dt->dt()))
+    {
+      _error[0] = 0.0;
+      _error[1] = 0.0;
+      _error[2] = 0.0;
+      return;
+    }
 
     // VELOCITY & ACCELERATION
 

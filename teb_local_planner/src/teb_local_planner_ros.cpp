@@ -44,9 +44,13 @@
  #include <nav2_costmap_2d/cost_values.hpp>
 #include <rclcpp/logging.hpp>
 #include "rcl_interfaces/srv/set_parameters.hpp"
+#include "rcl_interfaces/srv/get_parameters.hpp"
 #include <future>
 #include <thread>
- #include <string>
+#include <system_error>
+#include <chrono>
+#include <functional>
+#include <string>
  
  // pluginlib macros
  #include <pluginlib/class_list_macros.hpp>
@@ -70,11 +74,13 @@
  #include "dwb_core/exceptions.hpp"
  #include "dwb_critics/obstacle_footprint.hpp"
  #include "dwb_critics/line_iterator.hpp"
- #include "nav2_util/robot_utils.hpp"
- #include <algorithm>
+#include "nav2_util/robot_utils.hpp"
+#include "teb_local_planner/misc.h"
+#include <algorithm>
 #include <cmath>
 #include <cctype>
 #include <cstring>
+#include <exception>
 #include <limits>
  
  using nav2_util::declare_parameter_if_not_declared;
@@ -109,6 +115,58 @@ std::string normalizeEdgeModeEnv(const char* environment_string)
     }
   }
   return normalized_characters;
+}
+
+constexpr auto kBackgroundPollSlice = std::chrono::milliseconds(100);
+
+void joinThreadQuietly(std::thread & thread)
+{
+  if (!thread.joinable()) {
+    return;
+  }
+  try {
+    thread.join();
+  } catch (const std::system_error &) {
+  } catch (...) {
+  }
+}
+
+void detachThreadQuietly(std::thread & thread)
+{
+  if (!thread.joinable()) {
+    return;
+  }
+  try {
+    thread.detach();
+  } catch (const std::system_error &) {
+  } catch (...) {
+  }
+}
+
+template<typename FutureT>
+bool waitForFutureInterruptible(
+  FutureT & future,
+  const std::chrono::milliseconds total_timeout,
+  const std::function<bool()> & still_allowed)
+{
+  const auto deadline = std::chrono::steady_clock::now() + total_timeout;
+  while (still_allowed()) {
+    auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+      deadline - std::chrono::steady_clock::now());
+    if (remaining.count() <= 0) {
+      return false;
+    }
+    const auto slice =
+      remaining < kBackgroundPollSlice ? remaining : kBackgroundPollSlice;
+    try {
+      if (future.wait_for(slice) == std::future_status::ready) {
+        return true;
+      }
+    } catch (const std::exception &) {
+      return false;
+    }
+  }
+  return false;
 }
 
 namespace {
@@ -238,29 +296,96 @@ double pointToPolylineDistance2d(
 }
 
 /**
- * @brief 路径各点到折线距离：通过条件为 max_dist <= max_allowed_distance。
- * @return 路径非空且折线有效时为 true（无论是否超距）；输出 max/mean。
+ * @brief 点的正交投影是否落在折线某段上（未裁剪参数 t∈[0,1]）。
+ *        若是，perp_distance 为窗内最小垂距。
  */
-bool computePathPointsToPolylineDistances(
-  const std::vector<geometry_msgs::msg::PoseStamped>& path_poses,
+bool pointProjectsOntoPolyline(
+  const Eigen::Vector2d& query_point,
   const std::vector<Eigen::Vector2d>& polyline,
-  double& max_distance,
-  double& mean_distance)
+  double& perp_distance)
 {
-  max_distance = 0.0;
-  mean_distance = 0.0;
-  if (path_poses.empty() || polyline.empty()) {
+  perp_distance = std::numeric_limits<double>::infinity();
+  if (polyline.size() < 2) {
     return false;
   }
-  double sum_distance = 0.0;
+  bool projects_onto_polyline = false;
+  for (std::size_t segment_index = 0; segment_index + 1 < polyline.size(); ++segment_index) {
+    const Eigen::Vector2d& segment_start = polyline[segment_index];
+    const Eigen::Vector2d& segment_end = polyline[segment_index + 1];
+    const Eigen::Vector2d segment_vector = segment_end - segment_start;
+    const double segment_length_squared = segment_vector.squaredNorm();
+    if (segment_length_squared < 1e-12) {
+      continue;
+    }
+    const double projected_parameter =
+      (query_point - segment_start).dot(segment_vector) / segment_length_squared;
+    if (projected_parameter < 0.0 || projected_parameter > 1.0) {
+      continue;
+    }
+    const Eigen::Vector2d projected_point =
+      segment_start + projected_parameter * segment_vector;
+    const double distance = (query_point - projected_point).norm();
+    projects_onto_polyline = true;
+    perp_distance = std::min(perp_distance, distance);
+  }
+  return projects_onto_polyline;
+}
+
+/**
+ * @brief 路径与折线重叠统计：仅正交投影落在折线上的点计入垂距；
+ *        overlap_arc_length 为最长连续重叠段的路径弧长。
+ * @return 路径非空且折线至少两点时为 true；无重叠时 max/mean 为 inf、overlap 为 0。
+ */
+bool computePathPolylineOverlapStats(
+  const std::vector<geometry_msgs::msg::PoseStamped>& path_poses,
+  const std::vector<Eigen::Vector2d>& polyline,
+  double& max_perp_distance,
+  double& mean_perp_distance,
+  double& overlap_arc_length)
+{
+  max_perp_distance = 0.0;
+  mean_perp_distance = 0.0;
+  overlap_arc_length = 0.0;
+  if (path_poses.empty() || polyline.size() < 2) {
+    return false;
+  }
+
+  bool previous_point_overlaps = false;
+  Eigen::Vector2d previous_point = Eigen::Vector2d::Zero();
+  double current_overlap_run = 0.0;
+  double longest_overlap_run = 0.0;
+  double sum_perp_distance = 0.0;
+  std::size_t overlap_point_count = 0;
+
   for (const auto& pose_stamped : path_poses) {
     const Eigen::Vector2d point(
       pose_stamped.pose.position.x, pose_stamped.pose.position.y);
-    const double distance = pointToPolylineDistance2d(point, polyline);
-    max_distance = std::max(max_distance, distance);
-    sum_distance += distance;
+    double perp_distance = 0.0;
+    const bool point_overlaps = pointProjectsOntoPolyline(point, polyline, perp_distance);
+    if (point_overlaps) {
+      max_perp_distance = std::max(max_perp_distance, perp_distance);
+      sum_perp_distance += perp_distance;
+      ++overlap_point_count;
+      if (previous_point_overlaps) {
+        current_overlap_run += (point - previous_point).norm();
+      }
+    } else {
+      longest_overlap_run = std::max(longest_overlap_run, current_overlap_run);
+      current_overlap_run = 0.0;
+    }
+    previous_point_overlaps = point_overlaps;
+    previous_point = point;
   }
-  mean_distance = sum_distance / static_cast<double>(path_poses.size());
+  longest_overlap_run = std::max(longest_overlap_run, current_overlap_run);
+  overlap_arc_length = longest_overlap_run;
+
+  if (overlap_point_count == 0) {
+    max_perp_distance = std::numeric_limits<double>::infinity();
+    mean_perp_distance = std::numeric_limits<double>::infinity();
+  } else {
+    mean_perp_distance =
+      sum_perp_distance / static_cast<double>(overlap_point_count);
+  }
   return true;
 }
 
@@ -268,15 +393,18 @@ bool pathPointsWithinPolylineDistance(
   const std::vector<geometry_msgs::msg::PoseStamped>& path_poses,
   const std::vector<Eigen::Vector2d>& polyline,
   const double max_allowed_distance,
+  const double min_overlap_length,
   double& max_distance,
-  double& mean_distance)
+  double& mean_distance,
+  double& overlap_arc_length)
 {
-  if (!computePathPointsToPolylineDistances(
-        path_poses, polyline, max_distance, mean_distance))
+  if (!computePathPolylineOverlapStats(
+        path_poses, polyline, max_distance, mean_distance, overlap_arc_length))
   {
     return false;
   }
-  return max_distance <= max_allowed_distance;
+  return overlap_arc_length + 1e-9 >= min_overlap_length &&
+         max_distance <= max_allowed_distance;
 }
 
 }  // namespace
@@ -965,7 +1093,11 @@ bool clippedFootprintOutlineTouchesBlockingCost(
  
  TebLocalPlannerROS::~TebLocalPlannerROS()
  {
-   
+   shutting_down_.store(true, std::memory_order_release);
+   joinBackgroundTasks(std::chrono::milliseconds(1500));
+   stopCostmapConverterWorker(std::chrono::milliseconds(800));
+   wall_line_ptr_.reset();
+   curb_line_subscriber_.reset();
  }
  
  void TebLocalPlannerROS::initialize(nav2_util::LifecycleNode::SharedPtr node)
@@ -974,6 +1106,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
    // check if the plugin is already initialized
    if(!initialized_)
    {	
+    shutting_down_.store(false, std::memory_order_release);
     // declare parameters (ros2-dashing)
     intra_proc_node_.reset( 
             new rclcpp::Node("costmap_converter", node->get_namespace(), 
@@ -1277,99 +1410,103 @@ bool clippedFootprintOutlineTouchesBlockingCost(
 
     // Get current footprint values from local and global costmaps for restoration via service calls
     // Use background threads to avoid blocking initialization
-    std::thread([this, node]() {
-      auto local_get_params_client = node->create_client<rcl_interfaces::srv::GetParameters>("/local_costmap/local_costmap/get_parameters");
-      
-      // Wait for service to be available (retry for up to 30 seconds)
-      int retry_count = 0;
-      while (!local_get_params_client->wait_for_service(std::chrono::seconds(2)) && retry_count < 15) {
-        RCLCPP_DEBUG(logger_, "Waiting for local costmap get_parameters service... (%d/15)", retry_count + 1);
-        retry_count++;
-      }
-      
-      if (retry_count >= 15) {
-        RCLCPP_WARN(logger_, "Local costmap get_parameters service not available after 30 seconds.");
+    spawnBackgroundTask([this, node]() {
+      auto local_get_params_client = node->create_client<rcl_interfaces::srv::GetParameters>(
+        "/local_costmap/local_costmap/get_parameters");
+      if (!waitForServiceInterruptible(local_get_params_client, std::chrono::seconds(30))) {
+        if (isBackgroundWorkAllowed()) {
+          RCLCPP_WARN(logger_, "Local costmap get_parameters service not available after 30 seconds.");
+        }
         return;
       }
-      
+      if (!isBackgroundWorkAllowed()) {
+        return;
+      }
+
       auto get_request = std::make_shared<rcl_interfaces::srv::GetParameters::Request>();
       get_request->names.push_back("footprint");
       auto future = local_get_params_client->async_send_request(get_request);
-      
-      if (future.wait_for(std::chrono::seconds(5)) == std::future_status::ready) {
-        auto response = future.get();
-        if (!response->values.empty()) {
-          if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_STRING) {
-            local_costmap_footprint_ = response->values[0].string_value;
-            RCLCPP_INFO(logger_, "Local costmap footprint stored: %s", local_costmap_footprint_.c_str());
-          } else if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY) {
-            const auto& local_footprint_array = response->values[0].double_array_value;
-            local_costmap_footprint_ = "[";
-            for (size_t i = 0; i < local_footprint_array.size(); i += 2) {
-              if (i + 1 < local_footprint_array.size()) {
-                local_costmap_footprint_ += "[" + std::to_string(local_footprint_array[i]) + ", " + std::to_string(local_footprint_array[i+1]) + "]";
-                if (i + 2 < local_footprint_array.size()) local_costmap_footprint_ += ", ";
-              }
-            }
-            local_costmap_footprint_ += "]";
-            RCLCPP_INFO(logger_, "Local costmap footprint stored: %s", local_costmap_footprint_.c_str());
-          } else {
-            RCLCPP_WARN(logger_, "Local costmap footprint has unknown type: %d", response->values[0].type);
-          }
-        } else {
-          RCLCPP_WARN(logger_, "Local costmap footprint not found in response.");
+      if (!waitForFutureInterruptible(
+            future, std::chrono::seconds(5),
+            [this]() { return isBackgroundWorkAllowed(); })) {
+        if (isBackgroundWorkAllowed()) {
+          RCLCPP_WARN(logger_, "Local costmap get_parameters service call timeout.");
         }
-      } else {
-        RCLCPP_WARN(logger_, "Local costmap get_parameters service call timeout.");
-      }
-    }).detach();
-
-    std::thread([this, node]() {
-      auto global_get_params_client = node->create_client<rcl_interfaces::srv::GetParameters>("/global_costmap/global_costmap/get_parameters");
-      
-      // Wait for service to be available (retry for up to 30 seconds)
-      int retry_count = 0;
-      while (!global_get_params_client->wait_for_service(std::chrono::seconds(2)) && retry_count < 15) {
-        RCLCPP_DEBUG(logger_, "Waiting for global costmap get_parameters service... (%d/15)", retry_count + 1);
-        retry_count++;
-      }
-      
-      if (retry_count >= 15) {
-        RCLCPP_WARN(logger_, "Global costmap get_parameters service not available after 30 seconds.");
         return;
       }
-      
+
+      auto response = future.get();
+      if (!response->values.empty()) {
+        if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_STRING) {
+          local_costmap_footprint_ = response->values[0].string_value;
+          RCLCPP_INFO(logger_, "Local costmap footprint stored: %s", local_costmap_footprint_.c_str());
+        } else if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY) {
+          const auto& local_footprint_array = response->values[0].double_array_value;
+          local_costmap_footprint_ = "[";
+          for (size_t i = 0; i < local_footprint_array.size(); i += 2) {
+            if (i + 1 < local_footprint_array.size()) {
+              local_costmap_footprint_ += "[" + std::to_string(local_footprint_array[i]) + ", " + std::to_string(local_footprint_array[i+1]) + "]";
+              if (i + 2 < local_footprint_array.size()) local_costmap_footprint_ += ", ";
+            }
+          }
+          local_costmap_footprint_ += "]";
+          RCLCPP_INFO(logger_, "Local costmap footprint stored: %s", local_costmap_footprint_.c_str());
+        } else {
+          RCLCPP_WARN(logger_, "Local costmap footprint has unknown type: %d", response->values[0].type);
+        }
+      } else {
+        RCLCPP_WARN(logger_, "Local costmap footprint not found in response.");
+      }
+    });
+
+    spawnBackgroundTask([this, node]() {
+      auto global_get_params_client = node->create_client<rcl_interfaces::srv::GetParameters>(
+        "/global_costmap/global_costmap/get_parameters");
+      if (!waitForServiceInterruptible(global_get_params_client, std::chrono::seconds(30))) {
+        if (isBackgroundWorkAllowed()) {
+          RCLCPP_WARN(logger_, "Global costmap get_parameters service not available after 30 seconds.");
+        }
+        return;
+      }
+      if (!isBackgroundWorkAllowed()) {
+        return;
+      }
+
       auto get_request = std::make_shared<rcl_interfaces::srv::GetParameters::Request>();
       get_request->names.push_back("footprint");
       auto future = global_get_params_client->async_send_request(get_request);
-      
-      if (future.wait_for(std::chrono::seconds(5)) == std::future_status::ready) {
-        auto response = future.get();
-        if (!response->values.empty()) {
-          if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_STRING) {
-            global_costmap_footprint_ = response->values[0].string_value;
-            RCLCPP_INFO(logger_, "Global costmap footprint stored: %s", global_costmap_footprint_.c_str());
-          } else if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY) {
-            const auto& global_footprint_array = response->values[0].double_array_value;
-            global_costmap_footprint_ = "[";
-            for (size_t i = 0; i < global_footprint_array.size(); i += 2) {
-              if (i + 1 < global_footprint_array.size()) {
-                global_costmap_footprint_ += "[" + std::to_string(global_footprint_array[i]) + ", " + std::to_string(global_footprint_array[i+1]) + "]";
-                if (i + 2 < global_footprint_array.size()) global_costmap_footprint_ += ", ";
-              }
+      if (!waitForFutureInterruptible(
+            future, std::chrono::seconds(5),
+            [this]() { return isBackgroundWorkAllowed(); })) {
+        if (isBackgroundWorkAllowed()) {
+          RCLCPP_WARN(logger_, "Global costmap get_parameters service call timeout.");
+        }
+        return;
+      }
+
+      auto response = future.get();
+      if (!response->values.empty()) {
+        if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_STRING) {
+          global_costmap_footprint_ = response->values[0].string_value;
+          RCLCPP_INFO(logger_, "Global costmap footprint stored: %s", global_costmap_footprint_.c_str());
+        } else if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY) {
+          const auto& global_footprint_array = response->values[0].double_array_value;
+          global_costmap_footprint_ = "[";
+          for (size_t i = 0; i < global_footprint_array.size(); i += 2) {
+            if (i + 1 < global_footprint_array.size()) {
+              global_costmap_footprint_ += "[" + std::to_string(global_footprint_array[i]) + ", " + std::to_string(global_footprint_array[i+1]) + "]";
+              if (i + 2 < global_footprint_array.size()) global_costmap_footprint_ += ", ";
             }
-            global_costmap_footprint_ += "]";
-            RCLCPP_INFO(logger_, "Global costmap footprint stored: %s", global_costmap_footprint_.c_str());
-          } else {
-            RCLCPP_WARN(logger_, "Global costmap footprint has unknown type: %d", response->values[0].type);
           }
+          global_costmap_footprint_ += "]";
+          RCLCPP_INFO(logger_, "Global costmap footprint stored: %s", global_costmap_footprint_.c_str());
         } else {
-          RCLCPP_WARN(logger_, "Global costmap footprint not found in response.");
+          RCLCPP_WARN(logger_, "Global costmap footprint has unknown type: %d", response->values[0].type);
         }
       } else {
-        RCLCPP_WARN(logger_, "Global costmap get_parameters service call timeout.");
+        RCLCPP_WARN(logger_, "Global costmap footprint not found in response.");
       }
-    }).detach();
+    });
    }
    else
    {
@@ -2127,7 +2264,9 @@ void TebLocalPlannerROS::configure(
      
    // Do not allow config changes during the following optimization step
    std::lock_guard<std::mutex> cfg_lock(cfg_->configMutex());
-     
+
+   try
+   { 
    // Now perform the actual planning
  //   bool success = planner_->plan(robot_pose_, robot_goal_, robot_vel_, cfg_->goal_tolerance.free_goal_vel); // straight line init
    // RCLCPP_INFO(logger_, "Weight_via_point: %.2f !", cfg_->optim.weight_viapoint);
@@ -2241,6 +2380,20 @@ void TebLocalPlannerROS::configure(
    visualization_->publishObstacles(obstacles_);
    visualization_->publishViaPoints(via_points_);
    visualization_->publishGlobalPlan(global_plan_);
+   }
+   catch (const TebAssertionFailureException& ex)
+   {
+     planner_->clearPlanner();
+     ++no_infeasible_plans_;
+     time_last_infeasible_plan_ = clock_->now();
+     last_cmd_ = cmd_vel.twist;
+     RCLCPP_ERROR_THROTTLE(
+       logger_, *(clock_), 1000,
+       "TEB numeric assertion: %s — resetting planner",
+       ex.what());
+     throw nav2_core::PlannerException(
+       std::string("TebLocalPlannerROS: TEB numeric failure. Resetting planner..."));
+   }
 
    if (global_plan_pub_ && !global_plan_.empty())
    {
@@ -4655,12 +4808,13 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
       if (desired_state == current_static_layer_state_.load()) {
         RCLCPP_INFO(logger_, "static_layer.enabled already at desired state %d, skipping service call.", desired_state ? 1 : 0);
       } else if (desired_state) {
-        std::thread([this]() {
+        spawnBackgroundTask([this]() {
           auto start = std::chrono::steady_clock::now();
           auto delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::duration<double>(cfg_->wall_line.static_layer_enable_delay));
 
-          while (std::chrono::steady_clock::now() - start < delay_ms) {
+          while (isBackgroundWorkAllowed() &&
+                 std::chrono::steady_clock::now() - start < delay_ms) {
             if (!desired_static_layer_state_.load()) {
               RCLCPP_DEBUG(logger_, "Delayed static_layer enable cancelled: desired state changed");
               return;
@@ -4668,10 +4822,10 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
           }
 
-          if (desired_static_layer_state_.load()) {
+          if (isBackgroundWorkAllowed() && desired_static_layer_state_.load()) {
             setStaticLayerEnabled(true, true);
           }
-        }).detach();
+        });
       } else {
         setStaticLayerEnabled(false, false);
       }
@@ -4708,12 +4862,13 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
     // Delayed max_vel_x restoration when switching to normal mode
     if (!enable_edge_mode) {
       desired_normal_vel_x_restore_ = true;
-      std::thread([this]() {
+      spawnBackgroundTask([this]() {
         auto start = std::chrono::steady_clock::now();
         auto delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::duration<double>(cfg_->wall_line.static_layer_enable_delay));
 
-        while (std::chrono::steady_clock::now() - start < delay_ms) {
+        while (isBackgroundWorkAllowed() &&
+               std::chrono::steady_clock::now() - start < delay_ms) {
           if (!desired_normal_vel_x_restore_.load()) {
             RCLCPP_DEBUG(logger_, "Delayed max_vel_x restore cancelled: switched back to edge mode");
             return;
@@ -4721,8 +4876,10 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
 
-        if (desired_normal_vel_x_restore_.load()) {
-          {
+        if (!isBackgroundWorkAllowed() || !desired_normal_vel_x_restore_.load()) {
+          return;
+        }
+        {
             std::lock_guard<std::mutex> l(speed_limit_mutex_);
             if (has_speed_limit_) {
               // Ensure non-negative limit and cap by robot's nominal base maximum
@@ -4743,9 +4900,8 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
               cfg_->robot.max_vel_x = cfg_max_vel_x_;
               RCLCPP_INFO(logger_, "max_vel_x is not set in switch to normal mode!, set limit speed to normal max_vel_x: %.2f !", cfg_max_vel_x_);
             }
-           }
         }
-      }).detach();
+      });
     } else {
       desired_normal_vel_x_restore_ = false;
     }
@@ -4757,6 +4913,9 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
  void TebLocalPlannerROS::setStaticLayerEnabled(bool enabled, bool is_delayed)
  {
    
+   if (!isBackgroundWorkAllowed()) {
+     return;
+   }
    if (!static_layer_client_) {
      RCLCPP_ERROR(logger_, "static_layer_client_ not initialized. Cannot set static_layer.enabled.");
      return;
@@ -4771,8 +4930,13 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    }
 
    // Check service availability
-   if (!static_layer_client_->wait_for_service(std::chrono::seconds(2))) {
-     RCLCPP_ERROR(logger_, "Service /local_costmap/local_costmap/set_parameters not available.");
+   if (!waitForServiceInterruptible(static_layer_client_, std::chrono::seconds(2))) {
+     if (isBackgroundWorkAllowed()) {
+       RCLCPP_ERROR(logger_, "Service /local_costmap/local_costmap/set_parameters not available.");
+     }
+     return;
+   }
+   if (!isBackgroundWorkAllowed()) {
      return;
    }
 
@@ -4785,9 +4949,14 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
                enabled ? "true" : "false", is_delayed ? " (delayed)" : "");
 
    // Use a separate thread to avoid blocking the executor
-   std::thread([this, request, enabled]() {
+   spawnBackgroundTask([this, request, enabled]() {
      auto future = static_layer_client_->async_send_request(request);
      try {
+       if (!waitForFutureInterruptible(
+             future, std::chrono::seconds(2),
+             [this]() { return isBackgroundWorkAllowed(); })) {
+         return;
+       }
        auto response = future.get();
        bool all_successful = true;
        std::string failed_reason;
@@ -4807,9 +4976,11 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
                       enabled ? "true" : "false", failed_reason.empty() ? "unknown" : failed_reason.c_str());
        }
      } catch (const std::exception& e) {
-       RCLCPP_ERROR(logger_, "Failed to call set_parameters service for local_costmap: %s", e.what());
+       if (isBackgroundWorkAllowed()) {
+         RCLCPP_ERROR(logger_, "Failed to call set_parameters service for local_costmap: %s", e.what());
+       }
      }
-   }).detach();
+   });
  }
 
  void TebLocalPlannerROS::armPendingNormalFootprintRestore()
@@ -4954,6 +5125,9 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
  void TebLocalPlannerROS::setLocalFootprintEnabled(bool enable, bool is_delayed)
  {
    
+   if (!isBackgroundWorkAllowed()) {
+     return;
+   }
    if (!local_footprint_client_) {
      RCLCPP_ERROR(logger_, "local_footprint_client_ not initialized. Cannot set footprint.");
      return;
@@ -4969,8 +5143,13 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    }
 
    // Check service availability
-   if (!local_footprint_client_->wait_for_service(std::chrono::seconds(2))) {
-     RCLCPP_ERROR(logger_, "Service /local_costmap/local_costmap/set_parameters not available.");
+   if (!waitForServiceInterruptible(local_footprint_client_, std::chrono::seconds(2))) {
+     if (isBackgroundWorkAllowed()) {
+       RCLCPP_ERROR(logger_, "Service /local_costmap/local_costmap/set_parameters not available.");
+     }
+     return;
+   }
+   if (!isBackgroundWorkAllowed()) {
      return;
    }
 
@@ -4986,9 +5165,14 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
                footprint_vertices.c_str(), is_delayed ? " (delayed)" : "");
 
    // Use a separate thread to avoid blocking the executor
-   std::thread([this, request, footprint_vertices, enable]() {
+   spawnBackgroundTask([this, request, footprint_vertices, enable]() {
      auto future = local_footprint_client_->async_send_request(request);
      try {
+       if (!waitForFutureInterruptible(
+             future, std::chrono::seconds(2),
+             [this]() { return isBackgroundWorkAllowed(); })) {
+         return;
+       }
        auto response = future.get();
        bool all_successful = true;
        std::string failed_reason;
@@ -5008,14 +5192,19 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
                       footprint_vertices.c_str(), failed_reason.empty() ? "unknown" : failed_reason.c_str());
        }
      } catch (const std::exception& e) {
-       RCLCPP_ERROR(logger_, "Failed to call set_parameters service for local_costmap: %s", e.what());
+       if (isBackgroundWorkAllowed()) {
+         RCLCPP_ERROR(logger_, "Failed to call set_parameters service for local_costmap: %s", e.what());
+       }
      }
-   }).detach();
+   });
  }
 
  void TebLocalPlannerROS::setGlobalFootprintEnabled(bool enable, bool is_delayed)
  {
    
+   if (!isBackgroundWorkAllowed()) {
+     return;
+   }
    if (!global_footprint_client_) {
      RCLCPP_ERROR(logger_, "global_footprint_client_ not initialized. Cannot set footprint.");
      return;
@@ -5031,8 +5220,13 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    }
 
    // Check service availability
-   if (!global_footprint_client_->wait_for_service(std::chrono::seconds(2))) {
-     RCLCPP_ERROR(logger_, "Service /global_costmap/global_costmap/set_parameters not available.");
+   if (!waitForServiceInterruptible(global_footprint_client_, std::chrono::seconds(2))) {
+     if (isBackgroundWorkAllowed()) {
+       RCLCPP_ERROR(logger_, "Service /global_costmap/global_costmap/set_parameters not available.");
+     }
+     return;
+   }
+   if (!isBackgroundWorkAllowed()) {
      return;
    }
 
@@ -5048,9 +5242,14 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
                footprint_vertices.c_str(), is_delayed ? " (delayed)" : "");
 
    // Use a separate thread to avoid blocking the executor
-   std::thread([this, request, footprint_vertices, enable]() {
+   spawnBackgroundTask([this, request, footprint_vertices, enable]() {
      auto future = global_footprint_client_->async_send_request(request);
      try {
+       if (!waitForFutureInterruptible(
+             future, std::chrono::seconds(2),
+             [this]() { return isBackgroundWorkAllowed(); })) {
+         return;
+       }
        auto response = future.get();
        bool all_successful = true;
        std::string failed_reason;
@@ -5070,9 +5269,11 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
                       footprint_vertices.c_str(), failed_reason.empty() ? "unknown" : failed_reason.c_str());
        }
      } catch (const std::exception& e) {
-       RCLCPP_ERROR(logger_, "Failed to call set_parameters service for global_costmap: %s", e.what());
+       if (isBackgroundWorkAllowed()) {
+         RCLCPP_ERROR(logger_, "Failed to call set_parameters service for global_costmap: %s", e.what());
+       }
      }
-   }).detach();
+   });
  }
 
  void TebLocalPlannerROS::customObstacleCB(const costmap_converter_msgs::msg::ObstacleArrayMsg::ConstSharedPtr obst_msg)
@@ -5266,17 +5467,168 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
    return;
  }
  void TebLocalPlannerROS::cleanup() {
-   
-   visualization_->on_cleanup();
-   costmap_converter_->stopWorker();
+   shutting_down_.store(true, std::memory_order_release);
+   joinBackgroundTasks(std::chrono::milliseconds(1500));
+   // Destroy LinePathCompare here (joins its TF thread) before plugin map clear.
+   wall_line_ptr_.reset();
+   curb_line_subscriber_.reset();
 
-   // Cleanup static_layer client
+   if (visualization_) {
+     try {
+       visualization_->on_cleanup();
+     } catch (const std::exception & ex) {
+       RCLCPP_WARN(logger_, "visualization on_cleanup failed: %s", ex.what());
+     }
+   }
+   stopCostmapConverterWorker(std::chrono::milliseconds(800));
+
    static_layer_client_.reset();
+   local_footprint_client_.reset();
+   global_footprint_client_.reset();
    backward_mode_pub_.reset();
    resetBackwardModePublicationState(false);
-
-   return;
+   initialized_ = false;
  }
+
+bool TebLocalPlannerROS::isBackgroundWorkAllowed() const
+{
+  return !shutting_down_.load(std::memory_order_acquire) && rclcpp::ok();
+}
+
+void TebLocalPlannerROS::spawnBackgroundTask(std::function<void()> task)
+{
+  if (!isBackgroundWorkAllowed() || !task) {
+    return;
+  }
+
+  auto finished = std::make_shared<std::atomic<bool>>(false);
+  std::thread worker([this, task, finished]() {
+    try {
+      if (isBackgroundWorkAllowed()) {
+        task();
+      }
+    } catch (const std::exception & ex) {
+      if (isBackgroundWorkAllowed()) {
+        RCLCPP_WARN(logger_, "Background task exception: %s", ex.what());
+      }
+    } catch (...) {
+    }
+    finished->store(true, std::memory_order_release);
+  });
+
+  std::vector<std::thread> finished_threads;
+  {
+    std::lock_guard<std::mutex> lock(background_threads_mutex_);
+    for (size_t i = 0; i < background_jobs_.size();) {
+      if (background_jobs_[i].finished &&
+          background_jobs_[i].finished->load(std::memory_order_acquire)) {
+        finished_threads.push_back(std::move(background_jobs_[i].thread));
+        background_jobs_.erase(background_jobs_.begin() + static_cast<long>(i));
+      } else {
+        ++i;
+      }
+    }
+    BackgroundJob job;
+    job.thread = std::move(worker);
+    job.finished = finished;
+    background_jobs_.push_back(std::move(job));
+  }
+  for (auto & t : finished_threads) {
+    joinThreadQuietly(t);
+  }
+}
+
+void TebLocalPlannerROS::joinBackgroundTasks(const std::chrono::milliseconds timeout)
+{
+  std::vector<BackgroundJob> jobs;
+  {
+    std::lock_guard<std::mutex> lock(background_threads_mutex_);
+    jobs.swap(background_jobs_);
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  for (auto & job : jobs) {
+    if (!job.thread.joinable()) {
+      continue;
+    }
+    while (job.finished &&
+           !job.finished->load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    if (!job.finished || job.finished->load(std::memory_order_acquire)) {
+      joinThreadQuietly(job.thread);
+    } else {
+      RCLCPP_WARN(
+        logger_,
+        "Background task did not finish within %ld ms during shutdown, detaching",
+        static_cast<long>(timeout.count()));
+      detachThreadQuietly(job.thread);
+    }
+  }
+}
+
+void TebLocalPlannerROS::stopCostmapConverterWorker(const std::chrono::milliseconds timeout)
+{
+  if (!costmap_converter_) {
+    return;
+  }
+
+  auto converter = costmap_converter_;
+  costmap_converter_.reset();
+  auto done = std::make_shared<std::atomic<bool>>(false);
+  std::thread stopper([converter, done]() {
+    try {
+      converter->stopWorker();
+    } catch (const std::exception &) {
+    } catch (...) {
+    }
+    done->store(true, std::memory_order_release);
+  });
+
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!done->load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
+  if (done->load(std::memory_order_acquire)) {
+    joinThreadQuietly(stopper);
+  } else {
+    RCLCPP_WARN(
+      logger_,
+      "costmap_converter stopWorker did not finish within %ld ms, detaching",
+      static_cast<long>(timeout.count()));
+    detachThreadQuietly(stopper);
+  }
+}
+
+bool TebLocalPlannerROS::waitForServiceInterruptible(
+  const rclcpp::ClientBase::SharedPtr & client,
+  const std::chrono::milliseconds total_timeout)
+{
+  if (!client) {
+    return false;
+  }
+  const auto deadline = std::chrono::steady_clock::now() + total_timeout;
+  while (isBackgroundWorkAllowed()) {
+    auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+      deadline - std::chrono::steady_clock::now());
+    if (remaining.count() <= 0) {
+      return client->service_is_ready();
+    }
+    const auto slice =
+      remaining < kBackgroundPollSlice ? remaining : kBackgroundPollSlice;
+    try {
+      if (client->wait_for_service(slice)) {
+        return true;
+      }
+    } catch (const std::exception &) {
+      return false;
+    }
+  }
+  return false;
+}
 
 namespace {
 double pathLengthToIndex(
@@ -6489,7 +6841,7 @@ bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
     return paths_near_edge_active_;
   }
 
-  // 只距离、不平行：transformed_plan 各点到 mission 折线的最大距离。
+  // 重叠窗 + 窗内 max 垂距：transformed_plan 与 mission 折线。
   std::vector<Eigen::Vector2d> mission_polyline;
   mission_polyline.reserve(active_mission_segment.poses.size());
   for (const auto& pose_stamped : active_mission_segment.poses) {
@@ -6498,18 +6850,24 @@ bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
   }
   double max_distance_to_mission = 0.0;
   double mean_distance_to_mission = 0.0;
+  double overlap_arc_length_to_mission = 0.0;
   const bool distance_ok = pathPointsWithinPolylineDistance(
     transformed_plan,
     mission_polyline,
     cfg_->wall_line.paths_near_edge_match_distance_threshold,
-    max_distance_to_mission,
-    mean_distance_to_mission);
-  RCLCPP_INFO_THROTTLE(
-    logger_, *clock_, 2000,
-    "Edge following: transformed_plan 到 mission 折线 max=%.2f mean=%.2f (阈值 %.2f)",
+    cfg_->wall_line.min_path_edge_overlap_length,
     max_distance_to_mission,
     mean_distance_to_mission,
-    cfg_->wall_line.paths_near_edge_match_distance_threshold);
+    overlap_arc_length_to_mission);
+  RCLCPP_INFO_THROTTLE(
+    logger_, *clock_, 2000,
+    "Edge following: transformed_plan 到 mission 折线 max=%.2f mean=%.2f overlap=%.2f "
+    "(距阈 %.2f 重叠阈 %.2f)",
+    max_distance_to_mission,
+    mean_distance_to_mission,
+    overlap_arc_length_to_mission,
+    cfg_->wall_line.paths_near_edge_match_distance_threshold,
+    cfg_->wall_line.min_path_edge_overlap_length);
 
   if (distance_ok) {
     paths_near_edge_hit_count_++;
@@ -6782,17 +7140,22 @@ bool TebLocalPlannerROS::trySelectSegmentFromTwoPointPath(
   const std::vector<Eigen::Vector2d> edge_polyline{edge_start, edge_end};
   double max_distance_path_to_edge = 0.0;
   double mean_distance_path_to_edge = 0.0;
+  double overlap_arc_length_path_to_edge = 0.0;
   if (!pathPointsWithinPolylineDistance(
         input_path.poses,
         edge_polyline,
         distance_tolerance_meters,
+        cfg_->wall_line.min_path_edge_overlap_length,
         max_distance_path_to_edge,
-        mean_distance_path_to_edge))
+        mean_distance_path_to_edge,
+        overlap_arc_length_path_to_edge))
   {
     RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000, "[trySelectSegmentFromTwoPointPath] Edge following:"
-                         "路径各点到边线 max=%.2f mean=%.2f, 距离阈值: %.2f",
+                         "路径到边线 max=%.2f mean=%.2f overlap=%.2f, 距阈: %.2f 重叠阈: %.2f",
                          max_distance_path_to_edge, mean_distance_path_to_edge,
-                         distance_tolerance_meters);
+                         overlap_arc_length_path_to_edge,
+                         distance_tolerance_meters,
+                         cfg_->wall_line.min_path_edge_overlap_length);
     return false;
   }
   const Eigen::Vector2d robot_xy(
@@ -6895,29 +7258,40 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
           pose_in_map.pose.position.x, pose_in_map.pose.position.y);
       }
 
-      // 只距离、不平行：input_path 各点到整条 reference 折线。
+      // 重叠窗 + 窗内 max 垂距：input_path 与 reference 折线。
       double max_distance_to_reference = 0.0;
       double mean_distance_to_reference = 0.0;
+      double overlap_arc_length_to_reference = 0.0;
       if (!pathPointsWithinPolylineDistance(
             input_path.poses,
             reference_polyline_in_map,
             distance_tolerance_meters,
+            cfg_->wall_line.min_path_edge_overlap_length,
             max_distance_to_reference,
-            mean_distance_to_reference))
+            mean_distance_to_reference,
+            overlap_arc_length_to_reference))
       {
         RCLCPP_INFO_THROTTLE(
           logger_, *(clock_), 2000,
           "[trySelectBestReferencePathFromList] Edge following: "
-          "路径到参考折线 max=%.2f mean=%.2f > 阈值 %.2f",
+          "路径到参考折线 max=%.2f mean=%.2f overlap=%.2f (距阈 %.2f 重叠阈 %.2f)",
           max_distance_to_reference, mean_distance_to_reference,
-          distance_tolerance_meters);
+          overlap_arc_length_to_reference,
+          distance_tolerance_meters,
+          cfg_->wall_line.min_path_edge_overlap_length);
         continue;
       }
 
-      const double robot_distance_to_reference =
-        pointToPolylineDistance2d(robot_xy, reference_polyline_in_map);
-      if (robot_distance_to_reference > distance_tolerance_meters) {
-        continue;
+      double robot_distance_to_reference = 0.0;
+      if (pointProjectsOntoPolyline(
+            robot_xy, reference_polyline_in_map, robot_distance_to_reference))
+      {
+        if (robot_distance_to_reference > distance_tolerance_meters) {
+          continue;
+        }
+      } else {
+        robot_distance_to_reference =
+          pointToPolylineDistance2d(robot_xy, reference_polyline_in_map);
       }
 
       Eigen::Vector2d local_segment_start;
@@ -6941,10 +7315,11 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
       RCLCPP_INFO_THROTTLE(
         logger_, *(clock_), 2000,
         "[trySelectBestReferencePathFromList] Edge following: 局部贴边段 "
-        "(%.2f, %.2f)->(%.2f, %.2f), path->ref max=%.2f mean=%.2f",
+        "(%.2f, %.2f)->(%.2f, %.2f), path->ref max=%.2f mean=%.2f overlap=%.2f",
         local_segment_start.x(), local_segment_start.y(),
         local_segment_end.x(), local_segment_end.y(),
-        max_distance_to_reference, mean_distance_to_reference);
+        max_distance_to_reference, mean_distance_to_reference,
+        overlap_arc_length_to_reference);
 
       if (mean_distance_to_reference < best_minimum_average_distance_to_plan) {
         best_minimum_average_distance_to_plan = mean_distance_to_reference;

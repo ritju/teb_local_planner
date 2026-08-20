@@ -95,6 +95,12 @@ public:
     const VertexPose* conf1 = static_cast<const VertexPose*>(_vertices[0]);
     const VertexPose* conf2 = static_cast<const VertexPose*>(_vertices[1]);
     const VertexTimeDiff* deltaT = static_cast<const VertexTimeDiff*>(_vertices[2]);
+    if (isTimeDiffDegenerate(deltaT->estimate()))
+    {
+      _error[0] = 0.0;
+      _error[1] = 0.0;
+      return;
+    }
     
     const Eigen::Vector2d deltaS = conf2->estimate().position() - conf1->estimate().position();
     
@@ -241,6 +247,13 @@ public:
     const VertexPose* conf1 = static_cast<const VertexPose*>(_vertices[0]);
     const VertexPose* conf2 = static_cast<const VertexPose*>(_vertices[1]);
     const VertexTimeDiff* deltaT = static_cast<const VertexTimeDiff*>(_vertices[2]);
+    if (isTimeDiffDegenerate(deltaT->estimate()))
+    {
+      _error[0] = 0.0;
+      _error[1] = 0.0;
+      _error[2] = 0.0;
+      return;
+    }
     Eigen::Vector2d deltaS = conf2->position() - conf1->position();
     
     double cos_theta1 = std::cos(conf1->theta());

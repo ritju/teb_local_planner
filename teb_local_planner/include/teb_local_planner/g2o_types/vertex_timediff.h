@@ -48,8 +48,10 @@
 #include "g2o/config.h"
 #include "g2o/core/base_vertex.h"
 #include "g2o/core/hyper_graph_action.h"
+#include "teb_local_planner/misc.h"
 
 #include <Eigen/Core>
+#include <cmath>
 
 namespace teb_local_planner
 {
@@ -81,6 +83,30 @@ public:
   {
     _estimate = dt;
     setFixed(fixed);
+    clampEstimate();
+  }
+
+  /**
+    * @brief Lower bound applied in oplusImpl and clampEstimate (typically 0.01 * dt_ref).
+    */
+  void setMinDt(double min_dt)
+  {
+    min_dt_ = min_dt;
+    if (!std::isfinite(min_dt_) || min_dt_ < kTimeDiffEpsilon)
+    {
+      min_dt_ = kTimeDiffEpsilon;
+    }
+    clampEstimate();
+  }
+
+  double minDt() const { return min_dt_; }
+
+  void clampEstimate()
+  {
+    if (!std::isfinite(_estimate) || _estimate < min_dt_)
+    {
+      _estimate = min_dt_;
+    }
   }
 
   /**
@@ -113,6 +139,7 @@ public:
   virtual void oplusImpl(const double* update) override
   {
       _estimate += *update;
+      clampEstimate();
   }
 
   /**
@@ -138,6 +165,9 @@ public:
   }
 
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+private:
+  double min_dt_ = 1e-3;
 };
 
 }

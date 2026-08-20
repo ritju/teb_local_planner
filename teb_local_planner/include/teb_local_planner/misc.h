@@ -43,6 +43,7 @@
 
 #include <Eigen/Core>
 
+#include <cmath>
 #include <exception>
 #include <type_traits>
 
@@ -98,6 +99,14 @@ inline bool smaller_than_abs(double i, double j) {return std::fabs(i)<std::fabs(
 inline double fast_sigmoid(double x)
 {
   return x / (1 + fabs(x));
+}
+
+//! Velocity/acceleration edges treat |dt| below this as degenerate (same as extractVelocity dt==0).
+constexpr double kTimeDiffEpsilon = 1e-6;
+
+inline bool isTimeDiffDegenerate(double dt, double eps = kTimeDiffEpsilon)
+{
+  return !std::isfinite(dt) || std::fabs(dt) < eps;
 }
 
 /**

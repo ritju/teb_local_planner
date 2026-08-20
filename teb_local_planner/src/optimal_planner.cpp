@@ -57,6 +57,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <memory>
 #include <limits>
 #include "dwb_core/exceptions.hpp"
@@ -214,14 +215,19 @@ bool TebOptimalPlanner::optimizeTEB(int iterations_innerloop, int iterations_out
   //                 however, we have not tested this mode intensively yet, so we keep
   //                 the legacy fast mode as default until we finish our tests.
   bool fast_mode = !cfg_->obstacles.include_dynamic_obstacles;
-  
+
+  const double min_dt = std::max(0.01 * cfg_->trajectory.dt_ref, kTimeDiffEpsilon);
+  teb_.setMinDt(min_dt);
+
+  try
+  {
   for(int i=0; i<iterations_outerloop; ++i)
   {
     if (cfg_->trajectory.teb_autosize)
     {
       //teb_.autoResize(cfg_->trajectory.dt_ref, cfg_->trajectory.dt_hysteresis, cfg_->trajectory.min_samples, cfg_->trajectory.max_samples);
       teb_.autoResize(cfg_->trajectory.dt_ref, cfg_->trajectory.dt_hysteresis, cfg_->trajectory.min_samples, cfg_->trajectory.max_samples, fast_mode);
-
+      teb_.clampAllTimeDiffs();
     }
 
     success = buildGraph(weight_multiplier);
@@ -248,6 +254,15 @@ bool TebOptimalPlanner::optimizeTEB(int iterations_innerloop, int iterations_out
     clearGraph();
     
     weight_multiplier *= cfg_->optim.weight_adapt_factor;
+  }
+  }
+  catch (const TebAssertionFailureException& ex)
+  {
+    logTebNumericFailure("optimizeTEB", ex);
+    clearGraph();
+    teb_.clearTimedElasticBand();
+    optimized_ = false;
+    return false;
   }
 
   return true;
@@ -1270,6 +1285,48 @@ bool TebOptimalPlanner::hasDiverged() const
   return last_iter_stats.chi2 > cfg_->recovery.divergence_detection_max_chi_squared;
 }
 
+void TebOptimalPlanner::logTebNumericFailure(const char* where, const std::exception& ex) const
+{
+  double min_dt = std::numeric_limits<double>::infinity();
+  int min_dt_index = -1;
+  for (int i = 0; i < teb_.sizeTimeDiffs(); ++i)
+  {
+    const double dt = teb_.TimeDiff(i);
+    if (!std::isfinite(dt) || dt < min_dt)
+    {
+      min_dt = dt;
+      min_dt_index = i;
+    }
+  }
+
+  double segment_distance = std::numeric_limits<double>::quiet_NaN();
+  double yaw0 = std::numeric_limits<double>::quiet_NaN();
+  double yaw1 = std::numeric_limits<double>::quiet_NaN();
+  if (min_dt_index >= 0 && min_dt_index + 1 < teb_.sizePoses())
+  {
+    const PoseSE2& pose0 = teb_.Pose(min_dt_index);
+    const PoseSE2& pose1 = teb_.Pose(min_dt_index + 1);
+    segment_distance = (pose1.position() - pose0.position()).norm();
+    yaw0 = pose0.theta();
+    yaw1 = pose1.theta();
+  }
+
+  auto logger = node_ ? node_->get_logger() : rclcpp::get_logger("teb_local_planner");
+  RCLCPP_ERROR(
+      logger,
+      "TEB numeric failure at %s: %s poses=%d timediffs=%d min_dt=%.6g at i=%d "
+      "seg_dist=%.4f yaw=(%.3f,%.3f)",
+      where,
+      ex.what(),
+      teb_.sizePoses(),
+      teb_.sizeTimeDiffs(),
+      min_dt,
+      min_dt_index,
+      segment_distance,
+      yaw0,
+      yaw1);
+}
+
 void TebOptimalPlanner::logWallAndObstacleCostsIfDue()
 {
   if (!cfg_ || !optimizer_ || !node_ || !enable_wall_obstacle_cost_log_)
@@ -1460,7 +1517,7 @@ void TebOptimalPlanner::computeCurrentCost(double obst_cost_scale, double viapoi
 
 void TebOptimalPlanner::extractVelocity(const PoseSE2& pose1, const PoseSE2& pose2, double dt, double& vx, double& vy, double& omega) const
 {
-  if (dt == 0)
+  if (isTimeDiffDegenerate(dt))
   {
     vx = 0;
     vy = 0;

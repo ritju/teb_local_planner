@@ -243,7 +243,8 @@ public:
     double min_wall_dist; //!< 进入贴边/中心距匹配用；侧隙模式下不作为优化目标
     double min_wall_direction; //!< buffer zone around obstacles with non-zero penalty costs (should be larger than min_obstacle_dist in order to take effect)
     double parallel_tolerance; //!< 墙线激光候选等仍可能使用；reference/mission 门控已改为只距离
-    double distance_tolerance; //!< 路径与边线匹配的最大允许距离 [m]
+    double distance_tolerance; //!< 路径与边线匹配的最大允许距离 [m]（仅重叠窗内点）
+    double min_path_edge_overlap_length; //!< 路径与边线/折线纵向重叠的最小弧长 [m]
     //!< 侧隙贴边（方案 A）：footprint 到墙线 guide 的侧隙 g，Pull 钉 g*，Push 在 g<g_push 时推远
     bool wall_side_clearance_mode; //!< true=侧隙 EdgeWallSideClearance；false=旧中心距 EdgeDistanceToWall
     double desired_side_clearance; //!< 目标侧隙 g* [m]
@@ -270,7 +271,7 @@ public:
     std::string paired_mission_and_reference_path_topic; //!< Paired mission segment + edge reference paths
     std::string removed_plan_topic; //!< Remaining mission goals; front pose selects active reference pair
     double mission_segment_front_pose_match_threshold_m; //!< front_pose to mission segment max distance [m]
-    double paths_near_edge_match_distance_threshold; //!< transformed_plan 各点到 mission 折线最大距离 [m]
+    double paths_near_edge_match_distance_threshold; //!< 重叠窗内 transformed_plan 到 mission 折线最大垂距 [m]
     double paths_near_edge_match_angle_threshold_deg; //!< 已废弃：门控改为只距离；保留以兼容旧配置
     int paths_near_edge_enter_hit_count; //!< Consecutive hits required to enter edge-following
     int paths_near_edge_exit_miss_count; //!< Consecutive misses required to exit edge-following
@@ -601,6 +602,7 @@ public:
     wall_line.min_wall_direction = 0.0;
     wall_line.parallel_tolerance = 0.98;
     wall_line.distance_tolerance = 0.8;
+    wall_line.min_path_edge_overlap_length = 0.5;
     wall_line.wall_side_clearance_mode = true;
     wall_line.desired_side_clearance = 0.08;
     wall_line.side_clearance_push = 0.05;

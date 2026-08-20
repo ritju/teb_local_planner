@@ -50,6 +50,8 @@
 #include "teb_local_planner/visualization.h"
 #include "teb_local_planner/robot_footprint_model.h"
 
+#include <exception>
+
 // g2o lib stuff
 #include "g2o/core/sparse_optimizer.h"
 #include "g2o/core/block_solver.h"
@@ -757,6 +759,11 @@ protected:
    * @brief 按 debug_wall_obstacle_cost_interval 节流，汇总打印贴边与障碍边代价（需在 clearGraph 前调用）
    */
   void logWallAndObstacleCostsIfDue();
+
+  /**
+   * @brief 数值断言失败时打印 ΔT / 位姿间距，便于复现 EdgeVelocity NaN 等问题。
+   */
+  void logTebNumericFailure(const char* where, const std::exception& ex) const;
   
   //@}
   

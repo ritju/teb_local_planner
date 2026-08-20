@@ -191,6 +191,16 @@ public:
    * @brief Access the last TimeDiff in the time diff sequence (read-only)
    */  
   const double& BackTimeDiff() const {return timediff_vec_.back()->dt(); }
+
+  /**
+   * @brief Set the minimum allowed time difference (typically 0.01 * dt_ref) and clamp existing vertices.
+   */
+  void setMinDt(double min_dt);
+
+  /**
+   * @brief Clamp every timediff vertex to the current min_dt_.
+   */
+  void clampAllTimeDiffs();
   
   /**
    * @brief Access the vertex of a pose at pos \c index for optimization purposes
@@ -621,6 +631,7 @@ public:
 protected:
   PoseSequence pose_vec_; //!< Internal container storing the sequence of optimzable pose vertices
   TimeDiffSequence timediff_vec_;  //!< Internal container storing the sequence of optimzable timediff vertices
+  double min_dt_ = 1e-3; //!< Lower bound for ΔT vertices (updated from 0.01 * dt_ref)
   
 public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
