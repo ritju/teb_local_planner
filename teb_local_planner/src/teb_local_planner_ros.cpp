@@ -1333,7 +1333,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
       const std::string normalized_wall_or_curb_edge_mode_string =
         normalizeEdgeModeEnv(use_curb_or_wall);
       if (normalized_wall_or_curb_edge_mode_string.find("wall") != std::string::npos) {
-        wall_line_ptr_ = std::make_shared<line_path_compare::LinePathCompare>(node);
+        wall_line_ptr_ = line_path_compare::LinePathCompare::create(node, tf_);
         RCLCPP_INFO(logger_, "TEB 使用2D激光雷达检测墙线贴边");
       }
       if (normalized_wall_or_curb_edge_mode_string == "curb" ||
@@ -1669,23 +1669,23 @@ void TebLocalPlannerROS::configure(
   bool corner_found = false;
   size_t corner_index = 0;  // Index of corner in global_plan_
 
-  double globle_plane_length = 0.0;
+  double globle_plan_length = 0.0;
   for (size_t i = 1; i < global_plan_.size(); ++i) {
     const auto & pi0 = global_plan_.at(i - 1).pose.position;
     const auto & pi1 = global_plan_.at(i).pose.position;
     const double sdx = pi1.x - pi0.x;
     const double sdy = pi1.y - pi0.y;
-    globle_plane_length += std::sqrt(sdx * sdx + sdy * sdy);
-    if (globle_plane_length > cfg_->trajectory.max_global_plan_lookahead_dist + 1.0) {
+    globle_plan_length += std::sqrt(sdx * sdx + sdy * sdy);
+    if (globle_plan_length > cfg_->trajectory.max_global_plan_lookahead_dist + 1.0) {
       break;
     }
   }
-  RCLCPP_INFO_THROTTLE(logger_, *clock_, 5000, "TEB 全局路径长度：%.2f", globle_plane_length);
-  if (globle_plane_length < cfg_->trajectory.max_global_plan_lookahead_dist)
+
+  if (globle_plan_length < cfg_->trajectory.max_global_plan_lookahead_dist)
   {
     corner_pose_global = robot_pose;
     corner_pose_robot = robot_pose;
-    RCLCPP_WARN_THROTTLE(logger_, *clock_, 5000, "TEB 全局路径长度小于最大全局路径长度，不进行角点检测");
+    RCLCPP_WARN_THROTTLE(logger_, *clock_, 5000, "TEB 全局路径长度小于max_global_plan_lookahead_dist，不进行角点检测");
   }
   else
   {
