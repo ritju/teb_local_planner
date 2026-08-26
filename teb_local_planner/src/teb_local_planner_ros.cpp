@@ -6815,7 +6815,8 @@ bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
     return paths_near_edge_active_;
   }
 
-  // 局部路径最短弧长已在 runEdgeFollowingPathUpdate 截断处按 transform_path_line_length 检查。
+  // 剩余路径过短退出贴边已在 runEdgeFollowingPathUpdate 按 global_plan_ 与
+  // max_global_plan_lookahead_dist 检查；此处不再用局部窗弧长复查。
 
   if (!snapshotHasActiveReferencePair()) {
     paths_near_edge_hit_count_ = 0;
@@ -7733,45 +7734,56 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
     return;
   }
 
-  // 将 transformed_plan 按弧长截断到 transform_path_line_length；不足则不进入贴边。
   if (transformed_plan.size() < 2) {
     exitEdgeFollowingMode(
       "runEdgeFollowingPathUpdate",
       "转换路径点数太少，退出贴边模式");
     return;
   }
+
+  // 剩余全局路径过短则退出贴边，用 max_global_plan_lookahead_dist 作为离墙跑道。
+  // 不看 transformed_plan：局部窗会被 lookahead/costmap/角点截断，剩余仍长时不应因此退出。
+  const double remaining_exit_length = cfg_->trajectory.max_global_plan_lookahead_dist;
+  if (remaining_exit_length > 0.0) {
+    double remaining_global_arc_m = 0.0;
+    if (global_plan_.size() >= 2) {
+      for (size_t plan_index = 1; plan_index < global_plan_.size(); ++plan_index) {
+        remaining_global_arc_m += distance_points2d(
+          global_plan_[plan_index - 1].pose.position,
+          global_plan_[plan_index].pose.position);
+        if (remaining_global_arc_m >= remaining_exit_length) {
+          break;
+        }
+      }
+    }
+    if (remaining_global_arc_m < remaining_exit_length) {
+      paths_near_edge_hit_count_ = 0;
+      paths_near_edge_active_ = false;
+      RCLCPP_INFO_THROTTLE(
+        logger_, *clock_, 2000,
+        "Edge following: 全局路径剩余弧长 %.2f < max_global_plan_lookahead_dist %.2f, 退出贴边模式",
+        remaining_global_arc_m,
+        remaining_exit_length);
+      exitEdgeFollowingMode(
+        "runEdgeFollowingPathUpdate",
+        "全局路径剩余弧长不足，退出贴边模式");
+      return;
+    }
+  }
+
+  // 将 transformed_plan 按弧长截断到 transform_path_line_length，仅作为本拍贴边匹配窗。
   double accumulated_dist_m = 0.0;
   unsigned int input_path_end_idx =
     static_cast<unsigned int>(transformed_plan.size() - 1);
-  bool reached_transform_path_length = false;
   for (unsigned int segment_end_index = 1; segment_end_index < transformed_plan.size();
        segment_end_index++) {
-    const double segment_delta_x =
-      transformed_plan[segment_end_index].pose.position.x -
-      transformed_plan[segment_end_index - 1].pose.position.x;
-    const double segment_delta_y =
-      transformed_plan[segment_end_index].pose.position.y -
-      transformed_plan[segment_end_index - 1].pose.position.y;
-    accumulated_dist_m +=
-      std::sqrt(segment_delta_x * segment_delta_x + segment_delta_y * segment_delta_y);
+    accumulated_dist_m += distance_points2d(
+      transformed_plan[segment_end_index - 1].pose.position,
+      transformed_plan[segment_end_index].pose.position);
     if (accumulated_dist_m >= cfg_->wall_line.transform_path_line_length) {
       input_path_end_idx = segment_end_index;
-      reached_transform_path_length = true;
       break;
     }
-  }
-  if (!reached_transform_path_length) {
-    paths_near_edge_hit_count_ = 0;
-    paths_near_edge_active_ = false;
-    RCLCPP_INFO_THROTTLE(
-      logger_, *clock_, 2000,
-      "Edge following: 转换路径弧长 %.2f < 最小转换路径长度阈值 %.2f, 退出贴边模式",
-      accumulated_dist_m,
-      cfg_->wall_line.transform_path_line_length);
-    exitEdgeFollowingMode(
-      "runEdgeFollowingPathUpdate",
-      "转换路径弧长不足，退出贴边模式");
-    return;
   }
   nav_msgs::msg::Path input_path;
   input_path.header = transformed_plan.at(0).header;

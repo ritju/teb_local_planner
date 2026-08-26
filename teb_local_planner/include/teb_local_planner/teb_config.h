@@ -86,7 +86,7 @@ public:
     bool allow_init_with_backwards_motion; //!< If true, the underlying trajectories might be initialized with backwards motions in case the goal is behind the start within the local costmap (this is only recommended if the robot is equipped with rear sensors)
     double global_plan_viapoint_sep; //!< Min. separation between each two consecutive via-points extracted from the global plan (if negative: disabled)
     bool via_points_ordered; //!< If true, the planner adheres to the order of via-points in the storage container
-    double max_global_plan_lookahead_dist; //!< Cumulative path length from global plan start: limits optimization subset; also caps sharp-corner search along the plan (if <=0: no path-length cap for corner search; bounded by local costmap for optimization)
+    double max_global_plan_lookahead_dist; //!< Cumulative path length from global plan start: limits optimization subset; also caps sharp-corner search along the plan (if <=0: no path-length cap for corner search; bounded by local costmap for optimization); remaining global_plan_ shorter than this exits edge-following (if <=0: skip that exit)
     double global_plan_prune_distance; //!< Distance between robot and via_points of global plan which is used for pruning
     double global_plan_prune_max_accum_dist; //!< pruneGlobalPlan: max cumulative path length from plan start to search for prune point [m]; <=0 disables cap (search entire plan)
     double rough_global_plan_prune_distance; //!< Coarse-pass pruning distance threshold [m]; applied before the fine prune to remove obviously-passed points; <=0 skips coarse pass
@@ -289,7 +289,7 @@ public:
     double vehicle_exit_corridor_wall_robot_side_m; //!< 墙线沿法向朝机器人侧扩展 [m]
     double min_wall_line_length; //!< 候选墙线最小长度 [m]
     double min_path_line_length; //!< 输入路径最小长度 [m]
-    double transform_path_line_length; //!< transformed_plan 截取/贴边所需最小弧长 [m]（非弦长）
+    double transform_path_line_length; //!< transformed_plan 贴边匹配窗截取弧长 [m]（非弦长；过短不再因此退出贴边）
     double static_layer_enable_delay; //!< 切换 static_layer 的延时 [s]
     double footprint_restore_max_wait_sec; //!< 退出贴边后恢复正常 footprint 最长等待 [s]，超时强制恢复
     int footprint_restore_safe_frames; //!< 连续多少帧大轮廓无碰撞后才恢复正常 footprint
