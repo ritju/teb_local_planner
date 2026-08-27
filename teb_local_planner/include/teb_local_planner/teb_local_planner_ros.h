@@ -1024,7 +1024,7 @@
 
    std::string collisionDebugFrameId(const std::string & preferred_frame) const;
 
-   /** 沿整条 plan 弧长从起点向前采样；全长取 plan 全长，向前有效长度 capped 为 trajectory.max_global_plan_lookahead_dist（≤0 则用 plan 全长）；代价模式同 isRotationCollisionFreeDecel（path_footprint_check_cost_mode）；越界顶点不判碰 */
+   /** 沿整条 plan 弧长从起点向前采样；由 rotation.path_footprint_check_enable 控制是否在 shouldRotateInPlace 中调用；代价模式 path_footprint_check_cost_mode；越界顶点不判碰 */
    bool isTransformedPlanFootprintSamplesCollisionFree(
      const std::vector<geometry_msgs::msg::PoseStamped> & plan,
      double sample_spacing_m) const;

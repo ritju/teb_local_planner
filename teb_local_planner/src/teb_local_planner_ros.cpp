@@ -6420,8 +6420,10 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
 
   const bool rotate_in_place_clear =
     checkRotateToHeadingCollisionNominal(angular_distance, robot_pose, velocity);
-  const bool path_footprint_clear = isTransformedPlanFootprintSamplesCollisionFree(
-    transformed_plan, cfg_->rotation.path_footprint_sample_spacing);
+  const bool path_check_enable = cfg_->rotation.path_footprint_check_enable;
+  const bool path_footprint_clear = !path_check_enable ||
+    isTransformedPlanFootprintSamplesCollisionFree(
+      transformed_plan, cfg_->rotation.path_footprint_sample_spacing);
   const bool collision_ok = rotate_in_place_clear && path_footprint_clear;
   if (!collision_ok) {
     was_inplace_rotation_active_ = false;
@@ -6431,7 +6433,7 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
       "(原地扫掠=%s、路径采样=%s)",
       std::abs(angular_distance), velocity.angular.z, std::abs(velocity.linear.x),
       rotate_in_place_clear ? "通过" : "未通过",
-      path_footprint_clear ? "通过" : "未通过");
+      path_check_enable ? (path_footprint_clear ? "通过" : "未通过") : "关闭");
   } else {
     was_inplace_rotation_active_ = true;
     RCLCPP_INFO_THROTTLE(

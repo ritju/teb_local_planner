@@ -427,6 +427,8 @@ public:
     double max_angular_accel; //!< Maximum angular acceleration for in-place rotation [rad/s^2]
     double simulate_ahead_time; //!< Time to simulate ahead for collision checking during rotation [s] (deprecated, not used)
     double forward_lookahead_distance; //!< Forward lookahead distance to select target pose for rotation [m]
+    //!< 是否启用原地转前的路径 footprint 扫掠（默认关，仅做原地转向扫掠）
+    bool path_footprint_check_enable;
     //!< 原地转路径 footprint 碰障采样间距 [m]（沿 transformed_plan 弧长）
     double path_footprint_sample_spacing; //!< 沿路径做 footprint 碰撞采样的间距 [m]
     //!< 原地转路径 footprint 碰撞代价模式: both | lethal | inscribed
@@ -763,6 +765,7 @@ public:
     rotation.rotate_to_heading_angular_vel = 0.35;
     rotation.max_angular_accel = 0.35;
     rotation.forward_lookahead_distance = 0.5;  // 0.5 meters forward
+    rotation.path_footprint_check_enable = false;
     rotation.path_footprint_sample_spacing = 0.2;
     rotation.path_footprint_check_cost_mode = "both";
     rotation.rotate_min_angular_vel = 0.05;
