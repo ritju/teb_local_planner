@@ -937,7 +937,7 @@
    // In-place rotation
    double control_duration_;  // Control loop duration (1.0 / controller_frequency)
    std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>> rotation_collision_checker_;
-  geometry_msgs::msg::PoseStamped last_rotation_pose_;
+  geometry_msgs::msg::PoseStamped last_rotation_pose_;  //!< Robot pose when last in-place rotation started, finished, or failed
   rclcpp::Time last_rotation_pose_time_{0};
   bool was_inplace_rotation_active_{false};
    

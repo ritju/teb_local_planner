@@ -6306,12 +6306,21 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
   
   // Note: do NOT gate rotation on current angular velocity (intentionally removed)
 
+  const rclcpp::Time now = clock_->now();
+  auto stampRotationAnchor = [&]() {
+    last_rotation_pose_ = robot_pose;
+    last_rotation_pose_time_ = now;
+  };
+
   // Check if plan is not empty
   if (transformed_plan.empty())
   {
     // RCLCPP_INFO_THROTTLE(
     //   logger_, *clock_, 2000,
     //   "原地转: shouldRotateInPlace=false，transformed_plan 为空");
+    if (was_inplace_rotation_active_) {
+      stampRotationAnchor();
+    }
     was_inplace_rotation_active_ = false;
     return false;
   }
@@ -6324,6 +6333,9 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
     //   logger_, *clock_, 500,
     //   "原地转: shouldRotateInPlace=false，线速度 gate（v_xy=%.3f >= %.3f）",
     //   velocity.linear.x, cfg_->rotation.linear_vel_threshold);
+    if (was_inplace_rotation_active_) {
+      stampRotationAnchor();
+    }
     was_inplace_rotation_active_ = false;
     return false;
   }
@@ -6347,7 +6359,6 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
   }
 
   const geometry_msgs::msg::PoseStamped * const target_pose = &transformed_plan[target_idx];
-  const rclcpp::Time now = clock_->now();
   const double rotation_limit_duration = cfg_->rotation.rotation_limit_duration;
   const double rotation_limit_distance = cfg_->rotation.rotation_limit_distance;
 
@@ -6367,26 +6378,29 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
   double target_yaw = tf2::getYaw(target_pose->pose.orientation);
   double angular_distance = normalizeAngle(target_yaw - robot_yaw);
 
+  // 距离门比的是机器人相对上次原地转锚点的位移，而不是 lookahead 路点。
+  // 正在进行的原地转跳过限流，避免同一段转向被自己刚写入的锚点掐断。
   if (
+    !was_inplace_rotation_active_ &&
     rotation_limit_duration > 0.0 &&
     rotation_limit_distance > 0.0 &&
     last_rotation_pose_time_.nanoseconds() > 0 &&
     !last_rotation_pose_.header.frame_id.empty() &&
-    last_rotation_pose_.header.frame_id == target_pose->header.frame_id)
+    last_rotation_pose_.header.frame_id == robot_pose.header.frame_id)
   {
     const double elapsed = (now - last_rotation_pose_time_).seconds();
     if (elapsed <= rotation_limit_duration)
     {
-      const double dx = target_pose->pose.position.x - last_rotation_pose_.pose.position.x;
-      const double dy = target_pose->pose.position.y - last_rotation_pose_.pose.position.y;
-      const double dist_to_last_rotation_pose = std::hypot(dx, dy);
-      if (dist_to_last_rotation_pose <= rotation_limit_distance)
+      const double dx = robot_pose.pose.position.x - last_rotation_pose_.pose.position.x;
+      const double dy = robot_pose.pose.position.y - last_rotation_pose_.pose.position.y;
+      const double robot_dist = std::hypot(dx, dy);
+      if (robot_dist <= rotation_limit_distance)
       {
         RCLCPP_INFO_THROTTLE(
           logger_, *clock_, 500,
-          "原地转: shouldRotateInPlace=false，rotation_limit 生效 (dt=%.2f <= %.2f, dist=%.3f <= %.3f)",
-          elapsed, rotation_limit_duration, dist_to_last_rotation_pose, rotation_limit_distance);
-        was_inplace_rotation_active_ = false;
+          "原地转: shouldRotateInPlace=false，rotation_limit 生效 "
+          "(dt=%.2f <= %.2f, robot_dist=%.3f <= %.3f)",
+          elapsed, rotation_limit_duration, robot_dist, rotation_limit_distance);
         return false;
       }
     }
@@ -6395,10 +6409,9 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
   // Check if angle difference exceeds threshold
   if (std::abs(angular_distance) <= cfg_->rotation.angle_threshold)
   {
-    // 仅在“原地转状态退出”的那一拍记录锚点，避免直行阶段反复刷新导致误限流。
+    // 仅在“原地转状态退出”的那一拍刷新锚点，避免直行阶段反复刷新导致误限流。
     if (was_inplace_rotation_active_) {
-      last_rotation_pose_ = *target_pose;
-      last_rotation_pose_time_ = now;
+      stampRotationAnchor();
     }
     was_inplace_rotation_active_ = false;
 
@@ -6417,6 +6430,7 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
       transformed_plan, cfg_->rotation.path_footprint_sample_spacing);
   const bool collision_ok = rotate_in_place_clear && path_footprint_clear;
   if (!collision_ok) {
+    stampRotationAnchor();
     was_inplace_rotation_active_ = false;
     RCLCPP_INFO_THROTTLE(
       logger_, *clock_, 500,
@@ -6426,15 +6440,15 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
       rotate_in_place_clear ? "通过" : "未通过",
       path_check_enable ? (path_footprint_clear ? "通过" : "未通过") : "关闭");
   } else {
+    if (!was_inplace_rotation_active_) {
+      stampRotationAnchor();
+    }
     was_inplace_rotation_active_ = true;
     RCLCPP_INFO_THROTTLE(
       logger_, *clock_, 500,
       "原地转: shouldRotateInPlace=true，碰障预检通过 |dtheta|=%.3f rad、v_xy=%.3f、w_odom=%.3f、forward_lookahead=%.2f m",
       std::abs(angular_distance), std::abs(velocity.linear.x), velocity.angular.z,
       cfg_->rotation.forward_lookahead_distance);
-    // 仅在确定执行原地旋转时记录对应 target_idx 的 pose，供后续时间/距离门控复用。
-    // last_rotation_pose_ = *target_pose;
-    // last_rotation_pose_time_ = now;
   }
   return collision_ok;
 }

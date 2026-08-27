@@ -437,7 +437,7 @@ public:
     //!< >0：手动 blend(rad)，标称上界 wn*r/blend；<=0：由 wn、wm、max_angular_accel 与当前|ω|自动算 blend
     double decel_blend_start_rad; //!< 原地转减速 blend 角度阈值 [rad]（<=0 自动计算）
     double rotation_limit_duration; //!< Duration window to suppress repeated in-place rotation [s], <=0 disables
-    double rotation_limit_distance; //!< Distance threshold to suppress repeated in-place rotation [m], <=0 disables
+    double rotation_limit_distance; //!< Robot travel from last in-place rotation site [m] before another is allowed; <=0 disables
   } rotation; //!< Parameters related to in-place rotation
 
   /**
@@ -771,7 +771,7 @@ public:
     rotation.rotate_min_angular_vel = 0.05;
     rotation.decel_blend_start_rad = 0.0;
     rotation.rotation_limit_duration = 3.0;
-    rotation.rotation_limit_distance = 0.2;
+    rotation.rotation_limit_distance = 0.3;
   }
   
   /**
