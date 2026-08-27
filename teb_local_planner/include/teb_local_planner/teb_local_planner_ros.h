@@ -807,6 +807,7 @@
    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr monitor_corridor_marker_pub_;
    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr protruding_obstacle_marker_pub_;
    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr corner_approach_footprint_marker_pub_;
+   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr collision_footprint_marker_pub_;
    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr near_horizon_debug_marker_pub_;
    DynamicObstacleCache dynamic_obstacle_cache_;
    NearHorizonThreatGate near_horizon_threat_gate_;
@@ -1009,6 +1010,19 @@
 
    /** @brief 清除角点/射线检测 footprint Marker */
    void clearCornerApproachFootprintMarkers(const std::string& frame_id);
+
+   /** 碰撞检查失败：打印代价值并发布 footprint LINE_STRIP + 代价文字（teb_collision_footprint_markers） */
+   void publishCollisionFootprintDebug(
+     const char * ns,
+     const std::string & frame_id,
+     double x, double y, double yaw,
+     const std::vector<geometry_msgs::msg::Point> & footprint_poly,
+     double cost) const;
+
+   /** 指定 ns 的碰撞 footprint Marker DELETEALL */
+   void clearCollisionFootprintDebug(const char * ns, const std::string & frame_id) const;
+
+   std::string collisionDebugFrameId(const std::string & preferred_frame) const;
 
    /** 沿整条 plan 弧长从起点向前采样；全长取 plan 全长，向前有效长度 capped 为 trajectory.max_global_plan_lookahead_dist（≤0 则用 plan 全长）；代价模式同 isRotationCollisionFreeDecel（path_footprint_check_cost_mode）；越界顶点不判碰 */
    bool isTransformedPlanFootprintSamplesCollisionFree(
