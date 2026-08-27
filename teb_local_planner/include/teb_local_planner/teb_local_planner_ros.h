@@ -1010,7 +1010,7 @@
    /** @brief 清除角点/射线检测 footprint Marker */
    void clearCornerApproachFootprintMarkers(const std::string& frame_id);
 
-   /** 沿整条 plan 弧长从起点向前采样；全长取 plan 全长，向前有效长度 capped 为 trajectory.max_global_plan_lookahead_dist（≤0 则用 plan 全长）；footprint 判定同 isRotationCollisionFreeDecel；越界顶点不判碰 */
+   /** 沿整条 plan 弧长从起点向前采样；全长取 plan 全长，向前有效长度 capped 为 trajectory.max_global_plan_lookahead_dist（≤0 则用 plan 全长）；代价模式同 isRotationCollisionFreeDecel（path_footprint_check_cost_mode）；越界顶点不判碰 */
    bool isTransformedPlanFootprintSamplesCollisionFree(
      const std::vector<geometry_msgs::msg::PoseStamped> & plan,
      double sample_spacing_m) const;
@@ -1019,7 +1019,7 @@
    /** @param omega_current_abs 当前角速度幅值(rad/s)，用于自动估计减速区间；手动 blend 时忽略 */
    double rotateToHeadingOmegaMagnitude(double remaining_angle_rad, double omega_current_abs) const;
 
-   /** 沿 rotation_magnitude_rad 旋转弧均匀采样 yaw，仅 LETHAL 否决；与 footprint_spec_ 一致。initial_omega_z 保留兼容，不参与判定 */
+   /** 沿 rotation_magnitude_rad 旋转弧均匀采样 yaw；代价模式与路径采样相同（rotation.path_footprint_check_cost_mode: both|lethal|inscribed）。initial_omega_z 保留兼容，不参与判定 */
    bool isRotationCollisionFreeDecel(
      const geometry_msgs::msg::PoseStamped & pose,
      double omega_direction_sign,

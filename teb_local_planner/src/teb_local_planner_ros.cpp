@@ -6301,20 +6301,23 @@ bool TebLocalPlannerROS::isRotationCollisionFreeDecel(
   if (rotation_magnitude_rad < 1e-9) {
     return true;
   }
+  if (!rotation_collision_checker_) {
+    return true;
+  }
 
   const double dir = (omega_direction_sign >= 0.0) ? 1.0 : -1.0;
   const double yaw0 = tf2::getYaw(pose.pose.orientation);
   const std::vector<geometry_msgs::msg::Point> & footprint_poly =
     (footprint_spec_.size() >= 3) ? footprint_spec_ : costmap_ros_->getRobotFootprint();
+  const std::string& cost_mode = cfg_->rotation.path_footprint_check_cost_mode;
 
   auto footprint_ok = [&](double y) -> bool {
     while (y > M_PI) y -= 2.0 * M_PI;
     while (y < -M_PI) y += 2.0 * M_PI;
-    using namespace nav2_costmap_2d;  // NOLINT
     // 与 isTrajectoryFeasible 一致优先 footprint_spec_，避免 getRobotFootprint() 与贴边/动态轮廓不一致导致误报
     const double footprint_cost = rotation_collision_checker_->footprintCostAtPose(
       pose.pose.position.x, pose.pose.position.y, y, footprint_poly);
-    if (footprint_cost == static_cast<double>(LETHAL_OBSTACLE) || footprint_cost == static_cast<double>(INSCRIBED_INFLATED_OBSTACLE)) {
+    if (cornerApproachCostIsBlocking(static_cast<unsigned char>(footprint_cost), cost_mode)) {
       return false;
     }
     return true;
