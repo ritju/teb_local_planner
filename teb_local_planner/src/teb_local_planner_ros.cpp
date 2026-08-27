@@ -1065,7 +1065,6 @@ bool clippedFootprintOutlineTouchesBlockingCost(
                                             custom_via_points_active_(false), no_infeasible_plans_(0),
                                             last_preferred_rotdir_(RotType::none), initialized_(false),
                                             weight_wall_side_pull_(80.0),
-                                            weight_via_point_(1.0),
                                             cfg_max_angular_vel_(0.6), cfg_max_vel_x_(0.5), cfg_max_angular_acc_(0.6), wall_line_update_time_(0),
                                             curb_line_update_time_(0), min_obstacle_dist_(0.5), wall_line_ptr_(nullptr), curb_line_subscriber_(nullptr),
                                             normal_weight_optimaltime_(2.0), normal_min_obstacle_dist_(0.2),
@@ -1118,7 +1117,6 @@ bool clippedFootprintOutlineTouchesBlockingCost(
     weight_wall_line_direction_ = cfg_->optim.weight_wall_line_direction;
     weight_wall_line_dist_ = cfg_->optim.weight_wall_line_dist;
     weight_wall_side_pull_ = cfg_->optim.weight_wall_side_pull;
-    weight_via_point_ = cfg_->optim.weight_viapoint;
     cfg_max_angular_vel_ = cfg_->robot.max_vel_theta;
     cfg_max_vel_x_ = cfg_->robot.max_vel_x;
     cfg_max_angular_acc_= cfg_->robot.acc_lim_theta;
@@ -3955,7 +3953,6 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
      double arc_from_segment_start = 0.0;
 
      //now we'll transform until points are outside of our distance threshold
-     cfg_->optim.weight_viapoint = weight_via_point_;
      while (i < n_plan && i <= last_idx &&
        (max_plan_length <= 0 || arc_from_segment_start <= max_plan_length))
      {
@@ -3981,7 +3978,6 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
              global_plan, i, extend_arc_along_plan);
            last_idx = std::max(last_idx, new_last_idx);
            last_idx = std::min(last_idx, global_goal_idx);
-           cfg_->optim.weight_viapoint = 1.0;
 
            if (last_idx == global_goal_idx && i == global_goal_idx) {
              if (!transformed_plan.empty()) {
@@ -4000,11 +3996,6 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
              }
              tf2::doTransform(planPoseAt(global_goal_idx), newer_pose, plan_to_global_transform);
              transformed_plan.push_back(newer_pose);
-             if (!globalPlanPoseFootprintFreeInControllerFrame(
-                 planPoseAt(global_goal_idx), plan_to_global_transform, nullptr))
-             {
-               cfg_->optim.weight_viapoint = 1.0;
-             }
            }
          }
        }
