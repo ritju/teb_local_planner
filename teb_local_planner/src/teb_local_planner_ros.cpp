@@ -98,6 +98,35 @@ using teb_local_planner::isOnSameWallSideAsRobot;
 using teb_local_planner::wallSideSignFromCoord;
 using teb_local_planner::wallSignedDist;
 
+double polylineVertexAngleDeg(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const int idx,
+  const int span = 1);
+int findFirstSharpCornerIdx(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const int start_idx,
+  const double thresh_deg,
+  const double max_arc);
+double planArcLength(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const int from_idx,
+  const int to_idx);
+int findEuclideanClosestPlanIdx(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const double sq_dist_threshold,
+  const double max_accum_closest_search);
+int clampClosestIdxBeforeUnprunedCorner(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const int closest_idx,
+  const double thresh_deg);
+int lockedCornerIdx(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const int closest_idx,
+  const double thresh_deg,
+  const double max_arc);
+
 // 统一规范 USE_CURB_OR_WALL：去空白、转小写，便于后续模式匹配。
 std::string normalizeEdgeModeEnv(const char* environment_string)
 {
@@ -1073,7 +1102,6 @@ bool clippedFootprintOutlineTouchesBlockingCost(
                                             edge_weight_optimaltime_(10.0), edge_min_obstacle_dist_(0.05),
                                             edge_weight_inflation_(0.0), min_wall_line_length_(1.0),
                                             edge_footprint_vertices_("[[1.25, 0.5], [1.25, -0.5], [-0.65, -0.5], [-0.65, 0.5]]"),
-                                            prune_angle_threshold_(1.57079632679),
                                             is_edge_following_mode_(false),
                                             control_duration_(0.2), 
                                             safe_linear_speed_limit_(2.0),
@@ -1666,118 +1694,11 @@ void TebLocalPlannerROS::configure(
   pruneGlobalPlan(robot_pose, global_plan_, cfg_->trajectory.global_plan_prune_distance,
                 cfg_->trajectory.global_plan_prune_max_accum_dist);
 
-  geometry_msgs::msg::PoseStamped corner_pose_global, corner_pose_robot;
-  bool corner_found = false;
-  size_t corner_index = 0;  // Index of corner in global_plan_
+  pruneArrivedLockedCorner(robot_pose);
 
-  double globle_plan_length = 0.0;
-  for (size_t i = 1; i < global_plan_.size(); ++i) {
-    const auto & pi0 = global_plan_.at(i - 1).pose.position;
-    const auto & pi1 = global_plan_.at(i).pose.position;
-    const double sdx = pi1.x - pi0.x;
-    const double sdy = pi1.y - pi0.y;
-    globle_plan_length += std::sqrt(sdx * sdx + sdy * sdy);
-    if (globle_plan_length > cfg_->trajectory.max_global_plan_lookahead_dist + 1.0) {
-      break;
-    }
-  }
-
-  if (globle_plan_length < cfg_->trajectory.max_global_plan_lookahead_dist)
   {
-    corner_pose_global = robot_pose;
-    corner_pose_robot = robot_pose;
-    RCLCPP_WARN_THROTTLE(logger_, *clock_, 5000, "TEB 全局路径长度小于max_global_plan_lookahead_dist，不进行角点检测");
-  }
-  else
-  {
-    double theta = cfg_->trajectory.theta_threshold;
-    const double min_segment_length = 1e-6;  // Minimum segment length to avoid division by zero
-    const double position_tolerance = 0.01;  // Tolerance for position comparison
-    
-    // Find the nearest corner point that satisfies the condition (within max_global_plan_lookahead_dist along the path).
-    double cum_dist = 0.0;
-    for (size_t i = 2; i + 2 < global_plan_.size(); ++i)
-    {
-      {
-        const auto & pi0 = global_plan_.at(i - 1).pose.position;
-        const auto & pi1 = global_plan_.at(i).pose.position;
-        const double sdx = pi1.x - pi0.x;
-        const double sdy = pi1.y - pi0.y;
-        cum_dist += std::sqrt(sdx * sdx + sdy * sdy);
-      }
-      const double max_corner_plan_len = cfg_->trajectory.max_global_plan_lookahead_dist + 1.0;
-      if (max_corner_plan_len > 0.0 && cum_dist > max_corner_plan_len) {
-        break;
-      }
-
-      double x0 = global_plan_.at(i).pose.position.x;
-      double y0 = global_plan_.at(i).pose.position.y;
-      double x1 = global_plan_.at(i - 2).pose.position.x;
-      double y1 = global_plan_.at(i - 2).pose.position.y;
-      double x2 = global_plan_.at(i + 2).pose.position.x;
-      double y2 = global_plan_.at(i + 2).pose.position.y;
-
-      // Calculate triangle side lengths for geometric cosine theorem
-      // Three points form a triangle: x1 -> x0 -> x2
-      // Calculate the angle at x0 using cosine theorem: cos(θ) = (a² + b² - c²) / (2ab)
-      double dx_a = x0 - x1;  // Side a: from x1 to x0
-      double dy_a = y0 - y1;
-      double dx_b = x2 - x0;  // Side b: from x0 to x2
-      double dy_b = y2 - y0;
-      double dx_c = x2 - x1;  // Side c: from x1 to x2 (opposite to angle at x0)
-      double dy_c = y2 - y1;
-      
-      double length_a = std::sqrt(dx_a * dx_a + dy_a * dy_a);  // |x1 - x0|
-      double length_b = std::sqrt(dx_b * dx_b + dy_b * dy_b);  // |x0 - x2|
-      double length_c = std::sqrt(dx_c * dx_c + dy_c * dy_c);  // |x1 - x2|
-      
-      // Check for zero-length segments to avoid division by zero
-      if (length_a < min_segment_length || length_b < min_segment_length)
-      {
-        continue;
-      }
-      
-      // Geometric cosine theorem: cos(θ) = (a² + b² - c²) / (2ab)
-      // The result is naturally constrained to [0, 180] degrees
-      double a_sq = length_a * length_a;
-      double b_sq = length_b * length_b;
-      double c_sq = length_c * length_c;
-      double cos_theta = (a_sq + b_sq - c_sq) / (2.0 * length_a * length_b);
-      
-      // Clamp cos_theta to valid range [-1, 1] to avoid NaN from acos due to numerical errors
-      cos_theta = std::max(-1.0, std::min(1.0, cos_theta));
-      
-      // Calculate the turning angle using arccosine (0-180 degrees)
-      // For sharp corners, we want small angles (acute)
-      double temp_theta = std::acos(cos_theta) * 180.0 / M_PI;      
-      // Check if this point is different from last_corner_pose_ (using distance tolerance)
-      bool is_different_from_last = true;
-      if (last_corner_pose_.header.frame_id == global_plan_.at(0).header.frame_id)
-      {
-        double dx = global_plan_.at(i).pose.position.x - last_corner_pose_.pose.position.x;
-        double dy = global_plan_.at(i).pose.position.y - last_corner_pose_.pose.position.y;
-        double dist_sq = dx * dx + dy * dy;
-        if (dist_sq < position_tolerance * position_tolerance)
-        {
-          is_different_from_last = false;
-        }
-      }
-      
-      if (temp_theta < theta && is_different_from_last)
-      {
-        theta = temp_theta;
-        corner_pose_global = global_plan_.at(i);
-        corner_index = i;
-        corner_found = true;
-        RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000, "Edge following: 找到最近的角点: %zu, 角度: %.2f", i, temp_theta);
-        break;  // Find the nearest corner that satisfies the condition
-      }
-    }
-
-    {
     std::lock_guard<std::mutex> l(speed_limit_mutex_);
     if (has_speed_limit_) {
-      // Ensure non-negative limit and cap by robot's nominal base maximum
       const double limit = std::max(0.0, speed_limit_linear_x_);
       if (std::isfinite(limit) && speed_limit_linear_x_ > 0) {
         if (limit < safe_linear_speed_limit_ && cfg_->robot.max_vel_x != limit) {
@@ -1791,122 +1712,110 @@ void TebLocalPlannerROS::configure(
         RCLCPP_WARN(logger_, "Speed limit is not finite or less than 0, current speed limit is: %.2f !", cfg_->robot.max_vel_x);
       }
     }
+  }
+
+  geometry_msgs::msg::PoseStamped corner_pose_global, corner_pose_robot;
+  bool corner_found = false;
+  size_t corner_index = 0;
+
+  if (!global_plan_.empty()) {
+    geometry_msgs::msg::PoseStamped robot_in_plan;
+    bool robot_in_plan_ok = false;
+    try {
+      geometry_msgs::msg::TransformStamped global_to_plan_transform = tf_->lookupTransform(
+        global_plan_.front().header.frame_id,
+        robot_pose.header.frame_id,
+        tf2::TimePointZero,
+        tf2::durationFromSec(0.5));
+      tf2::doTransform(robot_pose, robot_in_plan, global_to_plan_transform);
+      robot_in_plan_ok = true;
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN_THROTTLE(
+        logger_, *clock_, 2000,
+        "Failed to transform robot pose to plan frame for corner search: %s", ex.what());
     }
-    
-    if (corner_found)
+
+    if (robot_in_plan_ok) {
+      double sq_dist_threshold = 1e10;
+      if (costmap_ != nullptr) {
+        double dist_threshold = std::max(
+          costmap_->getSizeInCellsX() * costmap_->getResolution() / 2.0,
+          costmap_->getSizeInCellsY() * costmap_->getResolution() / 2.0);
+        dist_threshold *= 0.85;
+        sq_dist_threshold = dist_threshold * dist_threshold;
+      }
+      const double thresh_deg = static_cast<double>(cfg_->trajectory.theta_threshold);
+      const double search_arc = cfg_->trajectory.max_global_plan_lookahead_dist > 1e-9
+        ? (cfg_->trajectory.max_global_plan_lookahead_dist + 1.0)
+        : -1.0;
+      const int closest_raw = findEuclideanClosestPlanIdx(
+        global_plan_, robot_in_plan, sq_dist_threshold,
+        cfg_->trajectory.transform_global_plan_closest_search_max_accum_dist);
+      const int closest_idx = clampClosestIdxBeforeUnprunedCorner(
+        global_plan_, robot_in_plan, closest_raw, thresh_deg);
+      const int locked_idx = lockedCornerIdx(
+        global_plan_, closest_idx, thresh_deg, search_arc);
+      if (locked_idx >= 0 && locked_idx < static_cast<int>(global_plan_.size())) {
+        corner_found = true;
+        corner_index = static_cast<size_t>(locked_idx);
+        corner_pose_global = global_plan_.at(corner_index);
+        RCLCPP_INFO_THROTTLE(
+          logger_, *clock_, 2000,
+          "Edge following: 找到最近的角点: %zu, 角度: %.2f",
+          corner_index, polylineVertexAngleDeg(global_plan_, locked_idx));
+      }
+    }
+  }
+
+  if (corner_found)
+  {
+    corner_pose_global.header.frame_id = global_plan_.at(0).header.frame_id;
+    try
     {
-      corner_pose_global.header.frame_id = global_plan_.at(0).header.frame_id;
-      // Use TimePointZero to get the latest available transform, avoiding extrapolation errors
-      try 
-      {
-        geometry_msgs::msg::TransformStamped transform = tf_->lookupTransform(
-          corner_pose_global.header.frame_id, 
-          costmap_ros_->getBaseFrameID(), 
-          tf2::TimePointZero,
-          tf2::durationFromSec(0.5));
-        corner_pose_global.header.stamp = transform.header.stamp;
-      } 
-      catch (const tf2::ExtrapolationException& ex) 
-      {
-        // If TimePointZero fails with extrapolation, try to get latest common time
-        try {
-          rclcpp::Time latest_time;
-          if (tf_->canTransform(corner_pose_global.header.frame_id, costmap_ros_->getBaseFrameID(), tf2::TimePointZero)) {
-            geometry_msgs::msg::TransformStamped transform = tf_->lookupTransform(
-              corner_pose_global.header.frame_id, 
-              costmap_ros_->getBaseFrameID(), 
-              tf2::TimePointZero);
-            corner_pose_global.header.stamp = transform.header.stamp;
-          } else {
-            RCLCPP_WARN(logger_, "TF 查询失败 (ExtrapolationException): %s, 尝试使用最新可用时间", ex.what());
-            corner_found = false;
-          }
-        } catch (const tf2::TransformException& ex2) {
-          RCLCPP_ERROR(logger_, "TF 查询失败: %s", ex2.what());
+      geometry_msgs::msg::TransformStamped transform = tf_->lookupTransform(
+        corner_pose_global.header.frame_id,
+        costmap_ros_->getBaseFrameID(),
+        tf2::TimePointZero,
+        tf2::durationFromSec(0.5));
+      corner_pose_global.header.stamp = transform.header.stamp;
+    }
+    catch (const tf2::ExtrapolationException& ex)
+    {
+      try {
+        if (tf_->canTransform(corner_pose_global.header.frame_id, costmap_ros_->getBaseFrameID(), tf2::TimePointZero)) {
+          geometry_msgs::msg::TransformStamped transform = tf_->lookupTransform(
+            corner_pose_global.header.frame_id,
+            costmap_ros_->getBaseFrameID(),
+            tf2::TimePointZero);
+          corner_pose_global.header.stamp = transform.header.stamp;
+        } else {
+          RCLCPP_WARN(logger_, "TF 查询失败 (ExtrapolationException): %s, 尝试使用最新可用时间", ex.what());
           corner_found = false;
         }
-      }
-      catch (const tf2::TransformException &ex) 
-      {
-        RCLCPP_ERROR(logger_, "TF 查询失败: %s", ex.what());
-        corner_found = false;  // Mark corner as invalid if TF fails
-      }
-      if (corner_found &&
-          !nav2_util::transformPoseInTargetFrame(
-            corner_pose_global, corner_pose_robot, *tf_,
-            costmap_ros_->getBaseFrameID(), 0.5)) {
-        RCLCPP_WARN_THROTTLE(
-          logger_, *clock_, 2000,
-          "Failed to transform corner pose to base frame");
+      } catch (const tf2::TransformException& ex2) {
+        RCLCPP_ERROR(logger_, "TF 查询失败: %s", ex2.what());
         corner_found = false;
       }
     }
-    else
+    catch (const tf2::TransformException &ex)
     {
-      // No corner found, initialize corner poses
-      corner_pose_global = robot_pose;
-      corner_pose_robot = robot_pose;
+      RCLCPP_ERROR(logger_, "TF 查询失败: %s", ex.what());
+      corner_found = false;
+    }
+    if (corner_found &&
+        !nav2_util::transformPoseInTargetFrame(
+          corner_pose_global, corner_pose_robot, *tf_,
+          costmap_ros_->getBaseFrameID(), 0.5)) {
+      RCLCPP_WARN_THROTTLE(
+        logger_, *clock_, 2000,
+        "Failed to transform corner pose to base frame");
+      corner_found = false;
     }
   }
-
-  // RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %.2f, max_vel_x: %.2f!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
-
-  // Record corner pose if it's close enough
-  if (corner_found)
+  else
   {
-    double corner_pose_dist = corner_pose_robot.pose.position.x * corner_pose_robot.pose.position.x + 
-          corner_pose_robot.pose.position.y * corner_pose_robot.pose.position.y;
-    if (corner_pose_robot.pose.position.x > 0 && corner_pose_robot.pose.position.x < 0.3 && corner_pose_dist < 0.25)
-    {
-      last_corner_pose_ = corner_pose_global;
-    }
-  }
-
-  // Prune path before last corner using distance tolerance
-  if (last_corner_pose_.header.frame_id == global_plan_.at(0).header.frame_id)
-  {
-    const double prune_position_tolerance = 0.05;  // Tolerance for finding corner in path
-    const double max_search_dist = cfg_->trajectory.prune_before_corner_distance;
-    const double min_residual_dist = cfg_->trajectory.prune_corner_residual_distance;
-    const bool limit_search = (max_search_dist > 0.0);
-    double accum_dist = 0.0;
-    for (auto prune_before_last_corner = global_plan_.begin();
-        prune_before_last_corner != global_plan_.end();
-        ++prune_before_last_corner)
-    {
-      if (prune_before_last_corner != global_plan_.begin())
-      {
-        const auto prev_it = prune_before_last_corner - 1;
-        const double ddx = prune_before_last_corner->pose.position.x - prev_it->pose.position.x;
-        const double ddy = prune_before_last_corner->pose.position.y - prev_it->pose.position.y;
-        accum_dist += std::sqrt(ddx * ddx + ddy * ddy);
-      }
-      if (limit_search && accum_dist >= max_search_dist)
-      {
-        break;
-      }
-
-      const double dx = prune_before_last_corner->pose.position.x - last_corner_pose_.pose.position.x;
-      const double dy = prune_before_last_corner->pose.position.y - last_corner_pose_.pose.position.y;
-      const double dist_sq = dx * dx + dy * dy;
-
-      if (dist_sq < prune_position_tolerance * prune_position_tolerance)
-      {
-        double residual_dist = 0.0;
-        for (auto it = prune_before_last_corner; it + 1 != global_plan_.end(); ++it)
-        {
-          const double rdx = (it + 1)->pose.position.x - it->pose.position.x;
-          const double rdy = (it + 1)->pose.position.y - it->pose.position.y;
-          residual_dist += std::sqrt(rdx * rdx + rdy * rdy);
-          if (residual_dist > min_residual_dist)
-          {
-            global_plan_.erase(global_plan_.begin(), prune_before_last_corner);
-            break;
-          }
-        }
-        break;
-      }
-    }
+    corner_pose_global = robot_pose;
+    corner_pose_robot = robot_pose;
   }
 
   // Apply external speed limit (if any) before planning
@@ -1916,12 +1825,41 @@ void TebLocalPlannerROS::configure(
   std::vector<geometry_msgs::msg::PoseStamped> transformed_plan;
   int goal_idx;
   geometry_msgs::msg::TransformStamped tf_plan_to_global;
+  int prune_row_from_idx = -1;
+  int prune_row_to_idx = -1;
+  PathWindowKeyPoints path_key_points;
   if (!transformGlobalPlan(global_plan_, robot_pose, *costmap_, cfg_->map_frame, cfg_->trajectory.max_global_plan_lookahead_dist,
-                          transformed_plan, &goal_idx, &tf_plan_to_global))
+                          transformed_plan, &goal_idx, &tf_plan_to_global,
+                          &prune_row_from_idx, &prune_row_to_idx, &path_key_points))
   {
     throw nav2_core::PlannerException(
       std::string("Could not transform the global plan to the frame of the controller")
     );
+  }
+  if (prune_row_from_idx >= 0 && prune_row_to_idx >= prune_row_from_idx &&
+      prune_row_to_idx < static_cast<int>(global_plan_.size()))
+  {
+    const int erase_count = prune_row_to_idx - prune_row_from_idx + 1;
+    RCLCPP_WARN(
+      logger_,
+      "transformGlobalPlan: abandoning current row (no safe pose or arrived at "
+      "row terminal), erasing global_plan_[%d, %d] (%d poses); U-turn/next row kept",
+      prune_row_from_idx, prune_row_to_idx, erase_count);
+    global_plan_.erase(
+      global_plan_.begin() + prune_row_from_idx,
+      global_plan_.begin() + prune_row_to_idx + 1);
+    if (goal_idx > prune_row_to_idx) {
+      goal_idx -= erase_count;
+    } else if (goal_idx >= prune_row_from_idx) {
+      if (prune_row_from_idx < static_cast<int>(global_plan_.size())) {
+        goal_idx = prune_row_from_idx;
+      } else {
+        goal_idx = std::max(0, static_cast<int>(global_plan_.size()) - 1);
+      }
+    }
+  }
+  if (visualization_) {
+    visualization_->publishPathKeyPoints(path_key_points);
   }
   // Check if corner has obstacle and prune path before corner if needed
   bool corner_has_obstacle = false;
@@ -3488,6 +3426,92 @@ void TebLocalPlannerROS::updateWallLineVec(
  //}
        
        
+bool TebLocalPlannerROS::pruneArrivedLockedCorner(
+  const geometry_msgs::msg::PoseStamped & robot_pose)
+{
+  if (global_plan_.size() < 3 || cfg_ == nullptr || tf_ == nullptr) {
+    return false;
+  }
+
+  geometry_msgs::msg::PoseStamped robot_in_plan;
+  try {
+    geometry_msgs::msg::TransformStamped global_to_plan_transform = tf_->lookupTransform(
+      global_plan_.front().header.frame_id,
+      robot_pose.header.frame_id,
+      tf2::TimePointZero,
+      tf2::durationFromSec(0.5));
+    tf2::doTransform(robot_pose, robot_in_plan, global_to_plan_transform);
+  } catch (const tf2::TransformException & ex) {
+    RCLCPP_WARN_THROTTLE(
+      logger_, *clock_, 2000,
+      "pruneArrivedLockedCorner: transform robot to plan frame failed: %s", ex.what());
+    return false;
+  }
+
+  double sq_dist_threshold = 1e10;
+  if (costmap_ != nullptr) {
+    double dist_threshold = std::max(
+      costmap_->getSizeInCellsX() * costmap_->getResolution() / 2.0,
+      costmap_->getSizeInCellsY() * costmap_->getResolution() / 2.0);
+    dist_threshold *= 0.85;
+    sq_dist_threshold = dist_threshold * dist_threshold;
+  }
+
+  const double thresh_deg = static_cast<double>(cfg_->trajectory.theta_threshold);
+  const double search_arc = cfg_->trajectory.max_global_plan_lookahead_dist > 1e-9
+    ? (cfg_->trajectory.max_global_plan_lookahead_dist + 1.0)
+    : -1.0;
+  const int closest_raw = findEuclideanClosestPlanIdx(
+    global_plan_, robot_in_plan, sq_dist_threshold,
+    cfg_->trajectory.transform_global_plan_closest_search_max_accum_dist);
+  const int closest_idx = clampClosestIdxBeforeUnprunedCorner(
+    global_plan_, robot_in_plan, closest_raw, thresh_deg);
+  const int corner_idx = lockedCornerIdx(
+    global_plan_, closest_idx, thresh_deg, search_arc);
+  const int n_plan = static_cast<int>(global_plan_.size());
+  const double arrive_dist = cfg_->trajectory.last_corner_record_distance;
+  const double arc_to_c = (corner_idx >= 0)
+    ? planArcLength(global_plan_, closest_idx, corner_idx)
+    : -1.0;
+  const double angle_deg = (corner_idx >= 0)
+    ? polylineVertexAngleDeg(global_plan_, corner_idx)
+    : 180.0;
+
+  const char * skip_reason = nullptr;
+  bool arrived = false;
+  if (corner_idx < 0) {
+    skip_reason = "no_corner";
+  } else if (corner_idx >= n_plan - 1) {
+    skip_reason = "no_residual";
+  } else if (arrive_dist <= 1e-9) {
+    skip_reason = "arrive_dist_disabled";
+  } else if (arc_to_c > arrive_dist + 1e-9) {
+    skip_reason = "arc_to_c";
+  } else {
+    arrived = true;
+  }
+
+  RCLCPP_INFO_THROTTLE(
+    logger_, *clock_, 2000,
+    "[lock_corner] closest_raw=%d closest=%d C=%d angle=%.2f arc_to_c=%.3f "
+    "arrive=%.3f arrived=%d reason=%s",
+    closest_raw, closest_idx, corner_idx, angle_deg, arc_to_c, arrive_dist,
+    arrived ? 1 : 0, skip_reason != nullptr ? skip_reason : "ok");
+
+  if (!arrived) {
+    return false;
+  }
+
+  global_plan_.erase(
+    global_plan_.begin(),
+    global_plan_.begin() + corner_idx + 1);
+  RCLCPP_INFO(
+    logger_,
+    "prune_arrived_corner idx=%d erase=[0,%d] remain=%zu arc_to_c=%.3f",
+    corner_idx, corner_idx, global_plan_.size(), arc_to_c);
+  return true;
+}
+
  bool TebLocalPlannerROS::pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& global_pose, std::vector<geometry_msgs::msg::PoseStamped>& global_plan, double dist_behind_robot, double max_prune_dist)
  {
    
@@ -3557,7 +3581,7 @@ void TebLocalPlannerROS::updateWallLineVec(
          while (yaw_diff > M_PI) yaw_diff -= 2.0 * M_PI;
          while (yaw_diff < -M_PI) yaw_diff += 2.0 * M_PI;
 
-         if (std::fabs(yaw_diff) <= prune_angle_threshold_)
+         if (std::fabs(yaw_diff) <= cfg_->trajectory.prune_angle_threshold * M_PI / 180.0)
          {
            erase_end = it;
            break;
@@ -3600,6 +3624,41 @@ bool TebLocalPlannerROS::globalPlanPoseFootprintFreeInControllerFrame(
 
   const dwb_critics::Footprint oriented_footprint =
     dwb_critics::getOrientedFootprint(pose2d, footprint_spec_);
+  return orientedFootprintNavigableOnPartialCostmap(pose2d, oriented_footprint);
+}
+
+std::vector<geometry_msgs::msg::Point> TebLocalPlannerROS::lateralPaddedFootprintSpec() const
+{
+  std::vector<geometry_msgs::msg::Point> footprint = footprint_spec_;
+  if (footprint.size() < 3) {
+    return footprint;
+  }
+  const double margin = (cfg_ != nullptr) ? cfg_->obstacles.min_obstacle_dist : 0.0;
+  if (margin <= 1e-9) {
+    return footprint;
+  }
+  for (auto & p : footprint) {
+    if (p.y > 1e-9) {
+      p.y += margin;
+    } else if (p.y < -1e-9) {
+      p.y -= margin;
+    }
+  }
+  return footprint;
+}
+
+bool TebLocalPlannerROS::globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
+  const geometry_msgs::msg::PoseStamped& pose_plan_frame,
+  const geometry_msgs::msg::TransformStamped& plan_to_global_transform) const
+{
+  geometry_msgs::msg::PoseStamped pose_global;
+  tf2::doTransform(pose_plan_frame, pose_global, plan_to_global_transform);
+  geometry_msgs::msg::Pose2D pose2d;
+  pose2d.x = pose_global.pose.position.x;
+  pose2d.y = pose_global.pose.position.y;
+  pose2d.theta = tf2::getYaw(pose_global.pose.orientation);
+  const dwb_critics::Footprint oriented_footprint =
+    dwb_critics::getOrientedFootprint(pose2d, lateralPaddedFootprintSpec());
   return orientedFootprintNavigableOnPartialCostmap(pose2d, oriented_footprint);
 }
 
@@ -3693,8 +3752,8 @@ bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
 {
   
   last_pose_plan_frame_inout = original_last_pose_plan_frame;
-  if (globalPlanPoseFootprintFreeInControllerFrame(
-      original_last_pose_plan_frame, plan_to_global_transform, nullptr))
+  if (globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
+      original_last_pose_plan_frame, plan_to_global_transform))
   {
     return true;
   }
@@ -3734,8 +3793,8 @@ bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
       geometry_msgs::msg::PoseStamped search_goal = original_last_pose_plan_frame;
       search_goal.pose.position.x += goal_search_x;
       search_goal.pose.position.y += goal_search_y;
-      if (!globalPlanPoseFootprintFreeInControllerFrame(
-          search_goal, plan_to_global_transform, nullptr))
+      if (!globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
+          search_goal, plan_to_global_transform))
       {
         continue;
       }
@@ -3781,36 +3840,252 @@ bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
 
 namespace {
 
-int computeLastIdxAfterExtension(
-  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
-  const int from_idx,
-  const double extend_arc_m)
+double yawAbsDiff(const double yaw_a, const double yaw_b)
 {
-  
-  const int goal_idx = static_cast<int>(plan.size()) - 1;
-  if (from_idx >= goal_idx || extend_arc_m <= 1e-9) {
-    return goal_idx;
+  double d = yaw_b - yaw_a;
+  while (d > M_PI) {
+    d -= 2.0 * M_PI;
   }
-  double accum = 0.0;
-  int new_last = from_idx;
-  for (int k = from_idx; k < goal_idx; ++k) {
-    accum += teb_local_planner::distance_points2d(
-      plan[static_cast<size_t>(k)].pose.position,
-      plan[static_cast<size_t>(k + 1)].pose.position);
-    new_last = k + 1;
-    if (accum >= extend_arc_m - 1e-9) {
+  while (d < -M_PI) {
+    d += 2.0 * M_PI;
+  }
+  return std::fabs(d);
+}
+
+// Interior polyline angle at idx using vertices idx-span, idx, idx+span (same as corner detection).
+// Straight ≈ 180°, sharp turn is smaller. Returns 180 if the vertex cannot be evaluated.
+double polylineVertexAngleDeg(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const int idx,
+  const int span)
+{
+  const int n = static_cast<int>(plan.size());
+  const int ia = idx - span;
+  const int ic = idx + span;
+  if (span < 1 || ia < 0 || ic >= n || idx < 0 || idx >= n) {
+    return 180.0;
+  }
+  const auto & p0 = plan[static_cast<size_t>(idx)].pose.position;
+  const auto & p1 = plan[static_cast<size_t>(ia)].pose.position;
+  const auto & p2 = plan[static_cast<size_t>(ic)].pose.position;
+  const double dx_a = p0.x - p1.x;
+  const double dy_a = p0.y - p1.y;
+  const double dx_b = p2.x - p0.x;
+  const double dy_b = p2.y - p0.y;
+  const double dx_c = p2.x - p1.x;
+  const double dy_c = p2.y - p1.y;
+  const double length_a = std::sqrt(dx_a * dx_a + dy_a * dy_a);
+  const double length_b = std::sqrt(dx_b * dx_b + dy_b * dy_b);
+  const double length_c = std::sqrt(dx_c * dx_c + dy_c * dy_c);
+  constexpr double min_segment_length = 1e-6;
+  if (length_a < min_segment_length || length_b < min_segment_length) {
+    return 180.0;
+  }
+  double cos_theta =
+    (length_a * length_a + length_b * length_b - length_c * length_c) /
+    (2.0 * length_a * length_b);
+  cos_theta = std::max(-1.0, std::min(1.0, cos_theta));
+  return std::acos(cos_theta) * 180.0 / M_PI;
+}
+
+int lastIdxWithinArc(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const int start_idx,
+  const double max_arc)
+{
+  const int n = static_cast<int>(plan.size());
+  if (start_idx < 0 || start_idx >= n) {
+    return start_idx;
+  }
+  if (max_arc < 0.0) {
+    return n - 1;
+  }
+  double acc = 0.0;
+  int idx = start_idx;
+  for (int j = start_idx; j < n; ++j) {
+    idx = j;
+    if (j > start_idx) {
+      acc += distance_points2d(
+        plan[static_cast<size_t>(j - 1)].pose.position,
+        plan[static_cast<size_t>(j)].pose.position);
+    }
+    if (acc + 1e-9 >= max_arc) {
       break;
     }
   }
-  return new_last;
+  return idx;
+}
+
+int findFirstSharpCornerIdx(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const int start_idx,
+  const double thresh_deg,
+  const double max_arc)
+{
+  const int n = static_cast<int>(plan.size());
+  if (start_idx < 0 || start_idx >= n) {
+    return -1;
+  }
+  double acc = 0.0;
+  for (int j = start_idx + 1; j < n; ++j) {
+    acc += distance_points2d(
+      plan[static_cast<size_t>(j - 1)].pose.position,
+      plan[static_cast<size_t>(j)].pose.position);
+    if (max_arc >= 0.0 && acc > max_arc + 1e-9) {
+      break;
+    }
+    if (polylineVertexAngleDeg(plan, j) < thresh_deg) {
+      return j;
+    }
+  }
+  return -1;
+}
+
+int findCurrentRowStartIdx(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const int start_idx,
+  const double thresh_deg)
+{
+  const int n = static_cast<int>(plan.size());
+  if (start_idx < 0 || start_idx >= n) {
+    return start_idx;
+  }
+  for (int j = start_idx - 1; j >= 0; --j) {
+    if (polylineVertexAngleDeg(plan, j) < thresh_deg) {
+      return std::min(j + 1, start_idx);
+    }
+  }
+  return 0;
+}
+
+double planArcLength(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const int from_idx,
+  const int to_idx)
+{
+  const int n = static_cast<int>(plan.size());
+  if (from_idx < 0 || to_idx < from_idx || to_idx >= n) {
+    return 0.0;
+  }
+  double acc = 0.0;
+  for (int j = from_idx + 1; j <= to_idx; ++j) {
+    acc += distance_points2d(
+      plan[static_cast<size_t>(j - 1)].pose.position,
+      plan[static_cast<size_t>(j)].pose.position);
+  }
+  return acc;
+}
+
+int findEuclideanClosestPlanIdx(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const double sq_dist_threshold,
+  const double max_accum_closest_search)
+{
+  const int n = static_cast<int>(plan.size());
+  if (n <= 0) {
+    return 0;
+  }
+  int i = 0;
+  double sq_dist = 1e10;
+  bool robot_reached = false;
+  double accum_path_from_plan_start = 0.0;
+  for (int j = 0; j < n; ++j) {
+    if (j > 0) {
+      accum_path_from_plan_start += distance_points2d(
+        plan[static_cast<size_t>(j - 1)].pose.position,
+        plan[static_cast<size_t>(j)].pose.position);
+    }
+    if (max_accum_closest_search > 1e-9 &&
+      accum_path_from_plan_start > max_accum_closest_search + 1e-9) {
+      break;
+    }
+    const double x_diff = robot_pose.pose.position.x - plan[static_cast<size_t>(j)].pose.position.x;
+    const double y_diff = robot_pose.pose.position.y - plan[static_cast<size_t>(j)].pose.position.y;
+    const double new_sq_dist = x_diff * x_diff + y_diff * y_diff;
+    if (new_sq_dist > sq_dist_threshold) {
+      break;
+    }
+    if (robot_reached && new_sq_dist > sq_dist) {
+      break;
+    }
+    if (new_sq_dist < sq_dist) {
+      sq_dist = new_sq_dist;
+      i = j;
+      if (sq_dist < 0.25) {
+        robot_reached = true;
+      }
+    }
+  }
+  return i;
+}
+
+int clampClosestIdxBeforeUnprunedCorner(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const int closest_idx,
+  const double thresh_deg)
+{
+  const int n = static_cast<int>(plan.size());
+  if (closest_idx <= 0 || closest_idx >= n) {
+    return std::max(0, std::min(closest_idx, std::max(0, n - 1)));
+  }
+  int first_corner = -1;
+  for (int j = 1; j < closest_idx; ++j) {
+    if (polylineVertexAngleDeg(plan, j) < thresh_deg) {
+      first_corner = j;
+      break;
+    }
+  }
+  if (first_corner < 0) {
+    return closest_idx;
+  }
+  int i = 0;
+  double sq_dist = 1e10;
+  for (int j = 0; j <= first_corner; ++j) {
+    const double x_diff =
+      robot_pose.pose.position.x - plan[static_cast<size_t>(j)].pose.position.x;
+    const double y_diff =
+      robot_pose.pose.position.y - plan[static_cast<size_t>(j)].pose.position.y;
+    const double new_sq_dist = x_diff * x_diff + y_diff * y_diff;
+    if (new_sq_dist < sq_dist) {
+      sq_dist = new_sq_dist;
+      i = j;
+    }
+  }
+  return i;
+}
+
+int lockedCornerIdx(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const int closest_idx,
+  const double thresh_deg,
+  const double max_arc)
+{
+  int search_start = closest_idx;
+  if (closest_idx > 0 &&
+      polylineVertexAngleDeg(plan, closest_idx) < thresh_deg) {
+    search_start = closest_idx - 1;
+  }
+  return findFirstSharpCornerIdx(plan, search_start, thresh_deg, max_arc);
 }
 
 }  // namespace
 
 bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::msg::PoseStamped>& global_plan,
                    const geometry_msgs::msg::PoseStamped& global_pose, const nav2_costmap_2d::Costmap2D& costmap, const std::string& global_frame, double max_plan_length,
-                   std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan, int* current_goal_idx, geometry_msgs::msg::TransformStamped* tf_plan_to_global) const
+                   std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan, int* current_goal_idx, geometry_msgs::msg::TransformStamped* tf_plan_to_global,
+                   int* prune_row_from_idx, int* prune_row_to_idx, PathWindowKeyPoints* key_points) const
  {
+   if (prune_row_from_idx) {
+     *prune_row_from_idx = -1;
+   }
+   if (prune_row_to_idx) {
+     *prune_row_to_idx = -1;
+   }
+   if (key_points) {
+     *key_points = PathWindowKeyPoints();
+   }
    
    // this method is a slightly modified version of base_local_planner/goal_functions.h
  
@@ -3899,46 +4174,17 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
  
      int i = 0;
      double sq_dist_threshold = dist_threshold * dist_threshold;
-     double sq_dist = 1e10;
-     
-    //we need to loop to a point on the plan that is within a certain distance of the robot
-    bool robot_reached = false;
-    double accum_path_from_plan_start = 0.0;
-    const double max_accum_closest_search =
-      cfg_->trajectory.transform_global_plan_closest_search_max_accum_dist;
-    for (int j = 0; j < static_cast<int>(global_plan.size()); ++j) {
-      if (j > 0) {
-        accum_path_from_plan_start += distance_points2d(
-          global_plan[static_cast<size_t>(j - 1)].pose.position,
-          global_plan[static_cast<size_t>(j)].pose.position);
-      }
-      if (max_accum_closest_search > 1e-9 &&
-        accum_path_from_plan_start > max_accum_closest_search + 1e-9) {
-        break;
-      }
-      double x_diff = robot_pose.pose.position.x - global_plan[j].pose.position.x;
-      double y_diff = robot_pose.pose.position.y - global_plan[j].pose.position.y;
-      double new_sq_dist = x_diff * x_diff + y_diff * y_diff;
-      if (new_sq_dist > sq_dist_threshold) {
-        break;  // force stop if we have reached the costmap border
-      }
 
-      if (robot_reached && new_sq_dist > sq_dist) {
-        break;
-      }
+    const double corner_thresh_deg =
+      static_cast<double>(cfg_->trajectory.theta_threshold);
+    i = findEuclideanClosestPlanIdx(
+      global_plan, robot_pose, sq_dist_threshold,
+      cfg_->trajectory.transform_global_plan_closest_search_max_accum_dist);
+    i = clampClosestIdxBeforeUnprunedCorner(
+      global_plan, robot_pose, i, corner_thresh_deg);
 
-      if (new_sq_dist < sq_dist) {  // find closest distance
-        sq_dist = new_sq_dist;
-        i = j;
-        if (sq_dist < 0.25) {  // 2.5 cm to the robot; take the immediate local minima; if it's not the global
-          robot_reached = true;  // minima, probably means that there's a loop in the path, and so we prefer this
-        }
-      }
-    }
- 
     const int n_plan = static_cast<int>(global_plan.size());
     const int global_goal_idx = n_plan - 1;
-    int last_idx = global_goal_idx;
     geometry_msgs::msg::PoseStamped effective_last_plan_pose = global_plan.back();
     auto planPoseAt = [&](int idx) -> const geometry_msgs::msg::PoseStamped & {
       if (idx == global_goal_idx) {
@@ -3947,89 +4193,356 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
       return global_plan[static_cast<size_t>(idx)];
     };
 
-     geometry_msgs::msg::PoseStamped newer_pose;
-     
-     const int segment_start_idx = i;
-     double arc_from_segment_start = 0.0;
+    geometry_msgs::msg::PoseStamped newer_pose;
 
-     //now we'll transform until points are outside of our distance threshold
-     while (i < n_plan && i <= last_idx &&
-       (max_plan_length <= 0 || arc_from_segment_start <= max_plan_length))
-     {
-       tf2::doTransform(planPoseAt(i), newer_pose, plan_to_global_transform);
-       transformed_plan.push_back(newer_pose);
+    const int segment_start_idx = i;
 
-       if (i > segment_start_idx && max_plan_length > 0) {
-         arc_from_segment_start += distance_points2d(
-           planPoseAt(i - 1).pose.position, planPoseAt(i).pose.position);
-       }
+    const double costmap_size_x =
+      costmap.getSizeInCellsX() * costmap.getResolution();
+    const double costmap_size_y =
+      costmap.getSizeInCellsY() * costmap.getResolution();
+    const double costmap_span = std::max(costmap_size_x, costmap_size_y);
+    const double span_scale =
+      cfg_->trajectory.transform_global_plan_costmap_span_scale;
+    const bool has_span_limit = span_scale > 1e-9;
+    const double arc_limit = has_span_limit
+      ? (span_scale * costmap_span)
+      : std::numeric_limits<double>::infinity();
+    const double corner_search_arc = has_span_limit ? arc_limit : -1.0;
 
-       const bool pose_free = globalPlanPoseFootprintFreeInControllerFrame(
-         planPoseAt(i), plan_to_global_transform, nullptr);
-       if (!pose_free && n_plan > 0 && max_plan_length > 0) {
-         const double remaining_budget = max_plan_length - arc_from_segment_start;
-         const double near_end_thresh =
-           cfg_->trajectory.transformed_plan_collision_pose_to_end_distance;
-         if (near_end_thresh > 1e-9 && remaining_budget < near_end_thresh) {
-           const double target_max_plan_length = arc_from_segment_start + near_end_thresh;
-           max_plan_length = std::min(target_max_plan_length, costmap.getSizeInMetersX());
-           const double extend_arc_along_plan = max_plan_length - arc_from_segment_start;
-           const int new_last_idx = computeLastIdxAfterExtension(
-             global_plan, i, extend_arc_along_plan);
-           last_idx = std::max(last_idx, new_last_idx);
-           last_idx = std::min(last_idx, global_goal_idx);
+    const int corner_idx = findFirstSharpCornerIdx(
+      global_plan, segment_start_idx, corner_thresh_deg, corner_search_arc);
+    const int span_end_idx = lastIdxWithinArc(
+      global_plan, segment_start_idx, corner_search_arc);
+    const int row_end_idx = (corner_idx >= 0) ? corner_idx : span_end_idx;
 
-           if (last_idx == global_goal_idx && i == global_goal_idx) {
-             if (!transformed_plan.empty()) {
-               transformed_plan.pop_back();
-             }
-             RCLCPP_WARN(
-               logger_,
-               "transformGlobalPlan: last path point footprint not free in local costmap; "
-               "running plan-frame goal search (no PlannerException).");
-             const bool adjusted_ok = adjustOccupiedGlobalPlanGoalInPlace(
-               global_plan.back(), plan_to_global_transform, effective_last_plan_pose);
-             if (!adjusted_ok) {
-               RCLCPP_ERROR(
-                 logger_,
-                 "transformGlobalPlan: last goal search did not find a free pose; keeping last plan pose.");
-             }
-             tf2::doTransform(planPoseAt(global_goal_idx), newer_pose, plan_to_global_transform);
-             transformed_plan.push_back(newer_pose);
-           }
-         }
-       }
-       ++i;
-     }
-     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[transformGlobalPlan]: transformed look forward distance: %.3f", max_plan_length);
+    double clip_length = max_plan_length;
+    if (has_span_limit) {
+      if (clip_length > 1e-9) {
+        clip_length = std::min(clip_length, arc_limit);
+      } else {
+        clip_length = arc_limit;
+      }
+    }
+    const int path_lookahead_idx = lastIdxWithinArc(
+      global_plan, segment_start_idx,
+      (clip_length > 1e-9) ? clip_length : -1.0);
+    const int lookahead_idx = std::min(path_lookahead_idx, row_end_idx);
+
+    bool corner_in_horizon = false;
+    if (corner_idx >= 0) {
+      double acc_c = 0.0;
+      for (int j = segment_start_idx + 1; j <= corner_idx && j < n_plan; ++j) {
+        acc_c += distance_points2d(
+          global_plan[static_cast<size_t>(j - 1)].pose.position,
+          global_plan[static_cast<size_t>(j)].pose.position);
+      }
+      const double horizon = (clip_length > 1e-9)
+        ? (clip_length + 1.0)
+        : std::numeric_limits<double>::infinity();
+      corner_in_horizon = acc_c <= horizon + 1e-9;
+    }
+
+    const double to_end_dist =
+      cfg_->trajectory.transformed_plan_collision_pose_to_end_distance;
+    const double front_dist =
+      cfg_->trajectory.transformed_plan_collision_pose_safe_distance_front;
+    const double back_dist =
+      cfg_->trajectory.transformed_plan_collision_pose_safe_distance_back;
+
+    int end_idx = lookahead_idx;
+    int last_occ = -1;
+    int lock_mode = 0;  // 0=none, 1=geometric, 2=occupancy
+    bool need_prune_remaining_row = false;
+    bool prune_include_start = false;
+    std::vector<char> occupied;
+    std::vector<double> arc_from_start;
+
+    const int row_count = row_end_idx - segment_start_idx + 1;
+    occupied.assign(static_cast<size_t>(std::max(row_count, 1)), 0);
+    arc_from_start.assign(static_cast<size_t>(std::max(row_count, 1)), 0.0);
+    for (int j = segment_start_idx + 1; j <= row_end_idx; ++j) {
+      arc_from_start[static_cast<size_t>(j - segment_start_idx)] =
+        arc_from_start[static_cast<size_t>(j - 1 - segment_start_idx)] +
+        distance_points2d(
+          global_plan[static_cast<size_t>(j - 1)].pose.position,
+          global_plan[static_cast<size_t>(j)].pose.position);
+    }
+    for (int j = segment_start_idx; j <= row_end_idx; ++j) {
+      occupied[static_cast<size_t>(j - segment_start_idx)] =
+        !globalPlanPoseFootprintFreeInControllerFrame(
+          global_plan[static_cast<size_t>(j)], plan_to_global_transform, nullptr)
+          ? 1 : 0;
+    }
+    int last_occ_in_window = -1;
+    for (int j = lookahead_idx; j >= segment_start_idx; --j) {
+      if (occupied[static_cast<size_t>(j - segment_start_idx)]) {
+        last_occ_in_window = j;
+        break;
+      }
+    }
+    for (int j = row_end_idx; j >= segment_start_idx; --j) {
+      if (occupied[static_cast<size_t>(j - segment_start_idx)]) {
+        last_occ = j;
+        break;
+      }
+    }
+
+    const double arc_look =
+      arc_from_start[static_cast<size_t>(lookahead_idx - segment_start_idx)];
+    const bool occ_near_tail =
+      last_occ_in_window >= 0 && to_end_dist > 1e-9 &&
+      (arc_look -
+        arc_from_start[static_cast<size_t>(last_occ_in_window - segment_start_idx)]) +
+        1e-9 < to_end_dist;
+
+    auto candidate_is_safe = [&](const int k) -> bool {
+      const int ki = k - segment_start_idx;
+      if (occupied[static_cast<size_t>(ki)]) {
+        return false;
+      }
+      const double arc_k = arc_from_start[static_cast<size_t>(ki)];
+      double front_clear = std::numeric_limits<double>::infinity();
+      double back_clear = std::numeric_limits<double>::infinity();
+      for (int j = segment_start_idx; j <= row_end_idx; ++j) {
+        if (!occupied[static_cast<size_t>(j - segment_start_idx)]) {
+          continue;
+        }
+        const double arc_j =
+          arc_from_start[static_cast<size_t>(j - segment_start_idx)];
+        if (j > k) {
+          front_clear = std::min(front_clear, arc_j - arc_k);
+        } else if (j < k) {
+          back_clear = std::min(back_clear, arc_k - arc_j);
+        }
+      }
+      if (front_dist > 1e-9 && front_clear + 1e-9 < front_dist) {
+        return false;
+      }
+      if (back_dist > 1e-9 && back_clear + 1e-9 < back_dist) {
+        return false;
+      }
+      return true;
+    };
+
+    if (occ_near_tail) {
+      lock_mode = 2;
+      const double row_arc =
+        arc_from_start[static_cast<size_t>(row_end_idx - segment_start_idx)];
+      const bool has_path_after_row = row_end_idx < global_goal_idx;
+      const double free_tail = (last_occ < row_end_idx)
+        ? (row_arc - arc_from_start[static_cast<size_t>(last_occ - segment_start_idx)])
+        : 0.0;
+      if (free_tail + 1e-9 >= to_end_dist && to_end_dist > 1e-9) {
+        int tail_idx = last_occ;
+        double acc = 0.0;
+        for (int j = last_occ + 1; j <= row_end_idx; ++j) {
+          acc += distance_points2d(
+            global_plan[static_cast<size_t>(j - 1)].pose.position,
+            global_plan[static_cast<size_t>(j)].pose.position);
+          tail_idx = j;
+          if (acc + 1e-9 >= to_end_dist) {
+            break;
+          }
+        }
+        end_idx = tail_idx;
+      } else {
+        int safe_idx = -1;
+        if (front_dist > 1e-9 || back_dist > 1e-9) {
+          for (int j = row_end_idx; j >= segment_start_idx; --j) {
+            if (candidate_is_safe(j)) {
+              safe_idx = j;
+              break;
+            }
+          }
+        }
+        if (safe_idx >= 0) {
+          end_idx = safe_idx;
+          const double arrive_dist =
+            cfg_->trajectory.transformed_plan_row_terminal_arrive_distance;
+          const double remain_to_safe = (safe_idx >= segment_start_idx)
+            ? arc_from_start[static_cast<size_t>(safe_idx - segment_start_idx)]
+            : 0.0;
+          const double eucl_to_safe = distance_points2d(
+            robot_pose.pose.position,
+            global_plan[static_cast<size_t>(safe_idx)].pose.position);
+          const bool arrived =
+            (arrive_dist > 1e-9) &&
+            (segment_start_idx >= safe_idx ||
+             remain_to_safe <= arrive_dist + 1e-9 ||
+             eucl_to_safe <= arrive_dist + 1e-9);
+          if (arrived && has_path_after_row) {
+            need_prune_remaining_row = true;
+            prune_include_start = true;
+          }
+        } else {
+          need_prune_remaining_row = true;
+          prune_include_start = has_path_after_row;
+          end_idx = segment_start_idx;
+          for (int j = row_end_idx; j >= segment_start_idx; --j) {
+            if (!occupied[static_cast<size_t>(j - segment_start_idx)]) {
+              end_idx = j;
+              break;
+            }
+          }
+        }
+      }
+      end_idx = std::min(end_idx, row_end_idx);
+    } else if (corner_in_horizon && last_occ_in_window < 0) {
+      int last_occ_to_corner = -1;
+      for (int j = corner_idx; j >= segment_start_idx; --j) {
+        if (occupied[static_cast<size_t>(j - segment_start_idx)]) {
+          last_occ_to_corner = j;
+          break;
+        }
+      }
+      if (last_occ_to_corner < 0) {
+        lock_mode = 1;
+        end_idx = corner_idx;
+      }
+    }
+
+    {
+      auto terminal_laterally_free = [&](const int idx) -> bool {
+        if (idx < segment_start_idx || idx > row_end_idx) {
+          return false;
+        }
+        return globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
+          planPoseAt(idx), plan_to_global_transform);
+      };
+      if (!terminal_laterally_free(end_idx)) {
+        int found_idx = -1;
+        for (int j = end_idx + 1; j <= row_end_idx; ++j) {
+          if (terminal_laterally_free(j)) {
+            found_idx = j;
+            break;
+          }
+        }
+        if (found_idx < 0) {
+          for (int j = end_idx - 1; j >= segment_start_idx; --j) {
+            if (terminal_laterally_free(j)) {
+              found_idx = j;
+              break;
+            }
+          }
+        }
+        if (found_idx >= 0) {
+          RCLCPP_INFO_THROTTLE(
+            logger_, *(clock_), 2000,
+            "transformGlobalPlan: lateral-padded terminal %d -> %d (margin=%.3f)",
+            end_idx, found_idx,
+            cfg_ != nullptr ? cfg_->obstacles.min_obstacle_dist : 0.0);
+          end_idx = found_idx;
+        } else {
+          RCLCPP_WARN_THROTTLE(
+            logger_, *(clock_), 2000,
+            "transformGlobalPlan: no lateral-padded free terminal on row [%d,%d]; pruning",
+            segment_start_idx, row_end_idx);
+          need_prune_remaining_row = true;
+          prune_include_start = true;
+          end_idx = segment_start_idx;
+        }
+      }
+    }
+
+    for (int k = segment_start_idx; k <= end_idx; ++k) {
+      if (k == global_goal_idx)
+      {
+        const bool goal_occupied =
+          !globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
+            planPoseAt(k), plan_to_global_transform);
+        if (goal_occupied)
+        {
+          RCLCPP_WARN(
+            logger_,
+            "transformGlobalPlan: last path point footprint not free in local costmap; "
+            "running plan-frame goal search (no PlannerException).");
+          const bool adjusted_ok = adjustOccupiedGlobalPlanGoalInPlace(
+            global_plan.back(), plan_to_global_transform, effective_last_plan_pose);
+          if (!adjusted_ok) {
+            RCLCPP_ERROR(
+              logger_,
+              "transformGlobalPlan: last goal search did not find a free pose; keeping last plan pose.");
+          }
+        }
+      }
+      tf2::doTransform(planPoseAt(k), newer_pose, plan_to_global_transform);
+      transformed_plan.push_back(newer_pose);
+    }
+
+    if (need_prune_remaining_row && prune_row_from_idx && prune_row_to_idx) {
+      int from_idx = segment_start_idx + 1;
+      if (prune_include_start) {
+        from_idx = findCurrentRowStartIdx(
+          global_plan, segment_start_idx, corner_thresh_deg);
+      }
+      if (from_idx <= row_end_idx) {
+        *prune_row_from_idx = from_idx;
+        *prune_row_to_idx = row_end_idx;
+      }
+    }
+
+    i = end_idx + 1;
+    RCLCPP_INFO_THROTTLE(
+      logger_, *(clock_), 2000,
+      "[transformGlobalPlan]: look_fwd=%.3f span_lim=%.3f clip=%.3f corner=%d "
+      "in_horizon=%d lock=%d row_end=%d last_occ=%d end=%d prune_remaining=%d "
+      "prune_from=%d prune_to=%d",
+      max_plan_length, has_span_limit ? arc_limit : -1.0, clip_length,
+      corner_idx, corner_in_horizon ? 1 : 0, lock_mode,
+      row_end_idx, last_occ, end_idx, need_prune_remaining_row ? 1 : 0,
+      prune_row_from_idx ? *prune_row_from_idx : -1,
+      prune_row_to_idx ? *prune_row_to_idx : -1);
+
+    if (key_points)
+    {
+      *key_points = PathWindowKeyPoints();
+      key_points->frame_id = global_frame;
+      key_points->lock_mode = lock_mode;
+      key_points->closest_idx = segment_start_idx;
+      key_points->corner_idx = corner_idx;
+      key_points->end_idx = end_idx;
+      key_points->last_occ_idx = last_occ;
+      key_points->row_end_idx = row_end_idx;
+      key_points->prune_from_idx = prune_row_from_idx ? *prune_row_from_idx : -1;
+      key_points->prune_to_idx = prune_row_to_idx ? *prune_row_to_idx : -1;
+      auto fill_key = [&](const int idx, geometry_msgs::msg::Point & out) -> bool {
+        if (idx < 0 || idx >= n_plan) {
+          return false;
+        }
+        geometry_msgs::msg::PoseStamped pose_out;
+        tf2::doTransform(planPoseAt(idx), pose_out, plan_to_global_transform);
+        out = pose_out.pose.position;
+        if (!pose_out.header.frame_id.empty()) {
+          key_points->frame_id = pose_out.header.frame_id;
+        }
+        return true;
+      };
+      key_points->has_closest = fill_key(segment_start_idx, key_points->closest);
+      key_points->has_corner = fill_key(corner_idx, key_points->corner);
+      key_points->has_terminal = fill_key(end_idx, key_points->terminal);
+      key_points->has_last_occ = fill_key(last_occ, key_points->last_occ);
+      const bool row_end_distinct =
+        row_end_idx >= 0 && row_end_idx != corner_idx && row_end_idx != end_idx;
+      key_points->has_row_end =
+        row_end_distinct && fill_key(row_end_idx, key_points->row_end);
+      key_points->has_prune_from = fill_key(key_points->prune_from_idx, key_points->prune_from);
+      key_points->has_prune_to = fill_key(key_points->prune_to_idx, key_points->prune_to);
+    }
          
      // if we are really close to the goal (<sq_dist_threshold) and the goal is not yet reached (e.g. orientation error >>0)
      // the resulting transformed plan can be empty. In that case we explicitly inject the global goal.
      if (transformed_plan.empty())
      {
-       //如果最后一个目标点不可达，抛出异常
-       geometry_msgs::msg::PoseStamped plan_local_pose;
-       tf2::doTransform(effective_last_plan_pose, plan_local_pose, plan_to_global_transform);
-       geometry_msgs::msg::Pose2D pose2d;
-       pose2d.x = plan_local_pose.pose.position.x;
-       pose2d.y = plan_local_pose.pose.position.y;
-       pose2d.theta = tf2::getYaw(plan_local_pose.pose.orientation);
-       double cost = 0;
-       try
+       if (!globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
+           effective_last_plan_pose, plan_to_global_transform))
        {
-         cost =  costmap_model_->scorePose(pose2d, dwb_critics::getOrientedFootprint(pose2d, footprint_spec_));
-       }
-       catch(const dwb_core::IllegalTrajectoryException& e)
-       {
-         if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
-         {
-           RCLCPP_WARN(
-             logger_,
-             "transformGlobalPlan: empty transformed plan and last pose hits obstacle; "
-             "running plan-frame goal search (no PlannerException).");
-           (void)adjustOccupiedGlobalPlanGoalInPlace(
-             global_plan.back(), plan_to_global_transform, effective_last_plan_pose);
-         }
+         RCLCPP_WARN(
+           logger_,
+           "transformGlobalPlan: empty transformed plan and last pose hits obstacle; "
+           "running plan-frame goal search (no PlannerException).");
+         (void)adjustOccupiedGlobalPlanGoalInPlace(
+           global_plan.back(), plan_to_global_transform, effective_last_plan_pose);
        }
        //如果最后一个目标点不可达，抛出异常
  
@@ -4043,7 +4556,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
      else
      {
        if (current_goal_idx) {
-         *current_goal_idx = std::min(i - 1, last_idx);
+         *current_goal_idx = i - 1;
        }
      }
      

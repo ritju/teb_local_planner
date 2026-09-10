@@ -63,6 +63,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "max_global_plan_lookahead_dist", rclcpp::ParameterValue(trajectory.max_global_plan_lookahead_dist));
   declare_parameter_if_not_declared(nh, name + "." + "global_plan_prune_distance", rclcpp::ParameterValue(trajectory.global_plan_prune_distance));
   declare_parameter_if_not_declared(nh, name + "." + "global_plan_prune_max_accum_dist", rclcpp::ParameterValue(trajectory.global_plan_prune_max_accum_dist));
+  declare_parameter_if_not_declared(nh, name + "." + "prune_angle_threshold", rclcpp::ParameterValue(trajectory.prune_angle_threshold));
   declare_parameter_if_not_declared(nh, name + "." + "rough_global_plan_prune_distance", rclcpp::ParameterValue(trajectory.rough_global_plan_prune_distance));
   declare_parameter_if_not_declared(nh, name + "." + "rough_global_plan_prune_max_accum_dist", rclcpp::ParameterValue(trajectory.rough_global_plan_prune_max_accum_dist));
   declare_parameter_if_not_declared(nh, name + "." + "exact_arc_length", rclcpp::ParameterValue(trajectory.exact_arc_length));
@@ -103,6 +104,12 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
     nh, name + "." + "prune_before_corner_linear_x_threshold",
     rclcpp::ParameterValue(trajectory.prune_before_corner_linear_x_threshold));
   declare_parameter_if_not_declared(
+    nh, name + "." + "last_corner_record_distance",
+    rclcpp::ParameterValue(trajectory.last_corner_record_distance));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "last_corner_distinct_distance",
+    rclcpp::ParameterValue(trajectory.last_corner_distinct_distance));
+  declare_parameter_if_not_declared(
     nh, name + "." + "corner_approach_ray_check_enable",
     rclcpp::ParameterValue(trajectory.corner_approach_ray_check_enable));
   declare_parameter_if_not_declared(
@@ -121,6 +128,18 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(
     nh, name + "." + "transformed_plan_collision_pose_to_end_distance",
     rclcpp::ParameterValue(trajectory.transformed_plan_collision_pose_to_end_distance));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "transformed_plan_collision_pose_safe_distance_front",
+    rclcpp::ParameterValue(trajectory.transformed_plan_collision_pose_safe_distance_front));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "transformed_plan_collision_pose_safe_distance_back",
+    rclcpp::ParameterValue(trajectory.transformed_plan_collision_pose_safe_distance_back));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "transformed_plan_row_terminal_arrive_distance",
+    rclcpp::ParameterValue(trajectory.transformed_plan_row_terminal_arrive_distance));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "transform_global_plan_costmap_span_scale",
+    rclcpp::ParameterValue(trajectory.transform_global_plan_costmap_span_scale));
   declare_parameter_if_not_declared(
     nh, name + "." + "transform_global_plan_closest_search_max_accum_dist",
     rclcpp::ParameterValue(trajectory.transform_global_plan_closest_search_max_accum_dist));
@@ -415,6 +434,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "max_global_plan_lookahead_dist", trajectory.max_global_plan_lookahead_dist, trajectory.max_global_plan_lookahead_dist);
   nh->get_parameter_or(name + "." + "global_plan_prune_distance", trajectory.global_plan_prune_distance, trajectory.global_plan_prune_distance);
   nh->get_parameter_or(name + "." + "global_plan_prune_max_accum_dist", trajectory.global_plan_prune_max_accum_dist, trajectory.global_plan_prune_max_accum_dist);
+  nh->get_parameter_or(name + "." + "prune_angle_threshold", trajectory.prune_angle_threshold, trajectory.prune_angle_threshold);
   nh->get_parameter_or(name + "." + "rough_global_plan_prune_distance", trajectory.rough_global_plan_prune_distance, trajectory.rough_global_plan_prune_distance);
   nh->get_parameter_or(name + "." + "rough_global_plan_prune_max_accum_dist", trajectory.rough_global_plan_prune_max_accum_dist, trajectory.rough_global_plan_prune_max_accum_dist);
   nh->get_parameter_or(name + "." + "exact_arc_length", trajectory.exact_arc_length, trajectory.exact_arc_length);
@@ -462,6 +482,14 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
     trajectory.prune_before_corner_linear_x_threshold,
     trajectory.prune_before_corner_linear_x_threshold);
   nh->get_parameter_or(
+    name + "." + "last_corner_record_distance",
+    trajectory.last_corner_record_distance,
+    trajectory.last_corner_record_distance);
+  nh->get_parameter_or(
+    name + "." + "last_corner_distinct_distance",
+    trajectory.last_corner_distinct_distance,
+    trajectory.last_corner_distinct_distance);
+  nh->get_parameter_or(
     name + "." + "corner_approach_ray_check_enable",
     trajectory.corner_approach_ray_check_enable,
     trajectory.corner_approach_ray_check_enable);
@@ -486,6 +514,22 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
     name + "." + "transformed_plan_collision_pose_to_end_distance",
     trajectory.transformed_plan_collision_pose_to_end_distance,
     trajectory.transformed_plan_collision_pose_to_end_distance);
+  nh->get_parameter_or(
+    name + "." + "transformed_plan_collision_pose_safe_distance_front",
+    trajectory.transformed_plan_collision_pose_safe_distance_front,
+    trajectory.transformed_plan_collision_pose_safe_distance_front);
+  nh->get_parameter_or(
+    name + "." + "transformed_plan_collision_pose_safe_distance_back",
+    trajectory.transformed_plan_collision_pose_safe_distance_back,
+    trajectory.transformed_plan_collision_pose_safe_distance_back);
+  nh->get_parameter_or(
+    name + "." + "transformed_plan_row_terminal_arrive_distance",
+    trajectory.transformed_plan_row_terminal_arrive_distance,
+    trajectory.transformed_plan_row_terminal_arrive_distance);
+  nh->get_parameter_or(
+    name + "." + "transform_global_plan_costmap_span_scale",
+    trajectory.transform_global_plan_costmap_span_scale,
+    trajectory.transform_global_plan_costmap_span_scale);
   nh->get_parameter_or(
     name + "." + "transform_global_plan_closest_search_max_accum_dist",
     trajectory.transform_global_plan_closest_search_max_accum_dist,
@@ -944,6 +988,8 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.global_plan_prune_distance = parameter.as_double();
       } else if (name == node_name + ".global_plan_prune_max_accum_dist") {
         trajectory.global_plan_prune_max_accum_dist = parameter.as_double();
+      } else if (name == node_name + ".prune_angle_threshold") {
+        trajectory.prune_angle_threshold = parameter.as_double();
       } else if (name == node_name + ".rough_global_plan_prune_distance") {
         trajectory.rough_global_plan_prune_distance = parameter.as_double();
       } else if (name == node_name + ".rough_global_plan_prune_max_accum_dist") {
@@ -984,6 +1030,10 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.prune_corner_residual_distance = parameter.as_double();
       } else if (name == node_name + ".prune_before_corner_linear_x_threshold") {
         trajectory.prune_before_corner_linear_x_threshold = parameter.as_double();
+      } else if (name == node_name + ".last_corner_record_distance") {
+        trajectory.last_corner_record_distance = parameter.as_double();
+      } else if (name == node_name + ".last_corner_distinct_distance") {
+        trajectory.last_corner_distinct_distance = parameter.as_double();
       } else if (name == node_name + ".corner_approach_ray_check_enable") {
         trajectory.corner_approach_ray_check_enable = parameter.as_bool();
       } else if (name == node_name + ".corner_approach_check_sample_spacing") {
@@ -998,6 +1048,14 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.max_plan_length_extend_on_trajectory_obstacle_m = parameter.as_double();
       } else if (name == node_name + ".transformed_plan_collision_pose_to_end_distance") {
         trajectory.transformed_plan_collision_pose_to_end_distance = parameter.as_double();
+      } else if (name == node_name + ".transformed_plan_collision_pose_safe_distance_front") {
+        trajectory.transformed_plan_collision_pose_safe_distance_front = parameter.as_double();
+      } else if (name == node_name + ".transformed_plan_collision_pose_safe_distance_back") {
+        trajectory.transformed_plan_collision_pose_safe_distance_back = parameter.as_double();
+      } else if (name == node_name + ".transformed_plan_row_terminal_arrive_distance") {
+        trajectory.transformed_plan_row_terminal_arrive_distance = parameter.as_double();
+      } else if (name == node_name + ".transform_global_plan_costmap_span_scale") {
+        trajectory.transform_global_plan_costmap_span_scale = parameter.as_double();
       } else if (name == node_name + ".transform_global_plan_closest_search_max_accum_dist") {
         trajectory.transform_global_plan_closest_search_max_accum_dist = parameter.as_double();
       } else if (name == node_name + ".transform_global_plan_goal_occupied_tolerance") {

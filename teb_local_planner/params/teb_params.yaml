@@ -15,11 +15,18 @@ controller_server:
       global_plan_overwrite_orientation: False
       allow_init_with_backwards_motion: False
       max_global_plan_lookahead_dist: 3.0
+      transform_global_plan_costmap_span_scale: 1.0  # plan-length cap & row-end search = scale * max(costmap full x,y) [m]; <=0 disables
+      transformed_plan_collision_pose_to_end_distance: 1.0  # free tail after last collision on current row [m]
+      transformed_plan_collision_pose_safe_distance_front: 0.4  # fallback: min along-path gap if terminal is behind occupied [m]
+      transformed_plan_collision_pose_safe_distance_back: 1.0  # fallback: min along-path gap if terminal is past occupied [m]
+      transformed_plan_row_terminal_arrive_distance: 1.0  # arrived at row-terminal safe pose → prune remaining row [m]
       cut_path_before_corner_lethal_dist: 1.0
       cut_path_before_corner_inscribed_dist: 1.5
-      prune_before_corner_distance: 4.0   # max path length to search for last corner [m]; <=0: no limit
-      prune_corner_residual_distance: 0.5  # min remaining path length after corner to allow prune [m]
+      prune_before_corner_distance: 4.0   # unused by arrived-corner prune; kept for ray/legacy
+      prune_corner_residual_distance: 0.5  # unused by arrived-corner prune; kept for yaml compatibility
       prune_before_corner_linear_x_threshold: 0.1  # |linear.x| must be below this to prune at corner obstacle [m/s]
+      last_corner_record_distance: 0.3  # along-path arc from closest pose to locked corner to prune that corner [m]
+      last_corner_distinct_distance: 0.2  # unused (no spatial dedup); kept for yaml compatibility
       corner_approach_ray_check_enable: true
       corner_approach_check_sample_spacing: 0.2
       corner_approach_check_cost_mode: both  # both | lethal | inscribed
@@ -28,6 +35,7 @@ controller_server:
       global_plan_viapoint_sep: 0.3
       global_plan_prune_distance: 1.0
       global_plan_prune_max_accum_dist: 8.0   # <=0: search full path for prune point
+      prune_angle_threshold: 90.0  # [deg] pruneGlobalPlan heading align vs robot yaw
       rough_global_plan_prune_distance: 3.0   # coarse-pass prune distance [m]; <=0 disables coarse pass
       rough_global_plan_prune_max_accum_dist: -1.0  # coarse-pass search range [m]; <=0 searches entire plan
       exact_arc_length: False

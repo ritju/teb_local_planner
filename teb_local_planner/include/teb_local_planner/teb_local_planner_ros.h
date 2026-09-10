@@ -547,6 +547,12 @@
      */
    bool pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& global_pose,
                         std::vector<geometry_msgs::msg::PoseStamped>& global_plan, double dist_behind_robot=1, double max_prune_dist=8.0);
+
+   /**
+    * 几何锁当前急弯沿路到达后，含角点 erase global_plan_[0, C]。
+    * 一次只裁这一个顶点；短边终点即使欧氏很近也不在本拍裁掉。
+    */
+   bool pruneArrivedLockedCorner(const geometry_msgs::msg::PoseStamped& robot_pose);
    
    /**
      * @brief  Transforms the global plan of the robot from the planner frame to the local frame (modified).
@@ -558,16 +564,21 @@
      * @param global_pose The global pose of the robot
      * @param costmap A reference to the costmap being used so the window size for transforming can be computed
      * @param global_frame The frame to transform the plan to
-     * @param max_plan_length Specify maximum length (cumulative Euclidean distances) of the transformed plan [if <=0: disabled; the length is also bounded by the local costmap size!]
+     * @param max_plan_length Specify maximum length (cumulative Euclidean distances) of the transformed plan [if <=0: disabled; also capped by transform_global_plan_costmap_span_scale * max(costmap full width, height); occupancy near this cut may extend up to that same cap / current-row end]
      * @param[out] transformed_plan Populated with the transformed plan
      * @param[out] current_goal_idx Index of the current (local) goal pose in the global plan
      * @param[out] tf_plan_to_global Transformation between the global plan and the global planning frame
+     * @param[out] prune_row_from_idx Inclusive start of occupancy-lock erase (current segment through unreachable corner); -1 if none
+     * @param[out] prune_row_to_idx Inclusive end index of that erase range; -1 if none
+     * @param[out] key_points Optional window key poses (closest, locked corner, terminal, occupancy) in the controller frame
      * @return \c true if the global plan is transformed, \c false otherwise
      */
    bool transformGlobalPlan(const std::vector<geometry_msgs::msg::PoseStamped>& global_plan,
                             const geometry_msgs::msg::PoseStamped& global_pose,  const nav2_costmap_2d::Costmap2D& costmap,
                             const std::string& global_frame, double max_plan_length, std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan,
-                            int* current_goal_idx = NULL, geometry_msgs::msg::TransformStamped* tf_plan_to_global = NULL) const;
+                            int* current_goal_idx = NULL, geometry_msgs::msg::TransformStamped* tf_plan_to_global = NULL,
+                            int* prune_row_from_idx = NULL, int* prune_row_to_idx = NULL,
+                            PathWindowKeyPoints* key_points = NULL) const;
      
    /**
      * @brief Estimate the orientation of a pose from the global_plan that is treated as a local goal for the local planner.
@@ -798,7 +809,6 @@
    double weight_wall_line_direction_, weight_wall_line_dist_;
    double weight_wall_side_pull_; //!< 配置基值，贴边时按垂距比例调度
    double min_obstacle_dist_;
-   geometry_msgs::msg::PoseStamped last_corner_pose_;
    // double via_sep_;
    // std::shared_ptr<DynamicGoalPub> dynamic_goal_pub_;
    std::shared_ptr<line_path_compare::LinePathCompare> wall_line_ptr_;
@@ -843,7 +853,6 @@
    rclcpp::Time wall_line_update_time_;
    rclcpp::Time curb_line_update_time_;
    // Parameters for normal mode (saved during initialization)
-   double prune_angle_threshold_;  // rad, default 90deg
    double normal_weight_optimaltime_;
    double normal_min_obstacle_dist_;
    double normal_weight_inflation_;
@@ -912,6 +921,18 @@
      const geometry_msgs::msg::PoseStamped& pose_plan_frame,
      const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
      geometry_msgs::msg::PoseStamped* out_pose_global_frame) const;
+
+   /**
+    * 车体系足迹只沿 ±y 外扩当前 min_obstacle_dist（贴边已换成 edge_min_obstacle_dist）；x 不变。
+    */
+   std::vector<geometry_msgs::msg::Point> lateralPaddedFootprintSpec() const;
+
+   /**
+    * 与 globalPlanPoseFootprintFreeInControllerFrame 相同，但用左右扩足迹；供 transformed_plan 尾点。
+    */
+   bool globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
+     const geometry_msgs::msg::PoseStamped& pose_plan_frame,
+     const geometry_msgs::msg::TransformStamped& plan_to_global_transform) const;
 
    /**
     * Oriented footprint（控制器系）相对局部滚动代价图：外包框不与图相交则视为无障碍；

@@ -691,6 +691,112 @@ void TebVisualization::publishViaPoints(const std::vector< Eigen::Vector2d, Eige
   teb_marker_pub_->publish( marker );
 }
 
+void TebVisualization::publishPathKeyPoints(const PathWindowKeyPoints& key_points) const
+{
+  if (printErrorWhenNotInitialized() || !teb_marker_pub_) {
+    return;
+  }
+
+  const std::string frame_id =
+    key_points.frame_id.empty() ? cfg_->map_frame : key_points.frame_id;
+  const auto stamp = nh_->now();
+
+  auto publish_delete_all = [&](const std::string & ns) {
+    visualization_msgs::msg::Marker del;
+    del.header.frame_id = frame_id;
+    del.header.stamp = stamp;
+    del.ns = ns;
+    del.id = 0;
+    del.action = visualization_msgs::msg::Marker::DELETEALL;
+    teb_marker_pub_->publish(del);
+  };
+  publish_delete_all("PathKeyPoints");
+  publish_delete_all("PathKeyPointLabels");
+
+  struct KeyVis
+  {
+    bool valid;
+    const geometry_msgs::msg::Point * pt;
+    std::string text;
+    std_msgs::msg::ColorRGBA color;
+    double scale;
+    double text_z;
+  };
+
+  char closest_txt[64];
+  char corner_txt[64];
+  char end_txt[64];
+  char occ_txt[64];
+  char row_txt[64];
+  char prune_from_txt[64];
+  char prune_to_txt[64];
+  std::snprintf(closest_txt, sizeof(closest_txt), "start %d", key_points.closest_idx);
+  std::snprintf(corner_txt, sizeof(corner_txt), "C lock=%d i=%d",
+                key_points.lock_mode, key_points.corner_idx);
+  std::snprintf(end_txt, sizeof(end_txt), "end %d", key_points.end_idx);
+  std::snprintf(occ_txt, sizeof(occ_txt), "occ %d", key_points.last_occ_idx);
+  std::snprintf(row_txt, sizeof(row_txt), "row %d", key_points.row_end_idx);
+  std::snprintf(prune_from_txt, sizeof(prune_from_txt), "prune_from %d", key_points.prune_from_idx);
+  std::snprintf(prune_to_txt, sizeof(prune_to_txt), "prune_to %d", key_points.prune_to_idx);
+
+  const KeyVis keys[] = {
+    {key_points.has_closest, &key_points.closest, closest_txt,
+     toColorMsg(0.95, 0.15, 0.55, 1.00), 0.22, 0.28},
+    {key_points.has_corner, &key_points.corner, corner_txt,
+     toColorMsg(0.95, 1.00, 0.15, 0.15), 0.30, 0.42},
+    {key_points.has_terminal, &key_points.terminal, end_txt,
+     toColorMsg(0.95, 0.10, 0.90, 0.20), 0.26, 0.35},
+    {key_points.has_last_occ, &key_points.last_occ, occ_txt,
+     toColorMsg(0.95, 1.00, 0.55, 0.05), 0.24, 0.32},
+    {key_points.has_row_end, &key_points.row_end, row_txt,
+     toColorMsg(0.90, 1.00, 0.85, 0.10), 0.22, 0.30},
+    {key_points.has_prune_from, &key_points.prune_from, prune_from_txt,
+     toColorMsg(0.90, 0.85, 0.20, 0.90), 0.20, 0.26},
+    {key_points.has_prune_to, &key_points.prune_to, prune_to_txt,
+     toColorMsg(0.90, 0.55, 0.10, 0.70), 0.20, 0.26},
+  };
+
+  int id = 0;
+  for (const auto & key : keys) {
+    if (!key.valid) {
+      continue;
+    }
+    visualization_msgs::msg::Marker sphere;
+    sphere.header.frame_id = frame_id;
+    sphere.header.stamp = stamp;
+    sphere.ns = "PathKeyPoints";
+    sphere.id = id;
+    sphere.type = visualization_msgs::msg::Marker::SPHERE;
+    sphere.action = visualization_msgs::msg::Marker::ADD;
+    sphere.lifetime = rclcpp::Duration(2, 0);
+    sphere.pose.position = *key.pt;
+    sphere.pose.position.z += 0.12;
+    sphere.pose.orientation.w = 1.0;
+    sphere.scale.x = key.scale;
+    sphere.scale.y = key.scale;
+    sphere.scale.z = key.scale;
+    sphere.color = key.color;
+    teb_marker_pub_->publish(sphere);
+
+    visualization_msgs::msg::Marker text;
+    text.header = sphere.header;
+    text.ns = "PathKeyPointLabels";
+    text.id = id;
+    text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+    text.action = visualization_msgs::msg::Marker::ADD;
+    text.lifetime = sphere.lifetime;
+    text.pose.position = *key.pt;
+    text.pose.position.z += key.text_z;
+    text.pose.orientation.w = 1.0;
+    text.scale.z = 0.18;
+    text.color = key.color;
+    text.color.a = 1.0;
+    text.text = key.text;
+    teb_marker_pub_->publish(text);
+    ++id;
+  }
+}
+
 void TebVisualization::publishTebContainer(const TebOptPlannerContainer& teb_planner, const std::string& ns)
 {
 if ( printErrorWhenNotInitialized() )

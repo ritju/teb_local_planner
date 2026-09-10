@@ -64,6 +64,7 @@
 // messages
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
+#include <geometry_msgs/msg/point.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <std_msgs/msg/color_rgba.hpp>
@@ -86,6 +87,37 @@ struct TebPoseTimeSample
   PoseSE2 pose;
 };
 using TebPoseTimeSnapshot = std::vector<TebPoseTimeSample>;
+
+/**
+ * Window key poses in the controller / map frame (same as transformed_plan).
+ */
+struct PathWindowKeyPoints
+{
+  PathWindowKeyPoints() = default;
+  std::string frame_id;
+  geometry_msgs::msg::Point closest;
+  geometry_msgs::msg::Point corner;
+  geometry_msgs::msg::Point terminal;
+  geometry_msgs::msg::Point last_occ;
+  geometry_msgs::msg::Point row_end;
+  geometry_msgs::msg::Point prune_from;
+  geometry_msgs::msg::Point prune_to;
+  bool has_closest{false};
+  bool has_corner{false};
+  bool has_terminal{false};
+  bool has_last_occ{false};
+  bool has_row_end{false};
+  bool has_prune_from{false};
+  bool has_prune_to{false};
+  int lock_mode{0};
+  int closest_idx{-1};
+  int corner_idx{-1};
+  int end_idx{-1};
+  int last_occ_idx{-1};
+  int row_end_idx{-1};
+  int prune_from_idx{-1};
+  int prune_to_idx{-1};
+};
 
   
 /**
@@ -172,6 +204,11 @@ public:
    * @param via_points via-point container
    */
   void publishViaPoints(const std::vector< Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d> >& via_points, const std::string& ns = "ViaPoints") const;
+
+  /**
+   * @brief Publish locked-corner / window-terminal / occupancy key poses on \e teb_markers
+   */
+  void publishPathKeyPoints(const PathWindowKeyPoints& key_points) const;
   
   /**
    * @brief Publish a boost::adjacency_list (boost's graph datatype) via markers.

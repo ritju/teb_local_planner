@@ -89,6 +89,7 @@ public:
     double max_global_plan_lookahead_dist; //!< Cumulative path length from global plan start: limits optimization subset; also caps sharp-corner search along the plan (if <=0: no path-length cap for corner search; bounded by local costmap for optimization); remaining global_plan_ shorter than this exits edge-following (if <=0: skip that exit)
     double global_plan_prune_distance; //!< Distance between robot and via_points of global plan which is used for pruning
     double global_plan_prune_max_accum_dist; //!< pruneGlobalPlan: max cumulative path length from plan start to search for prune point [m]; <=0 disables cap (search entire plan)
+    double prune_angle_threshold; //!< pruneGlobalPlan: heading alignment vs robot yaw [deg]
     double rough_global_plan_prune_distance; //!< Coarse-pass pruning distance threshold [m]; applied before the fine prune to remove obviously-passed points; <=0 skips coarse pass
     double rough_global_plan_prune_max_accum_dist; //!< Coarse-pass pruning: max cumulative path length to search [m]; <=0 searches the entire plan
     bool exact_arc_length; //!< If true, the planner uses the exact arc length in velocity, acceleration and turning rate computations [-> increased cpu time], otherwise the euclidean approximation is used.
@@ -113,18 +114,22 @@ public:
     double dynamic_obstacle_debug_time_z_scale; //!< Lift same-time footprint+obstacle to z=scale*t so pairs share height in RViz (0 = flat xy)
     double min_resolution_collision_check_angular; //! Min angular resolution used during the costmap collision check. If not respected, intermediate samples are added. [rad]
     int control_look_ahead_poses; //! Index of the pose used to extract the velocity command
-    int theta_threshold; //!< 角点判定阈值 [deg]，用于识别路径急转角
+    int theta_threshold; //!< 折线急弯判定 [deg]，夹角小于该值视为角点/段尾（切段与贴边共用）
     double corner_dist_threshold; //!< Distance threshold to consider a point a corner
     //!< 角点不可达时裁剪 global_plan：LETHAL_OBSTACLE 下允许裁剪的机器人到角点横向距离上限 [m]
     double cut_path_before_corner_lethal_dist; //!< LETHAL 障碍下角点裁剪横向阈值 [m]
     //!< 角点不可达时裁剪 global_plan：INSCRIBED_INFLATED_OBSTACLE 下允许裁剪的机器人到角点横向距离上限 [m]
     double cut_path_before_corner_inscribed_dist; //!< INSCRIBED 障碍下角点裁剪横向阈值 [m]
-    //!< 在 global_plan 中搜索 last_corner_pose_ 的最大累积路径长度 [m]; <=0 表示不限制
+    //!< 到达裁剪已停用该搜索上限；保留仅为兼容旧 yaml / 射线逻辑 [m]; <=0 表示不限制
     double prune_before_corner_distance; //!< 搜索角点的累计路径长度上限 [m]
-    //!< 匹配到角点后，角点至路径终点剩余累积路径长度须大于该值才执行裁剪 [m]
+    //!< 到达裁剪已停用该残差门槛；保留仅为兼容旧 yaml [m]
     double prune_corner_residual_distance; //!< 角点到终点剩余长度需大于该值才裁剪 [m]
     //!< 角点有障碍时裁剪 global_plan：|linear.x| 须小于该阈值才执行裁剪 [m/s]
     double prune_before_corner_linear_x_threshold; //!< 仅当线速度绝对值高于该阈值时允许角点裁剪 [m/s]
+    //!< 到达当前几何锁急弯后含角点裁剪：沿路径从最近点到角点的弧长上限 [m]；<=0 关闭
+    double last_corner_record_distance;
+    //!< 已停用（到达裁剪不再做平面去重）；保留仅为兼容旧 yaml
+    double last_corner_distinct_distance;
     //!< 角点检测：true=机器人→角点射线采样+角点 footprint 检测；false=仅角点
     bool corner_approach_ray_check_enable;
     //!< 角点/射线路径 footprint 采样间距 [m]
@@ -137,8 +142,16 @@ public:
     bool corner_approach_footprint_marker_enable;
     //! transformGlobalPlan: when scorePose throws "Trajectory Hits Obstacle.", extend max plan length by this (m), capped by local costmap size
     double max_plan_length_extend_on_trajectory_obstacle_m; //!< 末端碰障时允许扩展的 transformed_plan 长度 [m]
-    //!< transformGlobalPlan: 碰撞点距全局终点直线距离小于此值时，延长 max_plan_length 并前移 last_idx（m）
-    double transformed_plan_collision_pose_to_end_distance; //!< 碰撞点到终点小于该距离时触发末端前移策略 [m]
+    //!< 本行上、最后一段碰撞之后所需空闲尾长 [m]；占用点靠近前瞻截断且尾长不足时沿本行延长；<=0 关闭
+    double transformed_plan_collision_pose_to_end_distance;
+    //!< 本行尾凑不够 to_end_distance 时：候选终点在占用点后方（尚未到达障碍）所需前方空档 [m]；<=0 不约束
+    double transformed_plan_collision_pose_safe_distance_front;
+    //!< 本行尾凑不够 to_end_distance 时：候选终点在占用点前方（已过障碍）所需后方空档 [m]；<=0 不约束
+    double transformed_plan_collision_pose_safe_distance_back;
+    //!< 车到本行降级终点（safe_idx）的沿路径/欧氏距离小于该值则视为已到达，剔除本行剩余（含该点）[m]；<=0 关闭到达删行
+    double transformed_plan_row_terminal_arrive_distance;
+    //!< transformGlobalPlan: 窗长上限与本行尾搜弯弧长 = 该倍数 × max(代价图全宽, 全高) [m]；<=0 不按图幅限制
+    double transform_global_plan_costmap_span_scale;
     //!< transformGlobalPlan: max cumulative path length from plan[0] while searching for the pose closest to the robot [m]; <=0 = no limit (entire plan)
     double transform_global_plan_closest_search_max_accum_dist; //!< 搜索“距机器人最近路径点”的累计长度上限 [m]
     //!< transformGlobalPlan: 若末端路径点在局部代价地图上 footprint 碰撞，在全局路径(plan 系)上以该值为半宽做网格偏移搜索可调位姿 [m]；<=0 关闭微调
@@ -479,6 +492,8 @@ public:
     trajectory.prune_before_corner_distance = 4.0;
     trajectory.prune_corner_residual_distance = 0.5;
     trajectory.prune_before_corner_linear_x_threshold = 0.1;
+    trajectory.last_corner_record_distance = 0.3;
+    trajectory.last_corner_distinct_distance = 0.2;
     trajectory.corner_approach_ray_check_enable = true;
     trajectory.corner_approach_check_sample_spacing = 0.2;
     trajectory.corner_approach_check_cost_mode = "both";
@@ -496,6 +511,7 @@ public:
     trajectory.max_global_plan_lookahead_dist = 1;
     trajectory.global_plan_prune_distance = 1;
     trajectory.global_plan_prune_max_accum_dist = 8.0;
+    trajectory.prune_angle_threshold = 90.0;
     trajectory.rough_global_plan_prune_distance = 3.0;
     trajectory.rough_global_plan_prune_max_accum_dist = -1.0;
     trajectory.exact_arc_length = false;
@@ -520,6 +536,10 @@ public:
     trajectory.control_look_ahead_poses = 1;
     trajectory.max_plan_length_extend_on_trajectory_obstacle_m = 3.0;
     trajectory.transformed_plan_collision_pose_to_end_distance = 1.0;
+    trajectory.transformed_plan_collision_pose_safe_distance_front = 0.4;
+    trajectory.transformed_plan_collision_pose_safe_distance_back = 1.0;
+    trajectory.transformed_plan_row_terminal_arrive_distance = 1.0;
+    trajectory.transform_global_plan_costmap_span_scale = 1.0;
     trajectory.transform_global_plan_closest_search_max_accum_dist = 0.0;
     trajectory.transform_global_plan_goal_occupied_tolerance = 1.0;
     trajectory.transform_global_plan_goal_search_resolution = 0.2;
