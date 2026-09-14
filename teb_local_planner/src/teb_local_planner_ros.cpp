@@ -1166,7 +1166,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
     edge_weight_inflation_ = cfg_->wall_line.edge_weight_inflation;
     edge_footprint_vertices_ = cfg_->wall_line.edge_footprint_vertices;
     // via_sep_ = cfg_->trajectory.global_plan_viapoint_sep;
-    RCLCPP_INFO(logger_, "max_global_plan_lookahead_dist %.2f, max_vel_x: %.2f! In initialize!", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
+    RCLCPP_INFO(logger_, "初始化: 全局路径前视距离 (max_global_plan_lookahead_dist) %.2f m, max_vel_x: %.2f", cfg_->trajectory.max_global_plan_lookahead_dist, cfg_->robot.max_vel_x);
 
     // reserve some memory for obstacles
     obstacles_.reserve(500);
@@ -1175,12 +1175,12 @@ bool clippedFootprintOutlineTouchesBlockingCost(
     if (cfg_->hcp.enable_homotopy_class_planning)
     {
       planner_ = PlannerInterfacePtr(new HomotopyClassPlanner(node, *cfg_.get(), &obstacles_, visualization_, &via_points_, &wall_line_points_));
-      RCLCPP_INFO(logger_, "Parallel planning in distinctive topologies enabled.");
+      RCLCPP_INFO(logger_, "已启用多拓扑并行规划 (distinctive topologies)");
     }
     else
     {
       planner_ = PlannerInterfacePtr(new TebOptimalPlanner(node, *cfg_.get(), &obstacles_, visualization_, &via_points_, &wall_line_points_));
-      RCLCPP_INFO(logger_, "Parallel planning in distinctive topologies disabled.");
+      RCLCPP_INFO(logger_, "已关闭多拓扑并行规划 (distinctive topologies)");
     }
     
     // init other variables
@@ -1207,7 +1207,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
       {
         costmap_converter_ = costmap_converter_loader_.createSharedInstance(cfg_->obstacles.costmap_converter_plugin);
         std::string converter_name = costmap_converter_loader_.getName(cfg_->obstacles.costmap_converter_plugin);
-        RCLCPP_INFO(logger_, "library path : %s", costmap_converter_loader_.getClassLibraryPath(cfg_->obstacles.costmap_converter_plugin).c_str());
+        RCLCPP_INFO(logger_, "代价地图转换插件库路径: %s", costmap_converter_loader_.getClassLibraryPath(cfg_->obstacles.costmap_converter_plugin).c_str());
         // replace '::' by '/' to convert the c++ namespace to a NodeHandle namespace
         boost::replace_all(converter_name, "::", "/");
 
@@ -1219,17 +1219,17 @@ bool clippedFootprintOutlineTouchesBlockingCost(
         costmap_converter_->setCostmap2D(costmap_);
         const auto rate = std::make_shared<rclcpp::Rate>((double)cfg_->obstacles.costmap_converter_rate);
         costmap_converter_->startWorker(rate, costmap_, cfg_->obstacles.costmap_converter_spin_thread);
-        RCLCPP_INFO(logger_, "Costmap conversion plugin %s loaded.", cfg_->obstacles.costmap_converter_plugin.c_str());
+        RCLCPP_INFO(logger_, "已加载代价地图转换插件: %s", cfg_->obstacles.costmap_converter_plugin.c_str());
       }
       catch(pluginlib::PluginlibException& ex)
       {
         RCLCPP_INFO(logger_,
-                    "The specified costmap converter plugin cannot be loaded. All occupied costmap cells are treaten as point obstacles. Error message: %s", ex.what());
+                    "无法加载指定的代价地图转换插件，占用栅格将按点障碍处理。错误: %s", ex.what());
         costmap_converter_.reset();
       }
     }
     else {
-      RCLCPP_INFO(logger_, "No costmap conversion plugin specified. All occupied costmap cells are treaten as point obstacles.");
+      RCLCPP_INFO(logger_, "未指定代价地图转换插件，占用栅格将按点障碍处理");
     }
   
     
@@ -1316,11 +1316,13 @@ bool clippedFootprintOutlineTouchesBlockingCost(
       resetBackwardModePublicationState(true);
       RCLCPP_INFO(
         logger_,
-        "TEB 已发布 /backward_mode（几何倒车检测），"
-        "arc_length_ratio=%.2f backward_check_duration=%.2f backward_check_num=%d",
+        "TEB 已发布 /backward_mode（几何倒车检测 / 双弧失败 latch），"
+        "arc_length_ratio=%.2f backward_check_duration=%.2f backward_check_num=%d "
+        "dual_arc_publish=%d",
         cfg_->trajectory.reverse_segment_arc_length_ratio,
         cfg_->trajectory.backward_check_duration,
-        cfg_->trajectory.backward_check_num);
+        cfg_->trajectory.backward_check_num,
+        cfg_->rotation.dual_arc_reverse_publish_backward_mode ? 1 : 0);
     }
     // 备份正常模式参数，供狭窄通道 RAII 恢复
     normal_weight_kinematics_forward_drive_ = cfg_->optim.weight_kinematics_forward_drive;
@@ -1406,7 +1408,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
     // This should be called since to prevent different time sources exception
     time_last_infeasible_plan_ = clock_->now();
     time_last_oscillation_ = clock_->now();
-    RCLCPP_DEBUG(logger_, "teb_local_planner plugin initialized.");
+    RCLCPP_DEBUG(logger_, "teb_local_planner 插件已初始化");
 
     transformed_path = node->create_publisher<nav_msgs::msg::Path>("teb_transformed_path", 1);
     global_plan_pub_ = node->create_publisher<nav_msgs::msg::Path>("teb_global_plan", 1);
@@ -1430,12 +1432,12 @@ bool clippedFootprintOutlineTouchesBlockingCost(
 
     // Create persistent client for static_layer parameter updates
     static_layer_client_ = node->create_client<rcl_interfaces::srv::SetParameters>("/local_costmap/local_costmap/set_parameters");
-    RCLCPP_INFO(logger_, "static_layer client created.");
+    RCLCPP_INFO(logger_, "已创建 static_layer 参数客户端");
 
     // Create persistent clients for footprint parameter updates
     local_footprint_client_ = node->create_client<rcl_interfaces::srv::SetParameters>("/local_costmap/local_costmap/set_parameters");
     global_footprint_client_ = node->create_client<rcl_interfaces::srv::SetParameters>("/global_costmap/global_costmap/set_parameters");
-    RCLCPP_INFO(logger_, "Footprint clients created for local and global costmaps.");
+    RCLCPP_INFO(logger_, "已创建局部/全局代价地图 footprint 参数客户端");
 
     // Get current footprint values from local and global costmaps for restoration via service calls
     // Use background threads to avoid blocking initialization
@@ -1444,7 +1446,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
         "/local_costmap/local_costmap/get_parameters");
       if (!waitForServiceInterruptible(local_get_params_client, std::chrono::seconds(30))) {
         if (isBackgroundWorkAllowed()) {
-          RCLCPP_WARN(logger_, "Local costmap get_parameters service not available after 30 seconds.");
+          RCLCPP_WARN(logger_, "局部代价地图 get_parameters 服务 30 秒内不可用");
         }
         return;
       }
@@ -1459,7 +1461,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
             future, std::chrono::seconds(5),
             [this]() { return isBackgroundWorkAllowed(); })) {
         if (isBackgroundWorkAllowed()) {
-          RCLCPP_WARN(logger_, "Local costmap get_parameters service call timeout.");
+          RCLCPP_WARN(logger_, "局部代价地图 get_parameters 服务调用超时");
         }
         return;
       }
@@ -1468,7 +1470,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
       if (!response->values.empty()) {
         if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_STRING) {
           local_costmap_footprint_ = response->values[0].string_value;
-          RCLCPP_INFO(logger_, "Local costmap footprint stored: %s", local_costmap_footprint_.c_str());
+          RCLCPP_INFO(logger_, "已保存局部代价地图 footprint: %s", local_costmap_footprint_.c_str());
         } else if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY) {
           const auto& local_footprint_array = response->values[0].double_array_value;
           local_costmap_footprint_ = "[";
@@ -1479,12 +1481,12 @@ bool clippedFootprintOutlineTouchesBlockingCost(
             }
           }
           local_costmap_footprint_ += "]";
-          RCLCPP_INFO(logger_, "Local costmap footprint stored: %s", local_costmap_footprint_.c_str());
+          RCLCPP_INFO(logger_, "已保存局部代价地图 footprint: %s", local_costmap_footprint_.c_str());
         } else {
-          RCLCPP_WARN(logger_, "Local costmap footprint has unknown type: %d", response->values[0].type);
+          RCLCPP_WARN(logger_, "局部代价地图 footprint 类型未知: %d", response->values[0].type);
         }
       } else {
-        RCLCPP_WARN(logger_, "Local costmap footprint not found in response.");
+        RCLCPP_WARN(logger_, "响应中未找到局部代价地图 footprint");
       }
     });
 
@@ -1493,7 +1495,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
         "/global_costmap/global_costmap/get_parameters");
       if (!waitForServiceInterruptible(global_get_params_client, std::chrono::seconds(30))) {
         if (isBackgroundWorkAllowed()) {
-          RCLCPP_WARN(logger_, "Global costmap get_parameters service not available after 30 seconds.");
+          RCLCPP_WARN(logger_, "全局代价地图 get_parameters 服务 30 秒内不可用");
         }
         return;
       }
@@ -1508,7 +1510,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
             future, std::chrono::seconds(5),
             [this]() { return isBackgroundWorkAllowed(); })) {
         if (isBackgroundWorkAllowed()) {
-          RCLCPP_WARN(logger_, "Global costmap get_parameters service call timeout.");
+          RCLCPP_WARN(logger_, "全局代价地图 get_parameters 服务调用超时");
         }
         return;
       }
@@ -1517,7 +1519,7 @@ bool clippedFootprintOutlineTouchesBlockingCost(
       if (!response->values.empty()) {
         if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_STRING) {
           global_costmap_footprint_ = response->values[0].string_value;
-          RCLCPP_INFO(logger_, "Global costmap footprint stored: %s", global_costmap_footprint_.c_str());
+          RCLCPP_INFO(logger_, "已保存全局代价地图 footprint: %s", global_costmap_footprint_.c_str());
         } else if (response->values[0].type == rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY) {
           const auto& global_footprint_array = response->values[0].double_array_value;
           global_costmap_footprint_ = "[";
@@ -1528,18 +1530,18 @@ bool clippedFootprintOutlineTouchesBlockingCost(
             }
           }
           global_costmap_footprint_ += "]";
-          RCLCPP_INFO(logger_, "Global costmap footprint stored: %s", global_costmap_footprint_.c_str());
+          RCLCPP_INFO(logger_, "已保存全局代价地图 footprint: %s", global_costmap_footprint_.c_str());
         } else {
-          RCLCPP_WARN(logger_, "Global costmap footprint has unknown type: %d", response->values[0].type);
+          RCLCPP_WARN(logger_, "全局代价地图 footprint 类型未知: %d", response->values[0].type);
         }
       } else {
-        RCLCPP_WARN(logger_, "Global costmap footprint not found in response.");
+        RCLCPP_WARN(logger_, "响应中未找到全局代价地图 footprint");
       }
     });
    }
    else
    {
-     RCLCPP_INFO(logger_, "teb_local_planner has already been initialized, doing nothing.");
+     RCLCPP_INFO(logger_, "teb_local_planner 已初始化，跳过重复初始化");
    }
 }
 
@@ -1573,7 +1575,7 @@ void TebLocalPlannerROS::configure(
    // check if plugin is initialized
    if(!initialized_)
    {
-     RCLCPP_ERROR(logger_, "teb_local_planner has not been initialized, please call initialize() before using this planner");
+     RCLCPP_ERROR(logger_, "teb_local_planner 尚未初始化，请先调用 initialize()");
      return;
    }
  
@@ -1594,6 +1596,11 @@ void TebLocalPlannerROS::configure(
    } else {
     RCLCPP_WARN(logger_, "TEB 设置全局路径失败，路径点数为0");
    }
+
+   if (major_arc_active_) {
+     RCLCPP_INFO(logger_, "setPlan：清除优弧锁");
+   }
+   resetMajorArcLock();
  
  
    // we do not clear the local planner here, since setPlan is called frequently whenever the global planner updates the plan.
@@ -1611,7 +1618,7 @@ void TebLocalPlannerROS::configure(
    if(!initialized_)
    {
      throw nav2_core::PlannerException(
-       std::string("teb_local_planner has not been initialized, please call initialize() before using this planner")
+       std::string("teb_local_planner 尚未初始化，请先调用 initialize()")
      );
    }
  
@@ -1627,7 +1634,7 @@ void TebLocalPlannerROS::configure(
    geometry_msgs::msg::Pose pose_tolerance;
    geometry_msgs::msg::Twist vel_tolerance;
    if (!goal_checker->getTolerances(pose_tolerance, vel_tolerance)) {
-     RCLCPP_WARN(logger_, "Unable to retrieve goal checker's tolerances!");
+     RCLCPP_WARN(logger_, "无法获取目标检查器 (goal checker) 容差");
    } else {
      cfg_->goal_tolerance.xy_goal_tolerance = pose_tolerance.position.x;
    }
@@ -1703,13 +1710,13 @@ void TebLocalPlannerROS::configure(
       if (std::isfinite(limit) && speed_limit_linear_x_ > 0) {
         if (limit < safe_linear_speed_limit_ && cfg_->robot.max_vel_x != limit) {
           cfg_->robot.max_vel_x = std::min(limit, safe_linear_speed_limit_);
-          RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Performing change speed limit !, max linear speed is: %.2f", cfg_->robot.max_vel_x);
+          RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "正在应用速度限制，当前最大线速度: %.2f m/s", cfg_->robot.max_vel_x);
         } else if (limit >= safe_linear_speed_limit_ && cfg_->robot.max_vel_x != safe_linear_speed_limit_) {
           cfg_->robot.max_vel_x = safe_linear_speed_limit_;
-          RCLCPP_WARN(logger_, "Receive speed limit is greater than safe linear speed limit, set limit speed to safe linear speed limit: %.2f !", safe_linear_speed_limit_);
+          RCLCPP_WARN(logger_, "收到的速度限制大于安全线速度上限，已钳到安全上限: %.2f m/s", safe_linear_speed_limit_);
         }
       } else if (!std::isfinite(limit) || limit <= 0) {
-        RCLCPP_WARN(logger_, "Speed limit is not finite or less than 0, current speed limit is: %.2f !", cfg_->robot.max_vel_x);
+        RCLCPP_WARN(logger_, "速度限制无效 (非有限或 <=0)，当前速度上限: %.2f m/s", cfg_->robot.max_vel_x);
       }
     }
   }
@@ -1732,7 +1739,7 @@ void TebLocalPlannerROS::configure(
     } catch (const tf2::TransformException & ex) {
       RCLCPP_WARN_THROTTLE(
         logger_, *clock_, 2000,
-        "Failed to transform robot pose to plan frame for corner search: %s", ex.what());
+        "角点搜索: 机器人位姿变换到路径坐标系失败: %s", ex.what());
     }
 
     if (robot_in_plan_ok) {
@@ -1808,7 +1815,7 @@ void TebLocalPlannerROS::configure(
           costmap_ros_->getBaseFrameID(), 0.5)) {
       RCLCPP_WARN_THROTTLE(
         logger_, *clock_, 2000,
-        "Failed to transform corner pose to base frame");
+        "角点位姿变换到机器人坐标系失败");
       corner_found = false;
     }
   }
@@ -1836,25 +1843,37 @@ void TebLocalPlannerROS::configure(
       std::string("Could not transform the global plan to the frame of the controller")
     );
   }
-  if (prune_row_from_idx >= 0 && prune_row_to_idx >= prune_row_from_idx &&
-      prune_row_to_idx < static_cast<int>(global_plan_.size()))
+  if (prune_row_from_idx >= 0 && prune_row_to_idx >= prune_row_from_idx)
   {
-    const int erase_count = prune_row_to_idx - prune_row_from_idx + 1;
-    RCLCPP_WARN(
-      logger_,
-      "transformGlobalPlan: abandoning current row (no safe pose or arrived at "
-      "row terminal), erasing global_plan_[%d, %d] (%d poses); U-turn/next row kept",
-      prune_row_from_idx, prune_row_to_idx, erase_count);
-    global_plan_.erase(
-      global_plan_.begin() + prune_row_from_idx,
-      global_plan_.begin() + prune_row_to_idx + 1);
-    if (goal_idx > prune_row_to_idx) {
-      goal_idx -= erase_count;
-    } else if (goal_idx >= prune_row_from_idx) {
-      if (prune_row_from_idx < static_cast<int>(global_plan_.size())) {
-        goal_idx = prune_row_from_idx;
-      } else {
-        goal_idx = std::max(0, static_cast<int>(global_plan_.size()) - 1);
+    const int last_keep = static_cast<int>(global_plan_.size()) - 1;
+    if (last_keep >= 0 && prune_row_to_idx >= last_keep) {
+      RCLCPP_WARN(
+        logger_,
+        "transformGlobalPlan: 裁剪区间含路径终点 [%d,%d]，改为保留最后一个点",
+        prune_row_from_idx, prune_row_to_idx);
+      prune_row_to_idx = last_keep - 1;
+    }
+    if (prune_row_from_idx <= prune_row_to_idx &&
+        prune_row_to_idx >= 0 &&
+        prune_row_from_idx < static_cast<int>(global_plan_.size()))
+    {
+      const int erase_count = prune_row_to_idx - prune_row_from_idx + 1;
+      RCLCPP_WARN(
+        logger_,
+        "transformGlobalPlan: 放弃当前行（无安全点或已到达行终点），"
+        "删除 global_plan_[%d, %d]（%d 个点）；保留掉头/下一行",
+        prune_row_from_idx, prune_row_to_idx, erase_count);
+      global_plan_.erase(
+        global_plan_.begin() + prune_row_from_idx,
+        global_plan_.begin() + prune_row_to_idx + 1);
+      if (goal_idx > prune_row_to_idx) {
+        goal_idx -= erase_count;
+      } else if (goal_idx >= prune_row_from_idx) {
+        if (prune_row_from_idx < static_cast<int>(global_plan_.size())) {
+          goal_idx = prune_row_from_idx;
+        } else {
+          goal_idx = std::max(0, static_cast<int>(global_plan_.size()) - 1);
+        }
       }
     }
   }
@@ -1958,6 +1977,12 @@ void TebLocalPlannerROS::configure(
     // If corner has obstacle, delete all path points before the corner in global_plan_
     if (corner_has_obstacle)
     {
+      if (corner_index + 1 >= global_plan_.size()) {
+        RCLCPP_INFO(
+          logger_,
+          "角点为路径终点(idx=%zu size=%zu)，跳过删除以免掏空路径",
+          corner_index, global_plan_.size());
+      } else {
       double robot_corner_distance = pow(corner_pose_robot.pose.position.x, 2) + pow(corner_pose_robot.pose.position.y, 2);
       if (corner_index > 0 &&
           corner_index < global_plan_.size() &&
@@ -1970,6 +1995,7 @@ void TebLocalPlannerROS::configure(
         cut_path_before_corner = true;
         global_plan_.erase(global_plan_.begin(), global_plan_.begin() + corner_index + 1);
         RCLCPP_INFO(logger_, "角点被障碍物占用，删除角点前的所有路径点，裁剪距离: %.2f m", robot_corner_distance);
+      }
       }
       goto jump_prune_transformed_plan;
     }
@@ -2024,19 +2050,53 @@ void TebLocalPlannerROS::configure(
   }
   const bool narrow_mode = narrowPolygonsAvailable() && latched_narrow_passage_;
   const bool reverse_segment = hasReverseSegmentInPlan(transformed_plan);
-  updateBackwardModePublication(reverse_segment);
+  if (!cfg_->rotation.dual_arc_reverse_enable && dual_arc_reverse_active_) {
+    exitDualArcReverseLatch(reverse_segment);
+  }
+  bool dual_arc_timeout_probe = false;
+  const bool other_narrow_sources =
+    (enable_backward_cmd_received && enable_backward_cmd) ||
+    narrow_mode || reverse_segment;
+  if (cfg_->rotation.dual_arc_reverse_enable && dual_arc_reverse_active_ &&
+      !other_narrow_sources)
+  {
+    const double timeout_s = cfg_->rotation.dual_arc_reverse_timeout;
+    if (timeout_s > 0.0) {
+      const double elapsed_s = (clock_->now() - dual_arc_reverse_enter_time_).seconds();
+      const double min_hold_s = std::max(0.0, cfg_->rotation.dual_arc_reverse_min_hold);
+      if (elapsed_s >= std::max(timeout_s, min_hold_s)) {
+        dual_arc_timeout_probe = true;
+        RCLCPP_INFO(
+          logger_,
+          "双弧失败: latch 超时 %.2fs，本拍 probe 高权重",
+          elapsed_s);
+      }
+    }
+  }
+  const bool dual_arc_topic =
+    dual_arc_reverse_active_ && cfg_->rotation.dual_arc_reverse_publish_backward_mode;
+  updateBackwardModePublication(reverse_segment || dual_arc_topic);
+  const bool dual_arc_for_weights =
+    dual_arc_reverse_active_ && !dual_arc_timeout_probe;
   const bool enable_narrow_teb = (enable_backward_cmd_received && enable_backward_cmd) ?
-    true : (narrow_mode || reverse_segment);
+    true : (narrow_mode || reverse_segment || dual_arc_for_weights);
   updateNarrowPassageTebSettings(enable_narrow_teb);
   RCLCPP_INFO_THROTTLE(
     logger_, *clock_, 2000,
-    "TEB 倒车模式: enable_backward=%s narrow_latch=%s reverse_seg=%s enable=%s forward_drive=%.2f",
+    "TEB 倒车模式: enable_backward=%s narrow_latch=%s reverse_seg=%s dual_arc=%s "
+    "fail=%zu/%d probe=%s enable=%s forward_drive=%.2f prefer_fwd=%d allow_back=%d",
     (enable_backward_cmd_received && enable_backward_cmd) ? "是" : "否",
     narrow_mode ? "是" : "否",
     reverse_segment ? "是" : "否",
+    dual_arc_reverse_active_ ? "是" : "否",
+    dual_arc_reverse_fail_count_,
+    std::max(1, cfg_->rotation.dual_arc_reverse_fail_num),
+    dual_arc_timeout_probe ? "是" : "否",
     enable_narrow_teb ? "是" : "否",
     enable_narrow_teb ? cfg_->optim.weight_kinematics_forward_drive_in_narrow_passages :
-      normal_weight_kinematics_forward_drive_);
+      normal_weight_kinematics_forward_drive_,
+    cfg_->robot.prefer_forward_only ? 1 : 0,
+    cfg_->robot.allow_backward_velocity ? 1 : 0);
     
   // Return false if the transformed global plan is empty
   if (transformed_plan.empty())
@@ -2103,6 +2163,10 @@ void TebLocalPlannerROS::configure(
         global_plan_msg.poses = global_plan_;
         global_plan_pub_->publish(global_plan_msg);
       }
+      if (dual_arc_reverse_active_) {
+        dual_arc_reverse_forward_count_ = 0;
+      }
+      dual_arc_reverse_fail_count_ = 0;
       return rotation_cmd_vel;
     }
     // If rotation fails due to collision, continue with TEB planning
@@ -2176,7 +2240,7 @@ void TebLocalPlannerROS::configure(
 
      RCLCPP_INFO_THROTTLE(
          logger_, *clock_, 1000,
-         "[NearHorizon] mode=%d as_static_edges=%d cache=%zu raw_threat=%d enable=%d "
+         "[NearHorizon] 近动态障碍物门控 mode=%d as_static_edges=%d cache=%zu raw_threat=%d enable=%d "
          "overlap_excl=%d trig_id=%d reason=%s omega_ref=%.3f delta=%.3f "
          "(roi f/r/l/r=%.2f/%.2f/%.2f/%.2f T_near=%.2f hold=%.2f)",
          cfg_->obstacles.dynamic_safety_predictable_mode ? 1 : 0,
@@ -2211,65 +2275,172 @@ void TebLocalPlannerROS::configure(
 
    try
    { 
-   // Now perform the actual planning
- //   bool success = planner_->plan(robot_pose_, robot_goal_, robot_vel_, cfg_->goal_tolerance.free_goal_vel); // straight line init
-   // RCLCPP_INFO(logger_, "Weight_via_point: %.2f !", cfg_->optim.weight_viapoint);
-   bool success = planner_->plan(transformed_plan, &robot_vel_, cfg_->goal_tolerance.free_goal_vel);
-   if (!success)
-   {
-     planner_->clearPlanner(); // force reinitialization for next time
-     
-     ++no_infeasible_plans_; // increase number of infeasible solutions in a row
-     time_last_infeasible_plan_ = clock_->now();
-     last_cmd_ = cmd_vel.twist;
-     
-     throw nav2_core::PlannerException(
-       std::string("teb_local_planner was not able to obtain a local plan for the current setting.")
-     );
-   }
- 
-   
- 
-   // Check for divergence
-   if (planner_->hasDiverged())
-   {
-     cmd_vel.twist.linear.x = cmd_vel.twist.linear.y = cmd_vel.twist.angular.z = 0;
- 
-     // Reset everything to start again with the initialization of new trajectories.
-     planner_->clearPlanner();
-     RCLCPP_WARN_THROTTLE(logger_, *(clock_), 1, "TebLocalPlannerROS: the trajectory has diverged. Resetting planner...");
- 
-     ++no_infeasible_plans_; // increase number of infeasible solutions in a row
-     time_last_infeasible_plan_ = clock_->now();
-     last_cmd_ = cmd_vel.twist;
-     throw nav2_core::PlannerException(
-       std::string("TebLocalPlannerROS: velocity command invalid (hasDiverged). Resetting planner...")
-     );
-   }
-          
-   // Check feasibility (but within the first few states only)
    if(cfg_->robot.is_footprint_dynamic)
    {
-     // Get current footprint from local costmap (edge mode may modify costmap via set_parameters, which may be different from TEB cache)
      const std::vector<geometry_msgs::msg::Point> costmap_footprint = costmap_ros_->getRobotFootprint();
      if (costmap_footprint != footprint_spec_) {
        footprint_spec_ = costmap_footprint;
        nav2_costmap_2d::calculateMinAndMaxDistances(footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius);
      }
    }
- 
-   bool feasible = planner_->isTrajectoryFeasible(costmap_model_.get(), footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius, cfg_->trajectory.feasibility_check_no_poses, cfg_->trajectory.feasibility_check_lookahead_distance);
+
+   cfg_->robot.allow_backward_velocity = true;
+   geometry_msgs::msg::Twist start_vel = robot_vel_;
+
+   auto planIsFeasible = [&](const std::vector<geometry_msgs::msg::PoseStamped> & plan_in) -> bool {
+     if (!planner_->plan(plan_in, &start_vel, cfg_->goal_tolerance.free_goal_vel)) {
+       return false;
+     }
+     if (planner_->hasDiverged()) {
+       return false;
+     }
+     return planner_->isTrajectoryFeasible(
+       costmap_model_.get(), footprint_spec_, robot_inscribed_radius_,
+       robot_circumscribed_radius, cfg_->trajectory.feasibility_check_no_poses,
+       cfg_->trajectory.feasibility_check_lookahead_distance);
+   };
+
+   const double yaw_start = tf2::getYaw(transformed_plan.front().pose.orientation);
+   const double yaw_goal = tf2::getYaw(transformed_plan.back().pose.orientation);
+   const double d_short = g2o::normalize_theta(yaw_goal - yaw_start);
+   double d_long = (std::abs(d_short) < 1e-3)
+     ? -2.0 * M_PI
+     : d_short - std::copysign(2.0 * M_PI, d_short);
+   // ±π 割线处 d_short 变号会把优弧左右互换；已激活时锁住转向
+   if (major_arc_active_ && major_arc_rotdir_ != RotType::none) {
+     const double mag = std::abs(d_long);
+     d_long = (major_arc_rotdir_ == RotType::left) ? mag : -mag;
+   }
+   const bool major_stagnation_unlock = checkMajorArcStagnationUnlock(yaw_goal);
+   const double heading_exit = std::max(
+     cfg_->rotation.major_arc_retry_heading_threshold, 0.35);
+   const bool heading_ok =
+     std::abs(d_short) >= cfg_->rotation.major_arc_retry_heading_threshold;
+   const bool keep_major = major_arc_active_ && std::abs(d_short) >= heading_exit;
+   const bool major_retry_ok =
+     cfg_->rotation.major_arc_retry_enable && heading_ok && !major_stagnation_unlock;
+   const bool try_major_first = major_retry_ok && keep_major;
+   if (!keep_major) {
+     resetMajorArcLock();
+   }
+
+   auto runMajorArcPlan = [&](bool reuse_teb) -> bool {
+     major_arc_plan_ = buildMajorArcOrientedPlan(transformed_plan, d_long);
+     if (major_arc_plan_.size() < 2) {
+       return false;
+     }
+     major_arc_rotdir_ = (d_long > 0.0) ? RotType::left : RotType::right;
+     if (!reuse_teb) {
+       planner_->clearPlanner();
+     }
+     planner_->setPreferredTurningDir(major_arc_rotdir_);
+     const int saved_classes = cfg_->hcp.max_number_classes;
+     const bool saved_overwrite = cfg_->trajectory.global_plan_overwrite_orientation;
+     cfg_->hcp.max_number_classes = 1;
+     cfg_->trajectory.global_plan_overwrite_orientation = false;
+     const bool ok = planIsFeasible(major_arc_plan_);
+     cfg_->hcp.max_number_classes = saved_classes;
+     cfg_->trajectory.global_plan_overwrite_orientation = saved_overwrite;
+     return ok;
+   };
+
+   auto tryBothArcs = [&](bool prefer_major_first, bool reuse_major) -> bool {
+     bool ok = false;
+     if (!prefer_major_first) {
+       ok = planIsFeasible(transformed_plan);
+       if (ok) {
+         resetMajorArcLock();
+         planner_->setPreferredTurningDir(last_preferred_rotdir_);
+         return true;
+       }
+     }
+     if (!ok && major_retry_ok) {
+       if (prefer_major_first) {
+         RCLCPP_INFO_THROTTLE(
+           logger_, *clock_, 2000,
+           "继续优弧 warm-start d_short=%.3f rad d_long=%.3f rad rotdir=%s",
+           d_short, d_long,
+           (major_arc_rotdir_ == RotType::left) ? "left" : "right");
+       } else {
+         RCLCPP_INFO(
+           logger_,
+           "劣弧 TEB 不可行，改用优弧初始化重优化 d_short=%.3f rad d_long=%.3f rad",
+           d_short, d_long);
+       }
+       ok = runMajorArcPlan(prefer_major_first && reuse_major);
+       if (ok) {
+         const bool newly_locked = !major_arc_active_;
+         major_arc_active_ = true;
+         if (newly_locked || !major_arc_progress_valid_) {
+           captureMajorArcProgress(remainingYawAlongMajorArc(robot_pose_.theta(), yaw_goal));
+         }
+       } else {
+         resetMajorArcLock();
+         planner_->setPreferredTurningDir(RotType::none);
+         RCLCPP_WARN(
+           logger_,
+           "优弧重优化仍不可行 d_short=%.3f rad d_long=%.3f rad",
+           d_short, d_long);
+       }
+     } else if (!ok) {
+       RCLCPP_INFO(
+         logger_,
+         "劣弧不可行但跳过优弧重试 enable=%d |d_short|=%.3f rad thr=%.3f rad heading_ok=%d keep=%d stagnation=%d",
+         cfg_->rotation.major_arc_retry_enable ? 1 : 0,
+         std::abs(d_short), cfg_->rotation.major_arc_retry_heading_threshold,
+         heading_ok ? 1 : 0, keep_major ? 1 : 0, major_stagnation_unlock ? 1 : 0);
+     }
+     return ok;
+   };
+
+   bool feasible = tryBothArcs(try_major_first, true);
+
+   if (feasible) {
+     dual_arc_reverse_fail_count_ = 0;
+   } else if (cfg_->rotation.dual_arc_reverse_enable) {
+     const bool already_latched = dual_arc_reverse_active_ && !dual_arc_timeout_probe;
+     bool allow_reverse = already_latched || dual_arc_timeout_probe;
+     if (!already_latched && !dual_arc_timeout_probe) {
+       ++dual_arc_reverse_fail_count_;
+       const int need_fails = std::max(1, cfg_->rotation.dual_arc_reverse_fail_num);
+       RCLCPP_INFO(
+         logger_,
+         "双弧连续失败 %zu/%d，%s降权允许倒车",
+         dual_arc_reverse_fail_count_, need_fails,
+         dual_arc_reverse_fail_count_ >= static_cast<size_t>(need_fails) ? "达到次数，" : "未达次数，暂不");
+       allow_reverse =
+         dual_arc_reverse_fail_count_ >= static_cast<size_t>(need_fails);
+     }
+     if (allow_reverse) {
+       if (!already_latched) {
+         enterDualArcReverseLatch();
+       }
+       const bool need_replan = !narrow_teb_settings_applied_ || dual_arc_timeout_probe;
+       if (need_replan) {
+         RCLCPP_INFO(
+           logger_,
+           "双弧均不可行，降 forward_drive 后同周期重试");
+         updateNarrowPassageTebSettings(true);
+         planner_->clearPlanner();
+         resetMajorArcLock();
+         planner_->setPreferredTurningDir(RotType::none);
+         dual_arc_timeout_probe = false;
+         feasible = tryBothArcs(false, false);
+         if (feasible) {
+           dual_arc_reverse_fail_count_ = 0;
+         }
+       }
+     }
+   }
+
    if (!feasible)
    {
      cmd_vel.twist.linear.x = cmd_vel.twist.linear.y = cmd_vel.twist.angular.z = 0;
-    
-     // now we reset everything to start again with the initialization of new trajectories.
      planner_->clearPlanner();
- 
-     ++no_infeasible_plans_; // increase number of infeasible solutions in a row
+     ++no_infeasible_plans_;
      time_last_infeasible_plan_ = clock_->now();
      last_cmd_ = cmd_vel.twist;
-     
+     dual_arc_reverse_forward_count_ = 0;
      throw nav2_core::PlannerException(
        std::string("TebLocalPlannerROS: trajectory is not feasible. Resetting planner...")
      );
@@ -2283,6 +2454,7 @@ void TebLocalPlannerROS::configure(
      time_last_infeasible_plan_ = clock_->now();
      last_cmd_ = cmd_vel.twist;
      
+     dual_arc_reverse_forward_count_ = 0;
      throw nav2_core::PlannerException(
        std::string("TebLocalPlannerROS: velocity command invalid. Resetting planner...")
      );
@@ -2306,7 +2478,7 @@ void TebLocalPlannerROS::configure(
  
        ++no_infeasible_plans_; // increase number of infeasible solutions in a row
        time_last_infeasible_plan_ = clock_->now();
-       
+       dual_arc_reverse_forward_count_ = 0;
        throw nav2_core::PlannerException(
          std::string("TebLocalPlannerROS: Resulting steering angle is not finite. Resetting planner...")
        );
@@ -2315,6 +2487,32 @@ void TebLocalPlannerROS::configure(
    
    // a feasible solution should be found, reset counter
    no_infeasible_plans_ = 0;
+
+   if (dual_arc_reverse_active_) {
+     if (dual_arc_timeout_probe) {
+       exitDualArcReverseLatch(reverse_segment);
+       updateNarrowPassageTebSettings(other_narrow_sources);
+     } else {
+       const double vx_thr = cfg_->rotation.dual_arc_reverse_forward_vx;
+       const int need_frames = std::max(1, cfg_->rotation.dual_arc_reverse_forward_num);
+       const double min_hold_s = std::max(0.0, cfg_->rotation.dual_arc_reverse_min_hold);
+       const double elapsed_s = (clock_->now() - dual_arc_reverse_enter_time_).seconds();
+       if (cmd_vel.twist.linear.x >= vx_thr) {
+         ++dual_arc_reverse_forward_count_;
+       } else {
+         dual_arc_reverse_forward_count_ = 0;
+       }
+       if (elapsed_s >= min_hold_s &&
+           dual_arc_reverse_forward_count_ >= static_cast<size_t>(need_frames)) {
+         RCLCPP_INFO(
+           logger_,
+           "双弧失败: 连续前进 %zu 帧 vx=%.3f 且保持 %.2fs，切回高权重",
+           dual_arc_reverse_forward_count_, cmd_vel.twist.linear.x, elapsed_s);
+         exitDualArcReverseLatch(reverse_segment);
+         updateNarrowPassageTebSettings(other_narrow_sources);
+       }
+     }
+   }
    
    // store last command (for recovery analysis etc.)
    last_cmd_ = cmd_vel.twist;
@@ -2333,7 +2531,7 @@ void TebLocalPlannerROS::configure(
      last_cmd_ = cmd_vel.twist;
      RCLCPP_ERROR_THROTTLE(
        logger_, *(clock_), 1000,
-       "TEB numeric assertion: %s — resetting planner",
+       "TEB 数值断言失败: %s，正在重置规划器",
        ex.what());
      throw nav2_core::PlannerException(
        std::string("TebLocalPlannerROS: TEB numeric failure. Resetting planner..."));
@@ -2460,7 +2658,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
             wall_line_locked_ = false;
             wall_line_stable_count_ = 0;
             RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
-              "Wall line unlocked: lateral_change=%.3f, angle_change=%.3f",
+              "墙线解锁: 横向变化=%.3f m, 角度变化=%.3f rad",
               lateral_change, angle_diff);
           }
           else
@@ -2483,7 +2681,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
             locked_wall_start_ = locked_origin + t0 * locked_dir;
             locked_wall_end_ = locked_origin + t1 * locked_dir;
             RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
-              "Wall line lock slide along-wall: t=[%.2f, %.2f] len=%.2f",
+              "墙线锁沿墙滑动: t=[%.2f, %.2f] 长度=%.2f m",
               t0, t1, t1 - t0);
           }
         }
@@ -2498,7 +2696,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
           locked_wall_end_ = cur_end;
           wall_line_locked_ = true;
           RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
-            "Wall line locked after %d stable frames", wall_line_stable_count_);
+            "墙线已锁定，稳定帧数: %d", wall_line_stable_count_);
         }
       }
 
@@ -2676,12 +2874,12 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
      }
      catch (const tf2::ExtrapolationException& ex)
      {
-       RCLCPP_WARN(logger_, "updateObstacleContainerWithCustomObstacles: ExtrapolationException: %s, using identity transform", ex.what());
+       RCLCPP_WARN(logger_, "自定义障碍物 TF 查询失败 (ExtrapolationException): %s, 改用单位变换", ex.what());
        obstacle_to_map_eig.setIdentity();
      }
      catch (const tf2::TransformException& ex)
      {
-       RCLCPP_ERROR(logger_, "updateObstacleContainerWithCustomObstacles: TransformException: %s, using identity transform", ex.what());
+       RCLCPP_ERROR(logger_, "自定义障碍物 TF 查询失败 (TransformException): %s, 改用单位变换", ex.what());
        obstacle_to_map_eig.setIdentity();
      }
      
@@ -2714,7 +2912,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
        }
        else if (custom_obstacle_msg_.obstacles.at(i).polygon.points.empty())
        {
-         RCLCPP_INFO(logger_, "Invalid custom obstacle received. List of polygon vertices is empty. Skipping...");
+         RCLCPP_INFO(logger_, "收到无效自定义障碍物，多边形顶点为空，跳过");
          continue;
        }
        else // polygon
@@ -3444,7 +3642,7 @@ bool TebLocalPlannerROS::pruneArrivedLockedCorner(
   } catch (const tf2::TransformException & ex) {
     RCLCPP_WARN_THROTTLE(
       logger_, *clock_, 2000,
-      "pruneArrivedLockedCorner: transform robot to plan frame failed: %s", ex.what());
+      "到达角点裁剪: 机器人位姿变换到路径坐标系失败: %s", ex.what());
     return false;
   }
 
@@ -3493,8 +3691,8 @@ bool TebLocalPlannerROS::pruneArrivedLockedCorner(
 
   RCLCPP_INFO_THROTTLE(
     logger_, *clock_, 2000,
-    "[lock_corner] closest_raw=%d closest=%d C=%d angle=%.2f arc_to_c=%.3f "
-    "arrive=%.3f arrived=%d reason=%s",
+    "[lock_corner] 锁定角点 closest_raw=%d closest=%d C=%d 角度=%.2f 弧长到角点=%.3f "
+    "到达阈值=%.3f 已到达=%d 原因=%s",
     closest_raw, closest_idx, corner_idx, angle_deg, arc_to_c, arrive_dist,
     arrived ? 1 : 0, skip_reason != nullptr ? skip_reason : "ok");
 
@@ -3507,7 +3705,7 @@ bool TebLocalPlannerROS::pruneArrivedLockedCorner(
     global_plan_.begin() + corner_idx + 1);
   RCLCPP_INFO(
     logger_,
-    "prune_arrived_corner idx=%d erase=[0,%d] remain=%zu arc_to_c=%.3f",
+    "到达角点裁剪: 角点 idx=%d，删除 [0,%d]，剩余 %zu 点，弧长到角点=%.3f m",
     corner_idx, corner_idx, global_plan_.size(), arc_to_c);
   return true;
 }
@@ -3535,12 +3733,12 @@ bool TebLocalPlannerROS::pruneArrivedLockedCorner(
        // Apply transform manually to avoid using global_pose.header.stamp
        tf2::doTransform(global_pose, robot, global_to_plan_transform);
      } catch (const tf2::ExtrapolationException& ex) {
-       RCLCPP_WARN(logger_, "pruneGlobalPlan: ExtrapolationException in transform: %s, skipping pruning this cycle", ex.what());
+       RCLCPP_WARN(logger_, "路径裁剪 TF 查询失败 (ExtrapolationException): %s, 本周期跳过裁剪", ex.what());
        // If TimePointZero fails with extrapolation, skip pruning this cycle rather than using future time
        // This prevents further extrapolation errors
        return true;
      } catch (const tf2::TransformException& ex) {
-       RCLCPP_WARN(logger_, "pruneGlobalPlan: TransformException: %s, skipping pruning this cycle", ex.what());
+       RCLCPP_WARN(logger_, "路径裁剪 TF 查询失败 (TransformException): %s, 本周期跳过裁剪", ex.what());
        return true;
      }
      
@@ -3600,7 +3798,7 @@ bool TebLocalPlannerROS::pruneArrivedLockedCorner(
    }
    catch (const tf2::TransformException& ex)
    {
-     RCLCPP_DEBUG(logger_, "Cannot prune path since no transform is available: %s\n", ex.what());
+     RCLCPP_DEBUG(logger_, "无法裁剪路径，缺少坐标变换: %s\n", ex.what());
      return false;
    }
    return true;
@@ -3762,7 +3960,7 @@ bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
   if (tol <= 1e-9 || res <= 1e-9) {
     RCLCPP_WARN(
       logger_,
-      "transformGlobalPlan: last pose occupied but goal search disabled "
+      "transformGlobalPlan: 路径终点被占用但终点搜索已关闭 "
       "(transform_global_plan_goal_occupied_tolerance / goal_search_resolution <= 0)");
     return false;
   }
@@ -3770,12 +3968,12 @@ bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
     geometry_msgs::msg::PoseStamped occupied_global;
     tf2::doTransform(original_last_pose_plan_frame, occupied_global, plan_to_global_transform);
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000,
-      "transformGlobalPlan: last path point footprint collides — starting plan-frame grid search "
-      "(frame=%s, tolerance=%.3f m, resolution=%.3f m)",
+      "transformGlobalPlan: 路径终点 footprint 碰撞，开始在路径坐标系网格搜索 "
+      "(frame=%s, 容差=%.3f m, 分辨率=%.3f m)",
       original_last_pose_plan_frame.header.frame_id.c_str(), tol, res);
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000,
-      "transformGlobalPlan: last path point before adjust — plan[%s]: x=%.3f y=%.3f yaw=%.3f | "
-      "controller[%s]: x=%.3f y=%.3f yaw=%.3f",
+      "transformGlobalPlan: 终点调整前 — 路径系[%s]: x=%.3f y=%.3f yaw=%.3f | "
+      "控制器系[%s]: x=%.3f y=%.3f yaw=%.3f",
       original_last_pose_plan_frame.header.frame_id.c_str(),
       original_last_pose_plan_frame.pose.position.x,
       original_last_pose_plan_frame.pose.position.y,
@@ -3808,8 +4006,8 @@ bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
   }
   if (!found) {
     RCLCPP_WARN_THROTTLE(logger_, *(clock_), 1000,
-      "transformGlobalPlan: last global plan pose occupied, no free pose within tolerance %.3f m "
-      "(plan-frame grid search)",
+      "transformGlobalPlan: 路径终点被占用，容差 %.3f m 内未找到空闲位姿 "
+      "(路径坐标系网格搜索)",
       tol);
     return false;
   }
@@ -3819,8 +4017,8 @@ bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
     geometry_msgs::msg::PoseStamped best_global;
     tf2::doTransform(best, best_global, plan_to_global_transform);
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000,
-      "transformGlobalPlan: last path point after adjust — plan[%s]: x=%.3f y=%.3f yaw=%.3f | "
-      "controller[%s]: x=%.3f y=%.3f yaw=%.3f",
+      "transformGlobalPlan: 终点调整后 — 路径系[%s]: x=%.3f y=%.3f yaw=%.3f | "
+      "控制器系[%s]: x=%.3f y=%.3f yaw=%.3f",
       best.header.frame_id.c_str(),
       best.pose.position.x,
       best.pose.position.y,
@@ -3830,8 +4028,8 @@ bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
       best_global.pose.position.y,
       tf2::getYaw(best_global.pose.orientation));
     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000,
-      "transformGlobalPlan: last path point adjust delta (plan frame): dx=%.3f m dy=%.3f m | "
-      "horizontal offset=%.3f m",
+      "transformGlobalPlan: 终点调整增量 (路径坐标系): dx=%.3f m dy=%.3f m | "
+      "水平偏移=%.3f m",
       dx, dy, std::hypot(dx, dy));
   }
   last_pose_plan_frame_inout = best;
@@ -4097,7 +4295,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
    {
      if (global_plan.empty())
      {
-       RCLCPP_ERROR(logger_, "Received plan with zero length");
+       RCLCPP_ERROR(logger_, "收到的路径长度为 0");
        *current_goal_idx = 0;
        return false;
      }
@@ -4110,8 +4308,8 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
                    tf2::TimePointZero,
                    tf2::durationFromSec(0.5));
      } catch (const tf2::ExtrapolationException& ex) {
-       RCLCPP_WARN(logger_, "transformGlobalPlan: ExtrapolationException in lookupTransform: %s", ex.what());
-       RCLCPP_WARN(logger_, "transformGlobalPlan: Requested from %s to %s with TimePointZero, retrying with latest available time", 
+       RCLCPP_WARN(logger_, "transformGlobalPlan: TF 查询失败 (ExtrapolationException): %s", ex.what());
+       RCLCPP_WARN(logger_, "transformGlobalPlan: 请求 %s → %s (TimePointZero) 失败，尝试使用最新可用时间", 
                     plan_pose.header.frame_id.c_str(), global_frame.c_str());
        // Retry with TimePointZero but without specifying source time (uses latest available)
        try {
@@ -4120,13 +4318,13 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
                      plan_pose.header.frame_id,
                      tf2::TimePointZero);
        } catch (const tf2::TransformException& ex2) {
-         RCLCPP_ERROR(logger_, "transformGlobalPlan: Failed to get transform after retry: %s", ex2.what());
+         RCLCPP_ERROR(logger_, "transformGlobalPlan: 重试后仍无法获取坐标变换: %s", ex2.what());
          throw nav2_core::PlannerException(
            std::string("Could not transform the global plan to the frame of the controller: ") + ex2.what()
          );
        }
      } catch (const tf2::TransformException& ex) {
-       RCLCPP_ERROR(logger_, "transformGlobalPlan: TransformException: %s", ex.what());
+       RCLCPP_ERROR(logger_, "transformGlobalPlan: TF 查询失败 (TransformException): %s", ex.what());
        throw nav2_core::PlannerException(
          std::string("Could not transform the global plan to the frame of the controller: ") + ex.what()
        );
@@ -4144,7 +4342,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
        // Apply transform manually to avoid using global_pose.header.stamp
        tf2::doTransform(global_pose, robot_pose, global_to_plan_transform);
      } catch (const tf2::ExtrapolationException& ex) {
-       RCLCPP_WARN(logger_, "transformGlobalPlan: ExtrapolationException when transforming robot pose: %s, retrying", ex.what());
+       RCLCPP_WARN(logger_, "transformGlobalPlan: 变换机器人位姿失败 (ExtrapolationException): %s, 正在重试", ex.what());
        // Retry with TimePointZero but without specifying source time
        try {
          geometry_msgs::msg::TransformStamped global_to_plan_transform = tf_->lookupTransform(
@@ -4153,13 +4351,13 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
                      tf2::TimePointZero);
          tf2::doTransform(global_pose, robot_pose, global_to_plan_transform);
        } catch (const tf2::TransformException& ex2) {
-         RCLCPP_ERROR(logger_, "transformGlobalPlan: Failed to transform robot pose after retry: %s", ex2.what());
+         RCLCPP_ERROR(logger_, "transformGlobalPlan: 重试后仍无法变换机器人位姿: %s", ex2.what());
          throw nav2_core::PlannerException(
            std::string("Could not transform the global plan to the frame of the controller: ") + ex2.what()
          );
        }
      } catch (const tf2::TransformException& ex) {
-       RCLCPP_ERROR(logger_, "transformGlobalPlan: TransformException in robot pose transform: %s", ex.what());
+       RCLCPP_ERROR(logger_, "transformGlobalPlan: 变换机器人位姿失败 (TransformException): %s", ex.what());
        throw nav2_core::PlannerException(
          std::string("Could not transform the global plan to the frame of the controller: ") + ex.what()
        );
@@ -4186,6 +4384,9 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
     const int n_plan = static_cast<int>(global_plan.size());
     const int global_goal_idx = n_plan - 1;
     geometry_msgs::msg::PoseStamped effective_last_plan_pose = global_plan.back();
+    // 每个周期都对全局最后一个点做可达搜索；函数内部若已自由则立刻返回
+    (void)adjustOccupiedGlobalPlanGoalInPlace(
+      global_plan.back(), plan_to_global_transform, effective_last_plan_pose);
     auto planPoseAt = [&](int idx) -> const geometry_msgs::msg::PoseStamped & {
       if (idx == global_goal_idx) {
         return effective_last_plan_pose;
@@ -4215,6 +4416,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
     const int span_end_idx = lastIdxWithinArc(
       global_plan, segment_start_idx, corner_search_arc);
     const int row_end_idx = (corner_idx >= 0) ? corner_idx : span_end_idx;
+    const bool has_path_after_row = row_end_idx < global_goal_idx;
 
     double clip_length = max_plan_length;
     if (has_span_limit) {
@@ -4329,7 +4531,6 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
       lock_mode = 2;
       const double row_arc =
         arc_from_start[static_cast<size_t>(row_end_idx - segment_start_idx)];
-      const bool has_path_after_row = row_end_idx < global_goal_idx;
       const double free_tail = (last_occ < row_end_idx)
         ? (row_arc - arc_from_start[static_cast<size_t>(last_occ - segment_start_idx)])
         : 0.0;
@@ -4429,65 +4630,53 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
         if (found_idx >= 0) {
           RCLCPP_INFO_THROTTLE(
             logger_, *(clock_), 2000,
-            "transformGlobalPlan: lateral-padded terminal %d -> %d (margin=%.3f)",
+            "transformGlobalPlan: 侧向膨胀后行终点 %d -> %d (边距=%.3f m)",
             end_idx, found_idx,
             cfg_ != nullptr ? cfg_->obstacles.min_obstacle_dist : 0.0);
           end_idx = found_idx;
         } else {
           RCLCPP_WARN_THROTTLE(
             logger_, *(clock_), 2000,
-            "transformGlobalPlan: no lateral-padded free terminal on row [%d,%d]; pruning",
+            "transformGlobalPlan: 当前行 [%d,%d] 无侧向膨胀后的空闲终点，准备裁剪",
             segment_start_idx, row_end_idx);
           need_prune_remaining_row = true;
-          prune_include_start = true;
+          prune_include_start = has_path_after_row;
           end_idx = segment_start_idx;
         }
       }
     }
 
     for (int k = segment_start_idx; k <= end_idx; ++k) {
-      if (k == global_goal_idx)
-      {
-        const bool goal_occupied =
-          !globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
-            planPoseAt(k), plan_to_global_transform);
-        if (goal_occupied)
-        {
-          RCLCPP_WARN(
-            logger_,
-            "transformGlobalPlan: last path point footprint not free in local costmap; "
-            "running plan-frame goal search (no PlannerException).");
-          const bool adjusted_ok = adjustOccupiedGlobalPlanGoalInPlace(
-            global_plan.back(), plan_to_global_transform, effective_last_plan_pose);
-          if (!adjusted_ok) {
-            RCLCPP_ERROR(
-              logger_,
-              "transformGlobalPlan: last goal search did not find a free pose; keeping last plan pose.");
-          }
-        }
-      }
       tf2::doTransform(planPoseAt(k), newer_pose, plan_to_global_transform);
       transformed_plan.push_back(newer_pose);
     }
 
     if (need_prune_remaining_row && prune_row_from_idx && prune_row_to_idx) {
+      // 最后一行禁止从行首整段删除，且不能把全局最后一个点剔掉
+      if (!has_path_after_row) {
+        prune_include_start = false;
+      }
       int from_idx = segment_start_idx + 1;
       if (prune_include_start) {
         from_idx = findCurrentRowStartIdx(
           global_plan, segment_start_idx, corner_thresh_deg);
       }
-      if (from_idx <= row_end_idx) {
+      int to_idx = row_end_idx;
+      if (!has_path_after_row) {
+        to_idx = global_goal_idx - 1;
+      }
+      if (from_idx <= to_idx && to_idx >= 0) {
         *prune_row_from_idx = from_idx;
-        *prune_row_to_idx = row_end_idx;
+        *prune_row_to_idx = to_idx;
       }
     }
 
     i = end_idx + 1;
     RCLCPP_INFO_THROTTLE(
       logger_, *(clock_), 2000,
-      "[transformGlobalPlan]: look_fwd=%.3f span_lim=%.3f clip=%.3f corner=%d "
-      "in_horizon=%d lock=%d row_end=%d last_occ=%d end=%d prune_remaining=%d "
-      "prune_from=%d prune_to=%d",
+      "[transformGlobalPlan]: 前视=%.3f 跨度上限=%.3f 裁剪长度=%.3f 角点=%d "
+      "在视界内=%d 锁定=%d 行终点=%d 最后占用=%d 窗口终点=%d 裁剪剩余行=%d "
+      "裁剪从=%d 裁剪到=%d",
       max_plan_length, has_span_limit ? arc_limit : -1.0, clip_length,
       corner_idx, corner_in_horizon ? 1 : 0, lock_mode,
       row_end_idx, last_occ, end_idx, need_prune_remaining_row ? 1 : 0,
@@ -4534,20 +4723,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
      // the resulting transformed plan can be empty. In that case we explicitly inject the global goal.
      if (transformed_plan.empty())
      {
-       if (!globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
-           effective_last_plan_pose, plan_to_global_transform))
-       {
-         RCLCPP_WARN(
-           logger_,
-           "transformGlobalPlan: empty transformed plan and last pose hits obstacle; "
-           "running plan-frame goal search (no PlannerException).");
-         (void)adjustOccupiedGlobalPlanGoalInPlace(
-           global_plan.back(), plan_to_global_transform, effective_last_plan_pose);
-       }
-       //如果最后一个目标点不可达，抛出异常
- 
        tf2::doTransform(effective_last_plan_pose, newer_pose, plan_to_global_transform);
- 
        transformed_plan.push_back(newer_pose);
        
        // Return the index of the current goal point (inside the distance threshold)
@@ -4565,19 +4741,19 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
    }
    catch(tf2::LookupException& ex)
    {
-     RCLCPP_ERROR(logger_, "No Transform available Error: %s\n", ex.what());
+     RCLCPP_ERROR(logger_, "无可用坐标变换 (LookupException): %s\n", ex.what());
      return false;
    }
    catch(tf2::ConnectivityException& ex)
    {
-     RCLCPP_ERROR(logger_, "Connectivity Error: %s\n", ex.what());
+     RCLCPP_ERROR(logger_, "TF 连通性错误 (ConnectivityException): %s\n", ex.what());
      return false;
    }
    catch(tf2::ExtrapolationException& ex)
    {
-     RCLCPP_ERROR(logger_, "Extrapolation Error: %s\n", ex.what());
+     RCLCPP_ERROR(logger_, "TF 外推错误 (ExtrapolationException): %s\n", ex.what());
      if (global_plan.size() > 0)
-       RCLCPP_ERROR(logger_, "Global Frame: %s Plan Frame size %d: %s\n", global_frame.c_str(), (unsigned int)global_plan.size(), global_plan[0].header.frame_id.c_str());
+       RCLCPP_ERROR(logger_, "全局坐标系: %s，路径坐标系点数 %d: %s\n", global_frame.c_str(), (unsigned int)global_plan.size(), global_plan[0].header.frame_id.c_str());
  
      return false;
    }
@@ -4662,7 +4838,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
    {
      RCLCPP_WARN_ONCE(
                  logger_,
-                 "TebLocalPlannerROS(): Do not choose max_vel_x_backwards to be <=0. Disable backwards driving by increasing the optimization weight for penalyzing backwards driving.");
+                 "不要把 max_vel_x_backwards 设为 <=0；禁止倒车请增大 weight_kinematics_forward_drive");
    }
    else if (vx < -max_vel_x_backwards)
      ratio_x = - max_vel_x_backwards / vx;
@@ -4776,7 +4952,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
                      last_preferred_rotdir_ = RotType::left;
                  else
                      last_preferred_rotdir_ = RotType::right;
-                 RCLCPP_INFO(logger_, "TebLocalPlannerROS: possible oscillation (of the robot or its local plan) detected. Activating recovery strategy (prefer current turning direction during optimization).");
+                 RCLCPP_INFO(logger_, "检测到可能振荡（机器人或局部路径），启动恢复：优化时偏好当前转向");
              }
              time_last_oscillation_ = clock_->now();
              planner_->setPreferredTurningDir(last_preferred_rotdir_);
@@ -4785,8 +4961,12 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
          {
              last_preferred_rotdir_ = RotType::none;
              planner_->setPreferredTurningDir(last_preferred_rotdir_);
-             RCLCPP_INFO(logger_, "TebLocalPlannerROS: oscillation recovery disabled/expired.");
+             RCLCPP_INFO(logger_, "振荡恢复已关闭或超时");
          }
+     }
+
+     if (major_arc_active_ && major_arc_rotdir_ != RotType::none && planner_) {
+       planner_->setPreferredTurningDir(major_arc_rotdir_);
      }
  
  }
@@ -5157,8 +5337,8 @@ void TebLocalPlannerROS::publishBackwardMode(const bool backward)
   backward_mode_has_published_ = true;
   RCLCPP_INFO(
     logger_,
-    "/backward_mode published: %s",
-    backward ? "true (backward)" : "false (forward)");
+    "/backward_mode 已发布: %s",
+    backward ? "true (倒车)" : "false (前进)");
 }
 
 void TebLocalPlannerROS::resetBackwardModePublicationState(const bool publish_false)
@@ -5174,6 +5354,49 @@ void TebLocalPlannerROS::resetBackwardModePublicationState(const bool publish_fa
     backward_mode_has_published_ = false;
     backward_mode_initial_sent_ = false;
   }
+}
+
+void TebLocalPlannerROS::enterDualArcReverseLatch()
+{
+  const bool newly = !dual_arc_reverse_active_;
+  dual_arc_reverse_active_ = true;
+  dual_arc_reverse_enter_time_ = clock_->now();
+  dual_arc_reverse_forward_count_ = 0;
+  dual_arc_reverse_fail_count_ = 0;
+  if (newly) {
+    RCLCPP_INFO(logger_, "双弧失败: 进入倒车友好权重 latch");
+    if (cfg_->rotation.dual_arc_reverse_publish_backward_mode) {
+      publishBackwardMode(true);
+      backward_exit_false_count_ = 0;
+      backward_exit_window_start_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    }
+  } else {
+    RCLCPP_INFO(logger_, "双弧失败: 超时 probe 仍不可行，重新 latch");
+  }
+}
+
+void TebLocalPlannerROS::exitDualArcReverseLatch(const bool reverse_segment)
+{
+  if (!dual_arc_reverse_active_) {
+    return;
+  }
+  dual_arc_reverse_active_ = false;
+  dual_arc_reverse_forward_count_ = 0;
+  dual_arc_reverse_fail_count_ = 0;
+  RCLCPP_INFO(logger_, "双弧失败: 退出倒车友好权重 latch");
+  if (cfg_->rotation.dual_arc_reverse_publish_backward_mode && !reverse_segment) {
+    publishBackwardMode(false);
+    backward_exit_false_count_ = 0;
+    backward_exit_window_start_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  }
+}
+
+void TebLocalPlannerROS::resetDualArcReverseLatch()
+{
+  dual_arc_reverse_active_ = false;
+  dual_arc_reverse_forward_count_ = 0;
+  dual_arc_reverse_fail_count_ = 0;
+  dual_arc_reverse_enter_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
 }
 
 void TebLocalPlannerROS::updateBackwardModePublication(const bool reverse_segment)
@@ -5290,7 +5513,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    try {
     if (enable_edge_mode) {
        // Switch to edge-following mode
-       RCLCPP_INFO(logger_, "Switching to edge-following mode parameters");
+       RCLCPP_INFO(logger_, "切换到贴边模式参数");
        cfg_->optim.weight_optimaltime = cfg_->wall_line.edge_weight_optimaltime;
        cfg_->obstacles.min_obstacle_dist = cfg_->wall_line.edge_min_obstacle_dist;
        cfg_->optim.weight_inflation = cfg_->wall_line.edge_weight_inflation;
@@ -5302,7 +5525,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
        is_edge_following_mode_ = true;
      } else {
        // Switch to normal mode
-       RCLCPP_INFO(logger_, "Switching to normal mode parameters");
+       RCLCPP_INFO(logger_, "切换到正常模式参数");
        cfg_->optim.weight_optimaltime = normal_weight_optimaltime_;
        cfg_->obstacles.min_obstacle_dist = normal_min_obstacle_dist_;
        cfg_->optim.weight_inflation = normal_weight_inflation_;
@@ -5318,7 +5541,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
       desired_static_layer_state_ = desired_state;
 
       if (desired_state == current_static_layer_state_.load()) {
-        RCLCPP_INFO(logger_, "static_layer.enabled already at desired state %d, skipping service call.", desired_state ? 1 : 0);
+        RCLCPP_INFO(logger_, "static_layer.enabled 已是目标状态 %d，跳过服务调用", desired_state ? 1 : 0);
       } else if (desired_state) {
         spawnBackgroundTask([this]() {
           auto start = std::chrono::steady_clock::now();
@@ -5328,7 +5551,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
           while (isBackgroundWorkAllowed() &&
                  std::chrono::steady_clock::now() - start < delay_ms) {
             if (!desired_static_layer_state_.load()) {
-              RCLCPP_DEBUG(logger_, "Delayed static_layer enable cancelled: desired state changed");
+              RCLCPP_DEBUG(logger_, "延迟开启 static_layer 已取消：目标状态已变化");
               return;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -5348,7 +5571,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
       desired_local_footprint_state_ = desired_footprint_state;
 
       if (desired_footprint_state == current_local_footprint_state_.load()) {
-        RCLCPP_INFO(logger_, "Local footprint already at desired state %d, skipping service call.", desired_footprint_state ? 1 : 0);
+        RCLCPP_INFO(logger_, "局部 footprint 已是目标状态 %d，跳过服务调用", desired_footprint_state ? 1 : 0);
       } else if (!desired_footprint_state) {
         // 退出贴边：等待大轮廓无碰撞后再恢复（见 updatePendingNormalFootprintRestore）
         armPendingNormalFootprintRestore();
@@ -5363,7 +5586,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
       desired_global_footprint_state_ = desired_footprint_state;
 
       if (desired_footprint_state == current_global_footprint_state_.load()) {
-        RCLCPP_INFO(logger_, "Global footprint already at desired state %d, skipping service call.", desired_footprint_state ? 1 : 0);
+        RCLCPP_INFO(logger_, "全局 footprint 已是目标状态 %d，跳过服务调用", desired_footprint_state ? 1 : 0);
       } else if (!desired_footprint_state) {
         armPendingNormalFootprintRestore();
       } else {
@@ -5382,7 +5605,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
         while (isBackgroundWorkAllowed() &&
                std::chrono::steady_clock::now() - start < delay_ms) {
           if (!desired_normal_vel_x_restore_.load()) {
-            RCLCPP_DEBUG(logger_, "Delayed max_vel_x restore cancelled: switched back to edge mode");
+            RCLCPP_DEBUG(logger_, "延迟恢复 max_vel_x 已取消：已切回贴边模式");
             return;
           }
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -5399,18 +5622,18 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
               if (std::isfinite(limit) && speed_limit_linear_x_ > 0) {
                 if (limit < safe_linear_speed_limit_ && cfg_->robot.max_vel_x != limit) {
                   cfg_->robot.max_vel_x = std::min(limit, safe_linear_speed_limit_);
-                  RCLCPP_INFO(logger_, "Performing change speed limit in switch to normal mode!, max linear speed is: %.2f", cfg_->robot.max_vel_x);
+                  RCLCPP_INFO(logger_, "切回正常模式时应用速度限制，当前最大线速度: %.2f m/s", cfg_->robot.max_vel_x);
                 } else if (limit >= safe_linear_speed_limit_ && cfg_->robot.max_vel_x != safe_linear_speed_limit_) {
                   cfg_->robot.max_vel_x = safe_linear_speed_limit_;
-                  RCLCPP_INFO(logger_, "Receive speed limit is greater than safe linear speed limit in switch to normal mode!, set limit speed to safe linear speed limit: %.2f !", safe_linear_speed_limit_);
+                  RCLCPP_INFO(logger_, "切回正常模式时收到的速度限制大于安全上限，已钳到: %.2f m/s", safe_linear_speed_limit_);
                 }
               } else if (!std::isfinite(limit) || limit <= 0) {
                 cfg_->robot.max_vel_x = cfg_max_vel_x_;
-                RCLCPP_INFO_THROTTLE(logger_, *(clock_), 5000, "Speed limit is not finite or less than 0 in switch to normal mode!, current speed limit is: %.2f !", cfg_->robot.max_vel_x);
+                RCLCPP_INFO_THROTTLE(logger_, *(clock_), 5000, "切回正常模式时速度限制无效 (非有限或 <=0)，当前速度上限: %.2f m/s", cfg_->robot.max_vel_x);
               }
             } else {
               cfg_->robot.max_vel_x = cfg_max_vel_x_;
-              RCLCPP_INFO(logger_, "max_vel_x is not set in switch to normal mode!, set limit speed to normal max_vel_x: %.2f !", cfg_max_vel_x_);
+              RCLCPP_INFO(logger_, "切回正常模式时未设置速度限制，恢复正常 max_vel_x: %.2f m/s", cfg_max_vel_x_);
             }
         }
       });
@@ -5418,7 +5641,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
       desired_normal_vel_x_restore_ = false;
     }
    } catch (const std::exception& ex) {
-     RCLCPP_WARN(logger_, "Failed to switch parameter mode: %s", ex.what());
+     RCLCPP_WARN(logger_, "切换参数模式失败: %s", ex.what());
    }
  }
 
@@ -5429,14 +5652,14 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
      return;
    }
    if (!static_layer_client_) {
-     RCLCPP_ERROR(logger_, "static_layer_client_ not initialized. Cannot set static_layer.enabled.");
+     RCLCPP_ERROR(logger_, "static_layer_client_ 未初始化，无法设置 static_layer.enabled");
      return;
    }
 
    // Check if the requested state matches the desired state
    // This prevents outdated timer callbacks from overriding newer state changes
    if (enabled != desired_static_layer_state_.load()) {
-     RCLCPP_DEBUG(logger_, "Skipping setStaticLayerEnabled(%s): desired state is now %s",
+     RCLCPP_DEBUG(logger_, "跳过 setStaticLayerEnabled(%s): 当前目标状态已变为 %s",
                   enabled ? "true" : "false", desired_static_layer_state_.load() ? "true" : "false");
      return;
    }
@@ -5444,7 +5667,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    // Check service availability
    if (!waitForServiceInterruptible(static_layer_client_, std::chrono::seconds(2))) {
      if (isBackgroundWorkAllowed()) {
-       RCLCPP_ERROR(logger_, "Service /local_costmap/local_costmap/set_parameters not available.");
+       RCLCPP_ERROR(logger_, "服务 /local_costmap/local_costmap/set_parameters 不可用");
      }
      return;
    }
@@ -5457,8 +5680,8 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    rcl_interfaces::msg::Parameter param_msg = rclcpp::Parameter("static_layer.enabled", enabled).to_parameter_msg();
    request->parameters.push_back(param_msg);
 
-   RCLCPP_INFO(logger_, "Calling /local_costmap/local_costmap/set_parameters to set static_layer.enabled -> %s%s",
-               enabled ? "true" : "false", is_delayed ? " (delayed)" : "");
+   RCLCPP_INFO(logger_, "调用 /local_costmap/local_costmap/set_parameters 设置 static_layer.enabled -> %s%s",
+               enabled ? "true" : "false", is_delayed ? " (延迟)" : "");
 
    // Use a separate thread to avoid blocking the executor
    spawnBackgroundTask([this, request, enabled]() {
@@ -5480,16 +5703,16 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
          }
        }
        if (all_successful) {
-         RCLCPP_INFO(logger_, "Set /local_costmap/local_costmap static_layer.enabled -> %s, result: successful",
+         RCLCPP_INFO(logger_, "设置 /local_costmap/local_costmap static_layer.enabled -> %s，结果: 成功",
                      enabled ? "true" : "false");
          current_static_layer_state_.store(enabled);
        } else {
-         RCLCPP_ERROR(logger_, "Set /local_costmap/local_costmap static_layer.enabled -> %s, result: failed. Reason: %s",
+         RCLCPP_ERROR(logger_, "设置 /local_costmap/local_costmap static_layer.enabled -> %s，结果: 失败。原因: %s",
                       enabled ? "true" : "false", failed_reason.empty() ? "unknown" : failed_reason.c_str());
        }
      } catch (const std::exception& e) {
        if (isBackgroundWorkAllowed()) {
-         RCLCPP_ERROR(logger_, "Failed to call set_parameters service for local_costmap: %s", e.what());
+         RCLCPP_ERROR(logger_, "调用 local_costmap set_parameters 服务失败: %s", e.what());
        }
      }
    });
@@ -5503,7 +5726,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
      footprint_restore_safe_count_ = 0;
      RCLCPP_INFO(
        logger_,
-       "Pending normal footprint restore: need %d safe frames or force after %.1fs",
+       "等待恢复正常 footprint: 需连续 %d 帧安全，或 %.1f s 后强制恢复",
        std::max(1, cfg_->wall_line.footprint_restore_safe_frames),
        cfg_->wall_line.footprint_restore_max_wait_sec);
    }
@@ -5512,7 +5735,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
  void TebLocalPlannerROS::clearPendingNormalFootprintRestore()
  {
    if (pending_normal_footprint_restore_) {
-     RCLCPP_DEBUG(logger_, "Cleared pending normal footprint restore");
+     RCLCPP_DEBUG(logger_, "已清除等待中的正常 footprint 恢复");
    }
    pending_normal_footprint_restore_ = false;
    footprint_restore_safe_count_ = 0;
@@ -5608,7 +5831,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    if (!force_timeout && footprint_restore_safe_count_ < need_frames) {
      RCLCPP_INFO_THROTTLE(
        logger_, *(clock_), 2000,
-       "Waiting normal footprint restore: safe_frames=%d/%d elapsed=%.1f/%.1fs collision_free=%d",
+       "等待恢复正常 footprint: 安全帧=%d/%d 已等待=%.1f/%.1fs 无碰撞=%d",
        footprint_restore_safe_count_, need_frames, elapsed, max_wait, safe ? 1 : 0);
      return;
    }
@@ -5616,12 +5839,12 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    if (force_timeout) {
      RCLCPP_WARN(
        logger_,
-       "Force restoring normal footprint after %.1fs (safe_frames=%d/%d)",
+       "等待 %.1f s 后强制恢复正常 footprint (安全帧=%d/%d)",
        elapsed, footprint_restore_safe_count_, need_frames);
    } else {
      RCLCPP_INFO(
        logger_,
-       "Restoring normal footprint after %d consecutive safe frames (elapsed=%.1fs)",
+       "连续 %d 帧安全，恢复正常 footprint (已等待=%.1fs)",
        footprint_restore_safe_count_, elapsed);
    }
 
@@ -5641,7 +5864,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
      return;
    }
    if (!local_footprint_client_) {
-     RCLCPP_ERROR(logger_, "local_footprint_client_ not initialized. Cannot set footprint.");
+     RCLCPP_ERROR(logger_, "local_footprint_client_ 未初始化，无法设置 footprint");
      return;
    }
 
@@ -5649,7 +5872,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    // This prevents outdated timer callbacks from overriding newer state changes
    // enable=true means edge footprint, enable=false means normal footprint
    if (enable == current_local_footprint_state_.load()) {
-     RCLCPP_INFO(logger_, "Skipping setLocalFootprintEnabled(%s): desired state is now %s",
+     RCLCPP_INFO(logger_, "跳过 setLocalFootprintEnabled(%s): 当前状态已是 %s",
                   enable ? "edge" : "normal", current_local_footprint_state_.load() ? "edge" : "normal");
      return;
    }
@@ -5657,7 +5880,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    // Check service availability
    if (!waitForServiceInterruptible(local_footprint_client_, std::chrono::seconds(2))) {
      if (isBackgroundWorkAllowed()) {
-       RCLCPP_ERROR(logger_, "Service /local_costmap/local_costmap/set_parameters not available.");
+       RCLCPP_ERROR(logger_, "服务 /local_costmap/local_costmap/set_parameters 不可用");
      }
      return;
    }
@@ -5673,8 +5896,8 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    rcl_interfaces::msg::Parameter param_msg = rclcpp::Parameter("footprint", footprint_vertices).to_parameter_msg();
    request->parameters.push_back(param_msg);
 
-   RCLCPP_INFO(logger_, "Calling /local_costmap/local_costmap/set_parameters to set footprint -> %s%s",
-               footprint_vertices.c_str(), is_delayed ? " (delayed)" : "");
+   RCLCPP_INFO(logger_, "调用 /local_costmap/local_costmap/set_parameters 设置 footprint -> %s%s",
+               footprint_vertices.c_str(), is_delayed ? " (延迟)" : "");
 
    // Use a separate thread to avoid blocking the executor
    spawnBackgroundTask([this, request, footprint_vertices, enable]() {
@@ -5696,16 +5919,16 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
          }
        }
        if (all_successful) {
-         RCLCPP_INFO(logger_, "Set /local_costmap/local_costmap footprint -> %s, result: successful",
+         RCLCPP_INFO(logger_, "设置 /local_costmap/local_costmap footprint -> %s，结果: 成功",
                      footprint_vertices.c_str());
          current_local_footprint_state_.store(enable);
        } else {
-         RCLCPP_ERROR(logger_, "Set /local_costmap/local_costmap footprint -> %s, result: failed. Reason: %s",
+         RCLCPP_ERROR(logger_, "设置 /local_costmap/local_costmap footprint -> %s，结果: 失败。原因: %s",
                       footprint_vertices.c_str(), failed_reason.empty() ? "unknown" : failed_reason.c_str());
        }
      } catch (const std::exception& e) {
        if (isBackgroundWorkAllowed()) {
-         RCLCPP_ERROR(logger_, "Failed to call set_parameters service for local_costmap: %s", e.what());
+         RCLCPP_ERROR(logger_, "调用 local_costmap set_parameters 服务失败: %s", e.what());
        }
      }
    });
@@ -5718,7 +5941,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
      return;
    }
    if (!global_footprint_client_) {
-     RCLCPP_ERROR(logger_, "global_footprint_client_ not initialized. Cannot set footprint.");
+     RCLCPP_ERROR(logger_, "global_footprint_client_ 未初始化，无法设置 footprint");
      return;
    }
 
@@ -5726,7 +5949,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    // This prevents outdated timer callbacks from overriding newer state changes
    // enable=true means edge footprint, enable=false means normal footprint
    if (enable == current_global_footprint_state_.load()) {
-     RCLCPP_INFO(logger_, "Skipping setGlobalFootprintEnabled(%s): desired state is now %s",
+     RCLCPP_INFO(logger_, "跳过 setGlobalFootprintEnabled(%s): 当前状态已是 %s",
                   enable ? "edge" : "normal", current_global_footprint_state_.load() ? "edge" : "normal");
      return;
    }
@@ -5734,7 +5957,7 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    // Check service availability
    if (!waitForServiceInterruptible(global_footprint_client_, std::chrono::seconds(2))) {
      if (isBackgroundWorkAllowed()) {
-       RCLCPP_ERROR(logger_, "Service /global_costmap/global_costmap/set_parameters not available.");
+       RCLCPP_ERROR(logger_, "服务 /global_costmap/global_costmap/set_parameters 不可用");
      }
      return;
    }
@@ -5750,8 +5973,8 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    rcl_interfaces::msg::Parameter param_msg = rclcpp::Parameter("footprint", footprint_vertices).to_parameter_msg();
    request->parameters.push_back(param_msg);
 
-   RCLCPP_INFO(logger_, "Calling /global_costmap/global_costmap/set_parameters to set footprint -> %s%s",
-               footprint_vertices.c_str(), is_delayed ? " (delayed)" : "");
+   RCLCPP_INFO(logger_, "调用 /global_costmap/global_costmap/set_parameters 设置 footprint -> %s%s",
+               footprint_vertices.c_str(), is_delayed ? " (延迟)" : "");
 
    // Use a separate thread to avoid blocking the executor
    spawnBackgroundTask([this, request, footprint_vertices, enable]() {
@@ -5773,16 +5996,16 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
          }
        }
        if (all_successful) {
-         RCLCPP_INFO(logger_, "Set /global_costmap/global_costmap footprint -> %s, result: successful",
+         RCLCPP_INFO(logger_, "设置 /global_costmap/global_costmap footprint -> %s，结果: 成功",
                      footprint_vertices.c_str());
          current_global_footprint_state_.store(enable);
        } else {
-         RCLCPP_ERROR(logger_, "Set /global_costmap/global_costmap footprint -> %s, result: failed. Reason: %s",
+         RCLCPP_ERROR(logger_, "设置 /global_costmap/global_costmap footprint -> %s，结果: 失败。原因: %s",
                       footprint_vertices.c_str(), failed_reason.empty() ? "unknown" : failed_reason.c_str());
        }
      } catch (const std::exception& e) {
        if (isBackgroundWorkAllowed()) {
-         RCLCPP_ERROR(logger_, "Failed to call set_parameters service for global_costmap: %s", e.what());
+         RCLCPP_ERROR(logger_, "调用 global_costmap set_parameters 服务失败: %s", e.what());
        }
      }
    });
@@ -5800,11 +6023,11 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
  void TebLocalPlannerROS::customViaPointsCB(const nav_msgs::msg::Path::ConstSharedPtr via_points_msg)
  {
    
-   RCLCPP_INFO_ONCE(logger_, "Via-points received. This message is printed once.");
+   RCLCPP_INFO_ONCE(logger_, "已收到自定义经由点 (via-points)，本条只打印一次");
    if (cfg_->trajectory.global_plan_viapoint_sep > 0)
    {
-     RCLCPP_INFO(logger_, "Via-points are already obtained from the global plan (global_plan_viapoint_sep>0)."
-              "Ignoring custom via-points.");
+     RCLCPP_INFO(logger_, "经由点已由全局路径生成 (global_plan_viapoint_sep>0)，"
+              "忽略自定义经由点");
      custom_via_points_active_ = false;
      return;
    }
@@ -5844,7 +6067,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
   } catch (const tf2::TransformException &ex) {
     RCLCPP_WARN_THROTTLE(
       logger_, *(clock_), 2000,
-      "vehiclePosesCallback: Failed to get robot pose in map frame: %s", ex.what());
+      "车辆位姿回调: 获取机器人 map 系位姿失败: %s", ex.what());
     return;
   }
 
@@ -5872,7 +6095,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
       } catch (const tf2::TransformException &ex) {
         RCLCPP_WARN_THROTTLE(
           logger_, *(clock_), 2000,
-          "vehiclePosesCallback: Failed to transform vehicle pose to map frame: %s", ex.what());
+          "车辆位姿回调: 车辆位姿变换到 map 系失败: %s", ex.what());
         continue;
       }
     }
@@ -5884,7 +6107,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
     if (dist_sq <= new_vehicle_distance_threshold_sq) {
       RCLCPP_INFO_THROTTLE(
         logger_, *(clock_), 2000,
-        "vehiclePosesCallback: Found nearby vehicle at (%.2f, %.2f), distance to robot: %.2f m",
+        "车辆位姿回调: 发现附近车辆 (%.2f, %.2f)，距机器人: %.2f m",
         vehicle_pose.pose.position.x, vehicle_pose.pose.position.y, std::sqrt(dist_sq));
       near_vehicles.emplace_back(vehicle_pose);
     }
@@ -5907,7 +6130,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
       if (dist_sq > erase_vehicle_distance_threshold_sq) {
         RCLCPP_INFO_THROTTLE(
           logger_, *(clock_), 2000,
-          "vehiclePosesCallback: Removing vehicle at (%.2f, %.2f) from global list, distance to robot: %.2f m",
+          "车辆位姿回调: 从全局列表移除车辆 (%.2f, %.2f)，距机器人: %.2f m",
           it->pose.position.x, it->pose.position.y, std::sqrt(dist_sq));
         it = global_vehicle_poses_.erase(it);
       } else {
@@ -5925,7 +6148,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
         if (dist_sq <= same_vehicle_threshold_sq_) {
           RCLCPP_INFO_THROTTLE(
             logger_, *(clock_), 2000,
-            "vehiclePosesCallback: Candidate vehicle at (%.2f, %.2f) is similar to existing vehicle at (%.2f, %.2f), distance: %.2f m. Not adding to global list.",
+            "车辆位姿回调: 候选车辆 (%.2f, %.2f) 与已有车辆 (%.2f, %.2f) 过近 (%.2f m)，不加入全局列表",
             candidate.pose.position.x, candidate.pose.position.y,
             existing.pose.position.x, existing.pose.position.y,
             std::sqrt(dist_sq));
@@ -5974,6 +6197,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
    
    visualization_->on_deactivate();
    restoreNarrowPassageTebSettings();
+   resetDualArcReverseLatch();
    resetBackwardModePublicationState(true);
 
    return;
@@ -5989,7 +6213,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
      try {
        visualization_->on_cleanup();
      } catch (const std::exception & ex) {
-       RCLCPP_WARN(logger_, "visualization on_cleanup failed: %s", ex.what());
+       RCLCPP_WARN(logger_, "可视化 on_cleanup 失败: %s", ex.what());
      }
    }
    stopCostmapConverterWorker(std::chrono::milliseconds(800));
@@ -6021,7 +6245,7 @@ void TebLocalPlannerROS::spawnBackgroundTask(std::function<void()> task)
       }
     } catch (const std::exception & ex) {
       if (isBackgroundWorkAllowed()) {
-        RCLCPP_WARN(logger_, "Background task exception: %s", ex.what());
+        RCLCPP_WARN(logger_, "后台任务异常: %s", ex.what());
       }
     } catch (...) {
     }
@@ -6073,7 +6297,7 @@ void TebLocalPlannerROS::joinBackgroundTasks(const std::chrono::milliseconds tim
     } else {
       RCLCPP_WARN(
         logger_,
-        "Background task did not finish within %ld ms during shutdown, detaching",
+        "关闭时后台任务 %ld ms 内未结束，改为分离 (detach)",
         static_cast<long>(timeout.count()));
       detachThreadQuietly(job.thread);
     }
@@ -6109,7 +6333,7 @@ void TebLocalPlannerROS::stopCostmapConverterWorker(const std::chrono::milliseco
   } else {
     RCLCPP_WARN(
       logger_,
-      "costmap_converter stopWorker did not finish within %ld ms, detaching",
+      "costmap_converter stopWorker 在 %ld ms 内未结束，改为分离 (detach)",
       static_cast<long>(timeout.count()));
     detachThreadQuietly(stopper);
   }
@@ -6811,6 +7035,132 @@ bool TebLocalPlannerROS::isTransformedPlanFootprintSamplesCollisionFree(
   return true;
 }
 
+void TebLocalPlannerROS::resetMajorArcLock()
+{
+  major_arc_active_ = false;
+  major_arc_rotdir_ = RotType::none;
+  major_arc_progress_valid_ = false;
+}
+
+void TebLocalPlannerROS::captureMajorArcProgress(double rem_lock)
+{
+  major_arc_progress_x_ = robot_pose_.x();
+  major_arc_progress_y_ = robot_pose_.y();
+  major_arc_progress_rem_ = rem_lock;
+  major_arc_progress_time_ = clock_->now();
+  major_arc_progress_valid_ = true;
+}
+
+double TebLocalPlannerROS::remainingYawAlongMajorArc(double yaw_now, double yaw_goal) const
+{
+  const double d = g2o::normalize_theta(yaw_goal - yaw_now);
+  if (major_arc_rotdir_ == RotType::left) {
+    return (d >= 0.0) ? d : d + 2.0 * M_PI;
+  }
+  if (major_arc_rotdir_ == RotType::right) {
+    return (d <= 0.0) ? -d : 2.0 * M_PI - d;
+  }
+  return std::abs(d);
+}
+
+bool TebLocalPlannerROS::checkMajorArcStagnationUnlock(double yaw_goal)
+{
+  const double timeout = cfg_->rotation.major_arc_stagnation_timeout;
+  if (!major_arc_active_ || major_arc_rotdir_ == RotType::none || timeout <= 0.0) {
+    return false;
+  }
+
+  const double rem = remainingYawAlongMajorArc(robot_pose_.theta(), yaw_goal);
+  if (!major_arc_progress_valid_) {
+    captureMajorArcProgress(rem);
+    return false;
+  }
+
+  const double yaw_thr = cfg_->rotation.major_arc_stagnation_yaw;
+  const double xy_thr = cfg_->rotation.major_arc_stagnation_xy;
+  const double dx = robot_pose_.x() - major_arc_progress_x_;
+  const double dy = robot_pose_.y() - major_arc_progress_y_;
+  const double dist = std::hypot(dx, dy);
+  const double rem_drop = major_arc_progress_rem_ - rem;
+  const bool yaw_progress = yaw_thr > 0.0 && rem_drop >= yaw_thr;
+  const bool xy_progress = xy_thr > 0.0 && dist >= xy_thr;
+  if (yaw_progress || xy_progress) {
+    captureMajorArcProgress(rem);
+    return false;
+  }
+
+  const double elapsed = (clock_->now() - major_arc_progress_time_).seconds();
+  if (elapsed < timeout) {
+    return false;
+  }
+
+  RCLCPP_WARN(
+    logger_,
+    "优弧停滞解锁 rem=%.3f rad drop=%.3f rad dist=%.3f m dt=%.2f s rotdir=%s",
+    rem, rem_drop, dist, elapsed,
+    (major_arc_rotdir_ == RotType::left) ? "left" : "right");
+  resetMajorArcLock();
+  return true;
+}
+
+std::vector<geometry_msgs::msg::PoseStamped> TebLocalPlannerROS::buildMajorArcOrientedPlan(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan, double d_long) const
+{
+  if (plan.size() < 2) {
+    return plan;
+  }
+
+  auto yaw_of = [](const geometry_msgs::msg::PoseStamped & p) {
+    return tf2::getYaw(p.pose.orientation);
+  };
+  auto set_yaw = [](geometry_msgs::msg::PoseStamped & p, double yaw) {
+    tf2::Quaternion q;
+    q.setRPY(0.0, 0.0, g2o::normalize_theta(yaw));
+    p.pose.orientation = tf2::toMsg(q);
+  };
+
+  const double yaw0 = yaw_of(plan.front());
+  const double yawg = yaw_of(plan.back());
+
+  std::vector<double> s(plan.size(), 0.0);
+  for (size_t i = 1; i < plan.size(); ++i) {
+    const double dx = plan[i].pose.position.x - plan[i - 1].pose.position.x;
+    const double dy = plan[i].pose.position.y - plan[i - 1].pose.position.y;
+    s[i] = s[i - 1] + std::hypot(dx, dy);
+  }
+  const double path_len = std::max(s.back(), 1e-6);
+
+  constexpr double kMaxYawStep = 0.4;
+  const int n_yaw = std::max(2, static_cast<int>(std::ceil(std::abs(d_long) / kMaxYawStep)) + 1);
+  const int n = std::max(n_yaw, static_cast<int>(plan.size()));
+
+  std::vector<geometry_msgs::msg::PoseStamped> out;
+  out.reserve(static_cast<size_t>(n));
+  for (int k = 0; k < n; ++k) {
+    const double t = (n <= 1) ? 1.0 : static_cast<double>(k) / static_cast<double>(n - 1);
+    const double s_target = t * path_len;
+    size_t i = 1;
+    while (i + 1 < s.size() && s[i] < s_target) {
+      ++i;
+    }
+    const double s0 = s[i - 1];
+    const double s1 = s[i];
+    const double u = (s1 - s0 > 1e-9) ? (s_target - s0) / (s1 - s0) : 1.0;
+    geometry_msgs::msg::PoseStamped p = plan[i];
+    p.pose.position.x = plan[i - 1].pose.position.x +
+      u * (plan[i].pose.position.x - plan[i - 1].pose.position.x);
+    p.pose.position.y = plan[i - 1].pose.position.y +
+      u * (plan[i].pose.position.y - plan[i - 1].pose.position.y);
+    set_yaw(p, yaw0 + t * d_long);
+    out.push_back(p);
+  }
+  out.front() = plan.front();
+  set_yaw(out.front(), yaw0);
+  out.back() = plan.back();
+  set_yaw(out.back(), yawg);
+  return out;
+}
+
  bool TebLocalPlannerROS::shouldRotateInPlace(
   const geometry_msgs::msg::Twist & velocity,
   const std::vector<geometry_msgs::msg::PoseStamped> & transformed_plan,
@@ -7414,7 +7764,7 @@ void TebLocalPlannerROS::pairedMissionAndReferencePathCallback(
     clearActiveReferencePair();
     RCLCPP_INFO(
       logger_,
-      "Empty paired_mission_and_reference_path received: cleared active reference pair");
+      "收到空的 paired_mission_and_reference_path，已清除当前参考线对");
     return;
   }
   refreshActiveReferencePair();
@@ -8734,7 +9084,7 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
     logger_,
     *(clock_),
     5000,
-    "USE_CURB_OR_WALL=\"%s\" (normalized \"%s\") is not a supported edge mode",
+    "USE_CURB_OR_WALL=\"%s\" (规范化 \"%s\") 不是支持的贴边模式",
     use_curb_or_wall != nullptr ? use_curb_or_wall : "(null)",
     edge_mode.c_str());
 }

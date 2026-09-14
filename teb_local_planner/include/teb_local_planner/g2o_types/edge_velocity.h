@@ -111,14 +111,21 @@ public:
         double radius =  dist/(2*sin(angle_diff/2));
         dist = fabs( angle_diff * radius ); // actual arg length!
     }
+    const double dir =
+      deltaS.x() * cos(conf1->theta()) + deltaS.y() * sin(conf1->theta());
     double vel = dist / deltaT->estimate();
-    
-//     vel *= g2o::sign(deltaS[0]*cos(conf1->theta()) + deltaS[1]*sin(conf1->theta())); // consider direction
-    vel *= fast_sigmoid( 100 * (deltaS.x()*cos(conf1->theta()) + deltaS.y()*sin(conf1->theta())) ); // consider direction
+    if (cfg_->robot.allow_backward_velocity) {
+      // sigmoid 把倒车映射到 ~0，倒车不会撞速度下界
+      vel *= fast_sigmoid(100.0 * dir);
+    } else {
+      vel = dir / deltaT->estimate();
+    }
+    const double v_back = cfg_->robot.allow_backward_velocity
+      ? cfg_->robot.max_vel_x_backwards : 0.0;
     
     const double omega = angle_diff / deltaT->estimate();
   
-    _error[0] = penaltyBoundToInterval(vel, -cfg_->robot.max_vel_x_backwards, cfg_->robot.max_vel_x,cfg_->optim.penalty_epsilon);
+    _error[0] = penaltyBoundToInterval(vel, -v_back, cfg_->robot.max_vel_x,cfg_->optim.penalty_epsilon);
     _error[1] = penaltyBoundToInterval(omega, cfg_->robot.max_vel_theta,cfg_->optim.penalty_epsilon);
 
     TEB_ASSERT_MSG(std::isfinite(_error[0]), "EdgeVelocity::computeError() _error[0]=%f _error[1]=%f\n",_error[0],_error[1]);
@@ -266,8 +273,10 @@ public:
     double vx = r_dx / deltaT->estimate();
     double vy = r_dy / deltaT->estimate();
     double omega = g2o::normalize_theta(conf2->theta() - conf1->theta()) / deltaT->estimate();
+    const double v_back = cfg_->robot.allow_backward_velocity
+      ? cfg_->robot.max_vel_x_backwards : 0.0;
     
-    _error[0] = penaltyBoundToInterval(vx, -cfg_->robot.max_vel_x_backwards, cfg_->robot.max_vel_x, cfg_->optim.penalty_epsilon);
+    _error[0] = penaltyBoundToInterval(vx, -v_back, cfg_->robot.max_vel_x, cfg_->optim.penalty_epsilon);
     _error[1] = penaltyBoundToInterval(vy, cfg_->robot.max_vel_y, 0.0); // we do not apply the penalty epsilon here, since the velocity could be close to zero
     _error[2] = penaltyBoundToInterval(omega, cfg_->robot.max_vel_theta,cfg_->optim.penalty_epsilon);
 

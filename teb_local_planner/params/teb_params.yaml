@@ -40,6 +40,21 @@ controller_server:
       rough_global_plan_prune_max_accum_dist: -1.0  # coarse-pass search range [m]; <=0 searches entire plan
       exact_arc_length: False
       feasibility_check_no_poses: 2
+      # 劣弧 TEB 不可行时优弧展开 yaw 再优化；heading_threshold=0 表示一侧失败即试另一侧
+      major_arc_retry_enable: True
+      major_arc_retry_heading_threshold: 0.0
+      # 优弧锁停滞看门狗：timeout 内剩余转角下降不足 yaw、位移也不足 xy 则解锁；timeout<=0 关闭
+      major_arc_stagnation_timeout: 2.0
+      major_arc_stagnation_yaw: 0.15
+      major_arc_stagnation_xy: 0.06
+      # 双弧均失败：连续 fail_num 次后降 forward_drive 并 latch；连续前进 + min_hold 切回；timeout probe 高权重
+      dual_arc_reverse_enable: True
+      dual_arc_reverse_fail_num: 3
+      dual_arc_reverse_min_hold: 10.0
+      dual_arc_reverse_timeout: 20.0
+      dual_arc_reverse_forward_vx: 0.2
+      dual_arc_reverse_forward_num: 10
+      dual_arc_reverse_publish_backward_mode: True
       # Contour feasibility (see 动态障碍物避让.md)
       feasibility_check_obstacle_contours: True
       feasibility_check_dynamic_prediction: True
@@ -58,6 +73,8 @@ controller_server:
       # Robot
               
       max_vel_x: 0.26
+      # 不再用此开关把 vx 下界钉成 0（会导致优化无解）；倒车由 max_vel_x_backwards 限制，前进偏好用 weight_kinematics_forward_drive
+      prefer_forward_only: True
       max_vel_theta: 1.0 
       acc_lim_x: 2.5
       acc_lim_theta: 3.2

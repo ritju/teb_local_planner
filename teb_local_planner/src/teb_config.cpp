@@ -176,6 +176,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "wheelbase", rclcpp::ParameterValue(robot.wheelbase));
   declare_parameter_if_not_declared(nh, name + "." + "cmd_angle_instead_rotvel", rclcpp::ParameterValue(robot.cmd_angle_instead_rotvel));
   declare_parameter_if_not_declared(nh, name + "." + "is_footprint_dynamic", rclcpp::ParameterValue(robot.is_footprint_dynamic));
+  declare_parameter_if_not_declared(nh, name + "." + "prefer_forward_only", rclcpp::ParameterValue(robot.prefer_forward_only));
   declare_parameter_if_not_declared(nh, name + "." + "map_to_base_transform_max_age", rclcpp::ParameterValue(robot.map_to_base_transform_max_age));
   declare_parameter_if_not_declared(nh, name + "." + "safe_linear_speed_limit", rclcpp::ParameterValue(robot.safe_linear_speed_limit));
 
@@ -373,6 +374,18 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "rotation_limit_duration", rclcpp::ParameterValue(rotation.rotation_limit_duration));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_limit_distance", rclcpp::ParameterValue(rotation.rotation_limit_distance));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_simulate_ahead_time", rclcpp::ParameterValue(rotation.simulate_ahead_time));
+  declare_parameter_if_not_declared(nh, name + "." + "major_arc_retry_enable", rclcpp::ParameterValue(rotation.major_arc_retry_enable));
+  declare_parameter_if_not_declared(nh, name + "." + "major_arc_retry_heading_threshold", rclcpp::ParameterValue(rotation.major_arc_retry_heading_threshold));
+  declare_parameter_if_not_declared(nh, name + "." + "major_arc_stagnation_timeout", rclcpp::ParameterValue(rotation.major_arc_stagnation_timeout));
+  declare_parameter_if_not_declared(nh, name + "." + "major_arc_stagnation_yaw", rclcpp::ParameterValue(rotation.major_arc_stagnation_yaw));
+  declare_parameter_if_not_declared(nh, name + "." + "major_arc_stagnation_xy", rclcpp::ParameterValue(rotation.major_arc_stagnation_xy));
+  declare_parameter_if_not_declared(nh, name + "." + "dual_arc_reverse_enable", rclcpp::ParameterValue(rotation.dual_arc_reverse_enable));
+  declare_parameter_if_not_declared(nh, name + "." + "dual_arc_reverse_fail_num", rclcpp::ParameterValue(rotation.dual_arc_reverse_fail_num));
+  declare_parameter_if_not_declared(nh, name + "." + "dual_arc_reverse_min_hold", rclcpp::ParameterValue(rotation.dual_arc_reverse_min_hold));
+  declare_parameter_if_not_declared(nh, name + "." + "dual_arc_reverse_timeout", rclcpp::ParameterValue(rotation.dual_arc_reverse_timeout));
+  declare_parameter_if_not_declared(nh, name + "." + "dual_arc_reverse_forward_vx", rclcpp::ParameterValue(rotation.dual_arc_reverse_forward_vx));
+  declare_parameter_if_not_declared(nh, name + "." + "dual_arc_reverse_forward_num", rclcpp::ParameterValue(rotation.dual_arc_reverse_forward_num));
+  declare_parameter_if_not_declared(nh, name + "." + "dual_arc_reverse_publish_backward_mode", rclcpp::ParameterValue(rotation.dual_arc_reverse_publish_backward_mode));
 
   // Homotopy Class Planner
   declare_parameter_if_not_declared(nh, name + "." + "enable_homotopy_class_planning", rclcpp::ParameterValue(hcp.enable_homotopy_class_planning));
@@ -574,6 +587,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "wheelbase", robot.wheelbase, robot.wheelbase);
   nh->get_parameter_or(name + "." + "cmd_angle_instead_rotvel", robot.cmd_angle_instead_rotvel, robot.cmd_angle_instead_rotvel);
   nh->get_parameter_or(name + "." + "is_footprint_dynamic", robot.is_footprint_dynamic, robot.is_footprint_dynamic);
+  nh->get_parameter_or(name + "." + "prefer_forward_only", robot.prefer_forward_only, robot.prefer_forward_only);
   nh->get_parameter_or(name + "." + "map_to_base_transform_max_age", robot.map_to_base_transform_max_age, robot.map_to_base_transform_max_age);
   nh->get_parameter_or(name + "." + "safe_linear_speed_limit", robot.safe_linear_speed_limit, robot.safe_linear_speed_limit);
   
@@ -821,6 +835,18 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "rotation_limit_duration", rotation.rotation_limit_duration, rotation.rotation_limit_duration);
   nh->get_parameter_or(name + "." + "rotation_limit_distance", rotation.rotation_limit_distance, rotation.rotation_limit_distance);
   nh->get_parameter_or(name + "." + "rotation_simulate_ahead_time", rotation.simulate_ahead_time, rotation.simulate_ahead_time);
+  nh->get_parameter_or(name + "." + "major_arc_retry_enable", rotation.major_arc_retry_enable, rotation.major_arc_retry_enable);
+  nh->get_parameter_or(name + "." + "major_arc_retry_heading_threshold", rotation.major_arc_retry_heading_threshold, rotation.major_arc_retry_heading_threshold);
+  nh->get_parameter_or(name + "." + "major_arc_stagnation_timeout", rotation.major_arc_stagnation_timeout, rotation.major_arc_stagnation_timeout);
+  nh->get_parameter_or(name + "." + "major_arc_stagnation_yaw", rotation.major_arc_stagnation_yaw, rotation.major_arc_stagnation_yaw);
+  nh->get_parameter_or(name + "." + "major_arc_stagnation_xy", rotation.major_arc_stagnation_xy, rotation.major_arc_stagnation_xy);
+  nh->get_parameter_or(name + "." + "dual_arc_reverse_enable", rotation.dual_arc_reverse_enable, rotation.dual_arc_reverse_enable);
+  nh->get_parameter_or(name + "." + "dual_arc_reverse_fail_num", rotation.dual_arc_reverse_fail_num, rotation.dual_arc_reverse_fail_num);
+  nh->get_parameter_or(name + "." + "dual_arc_reverse_min_hold", rotation.dual_arc_reverse_min_hold, rotation.dual_arc_reverse_min_hold);
+  nh->get_parameter_or(name + "." + "dual_arc_reverse_timeout", rotation.dual_arc_reverse_timeout, rotation.dual_arc_reverse_timeout);
+  nh->get_parameter_or(name + "." + "dual_arc_reverse_forward_vx", rotation.dual_arc_reverse_forward_vx, rotation.dual_arc_reverse_forward_vx);
+  nh->get_parameter_or(name + "." + "dual_arc_reverse_forward_num", rotation.dual_arc_reverse_forward_num, rotation.dual_arc_reverse_forward_num);
+  nh->get_parameter_or(name + "." + "dual_arc_reverse_publish_backward_mode", rotation.dual_arc_reverse_publish_backward_mode, rotation.dual_arc_reverse_publish_backward_mode);
 
   // footprint model
   if (!nh->get_parameter(name + "." + "footprint_model.type", model_name))
@@ -1415,6 +1441,20 @@ rcl_interfaces::msg::SetParametersResult
         rotation.linear_vel_threshold = parameter.as_double();
       } else if (name == node_name + ".rotation_angle_threshold") {
         rotation.angle_threshold = parameter.as_double();
+      } else if (name == node_name + ".major_arc_retry_heading_threshold") {
+        rotation.major_arc_retry_heading_threshold = parameter.as_double();
+      } else if (name == node_name + ".major_arc_stagnation_timeout") {
+        rotation.major_arc_stagnation_timeout = parameter.as_double();
+      } else if (name == node_name + ".major_arc_stagnation_yaw") {
+        rotation.major_arc_stagnation_yaw = parameter.as_double();
+      } else if (name == node_name + ".major_arc_stagnation_xy") {
+        rotation.major_arc_stagnation_xy = parameter.as_double();
+      } else if (name == node_name + ".dual_arc_reverse_min_hold") {
+        rotation.dual_arc_reverse_min_hold = parameter.as_double();
+      } else if (name == node_name + ".dual_arc_reverse_timeout") {
+        rotation.dual_arc_reverse_timeout = parameter.as_double();
+      } else if (name == node_name + ".dual_arc_reverse_forward_vx") {
+        rotation.dual_arc_reverse_forward_vx = parameter.as_double();
       } else if (name == node_name + ".rotate_to_heading_angular_vel") {
         rotation.rotate_to_heading_angular_vel = parameter.as_double();
       } else if (name == node_name + ".rotation_max_angular_accel") {
@@ -1460,6 +1500,10 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.dynamic_obstacle_debug_pose_stride = std::max(1, static_cast<int>(parameter.as_int()));
       } else if (name == node_name + ".control_look_ahead_poses") {
         trajectory.control_look_ahead_poses = parameter.as_int();
+      } else if (name == node_name + ".dual_arc_reverse_forward_num") {
+        rotation.dual_arc_reverse_forward_num = parameter.as_int();
+      } else if (name == node_name + ".dual_arc_reverse_fail_num") {
+        rotation.dual_arc_reverse_fail_num = parameter.as_int();
       }
       // Robot
       // GoalTolerance
@@ -1510,6 +1554,8 @@ rcl_interfaces::msg::SetParametersResult
         robot.cmd_angle_instead_rotvel = parameter.as_bool();
       } else if (name == node_name + ".is_footprint_dynamic") {
         robot.is_footprint_dynamic = parameter.as_bool();
+      } else if (name == node_name + ".prefer_forward_only") {
+        robot.prefer_forward_only = parameter.as_bool();
       }
       // GoalTolerance
       else if (name == node_name + ".free_goal_vel") {
@@ -1586,6 +1632,12 @@ rcl_interfaces::msg::SetParametersResult
         recovery.divergence_detection_enable = parameter.as_bool();
       } else if (name == node_name + ".rotation_path_footprint_check_enable") {
         rotation.path_footprint_check_enable = parameter.as_bool();
+      } else if (name == node_name + ".major_arc_retry_enable") {
+        rotation.major_arc_retry_enable = parameter.as_bool();
+      } else if (name == node_name + ".dual_arc_reverse_enable") {
+        rotation.dual_arc_reverse_enable = parameter.as_bool();
+      } else if (name == node_name + ".dual_arc_reverse_publish_backward_mode") {
+        rotation.dual_arc_reverse_publish_backward_mode = parameter.as_bool();
       }
     }
 

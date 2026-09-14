@@ -682,10 +682,13 @@
    /** 检测 transformed_plan 倒车弧长占比：短段扩窗后位移与航向夹角接近 180° */
    bool hasReverseSegmentInPlan(
      const std::vector<geometry_msgs::msg::PoseStamped> & plan) const;
-   /** 边沿发布 /backward_mode（仅几何倒车检测，供 controller 门控） */
+   /** 边沿发布 /backward_mode（几何倒车检测或双弧失败 latch，供 controller 门控） */
    void publishBackwardMode(bool backward);
    void updateBackwardModePublication(bool reverse_segment);
    void resetBackwardModePublicationState(bool publish_false);
+   void enterDualArcReverseLatch();
+   void exitDualArcReverseLatch(bool reverse_segment);
+   void resetDualArcReverseLatch();
    /** 应用窄通道 TEB 参数（降低 forward_drive 惩罚、允许倒车初始化等） */
    void applyNarrowPassageTebSettings();
    /** 恢复窄通道 TEB 参数为正常模式初始值 */
@@ -961,7 +964,30 @@
   geometry_msgs::msg::PoseStamped last_rotation_pose_;  //!< Robot pose when last in-place rotation started, finished, or failed
   rclcpp::Time last_rotation_pose_time_{0};
   bool was_inplace_rotation_active_{false};
-   
+  std::vector<geometry_msgs::msg::PoseStamped> major_arc_plan_;
+  bool major_arc_active_{false};
+  RotType major_arc_rotdir_{RotType::none};
+  bool major_arc_progress_valid_{false};
+  double major_arc_progress_x_{0.0};
+  double major_arc_progress_y_{0.0};
+  double major_arc_progress_rem_{0.0};
+  rclcpp::Time major_arc_progress_time_{0};
+  bool dual_arc_reverse_active_{false};
+  rclcpp::Time dual_arc_reverse_enter_time_{0, 0, RCL_ROS_TIME};
+  size_t dual_arc_reverse_forward_count_{0};
+  size_t dual_arc_reverse_fail_count_{0};
+
+   /**
+    * @brief 将路径点 yaw 沿起点→终点的优弧展开（相邻短弧差同号），用于劣弧不可行时的二次初始化
+    */
+   std::vector<geometry_msgs::msg::PoseStamped> buildMajorArcOrientedPlan(
+     const std::vector<geometry_msgs::msg::PoseStamped> & plan, double d_long) const;
+
+   void resetMajorArcLock();
+   void captureMajorArcProgress(double rem_lock);
+   double remainingYawAlongMajorArc(double yaw_now, double yaw_goal) const;
+   bool checkMajorArcStagnationUnlock(double yaw_goal);
+
    /**
     * @brief Check if in-place rotation should be performed
     * @param velocity Current robot velocity (linear threshold only; collision prediction uses configured rotate speed)

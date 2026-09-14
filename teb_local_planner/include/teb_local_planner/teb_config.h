@@ -193,6 +193,10 @@ public:
     //!< 若大于 0：当 map_frame→基底坐标系 TF 最新消息时间戳早于当前时钟超过该值 [s] 时，控制器输出零速度；<=0 关闭
     double map_to_base_transform_max_age; //!< map->base TF 最大允许延迟 [s]，超时则抑制输出
     double safe_linear_speed_limit; //!< Maximum linear speed limit for the robot
+    //!< 保留参数：前进偏好请用 weight_kinematics_forward_drive，不再把速度边下界钉成 0
+    bool prefer_forward_only;
+    //!< 本周期是否允许负 vx（始终为 true：完全禁止倒车会使优化无解）
+    bool allow_backward_velocity;
   } robot; //!< Robot related parameters
 
   //! Goal tolerance related parameters
@@ -451,6 +455,30 @@ public:
     double decel_blend_start_rad; //!< 原地转减速 blend 角度阈值 [rad]（<=0 自动计算）
     double rotation_limit_duration; //!< Duration window to suppress repeated in-place rotation [s], <=0 disables
     double rotation_limit_distance; //!< Robot travel from last in-place rotation site [m] before another is allowed; <=0 disables
+    //!< 劣弧 TEB 不可行时，用优弧展开 yaw 再优化
+    bool major_arc_retry_enable;
+    //!< 优弧重试所需最小航向差 [rad]；0 表示一侧失败即试另一侧
+    double major_arc_retry_heading_threshold;
+    //!< 优弧锁停滞看门狗时长 [s]；<=0 关闭
+    double major_arc_stagnation_timeout;
+    //!< 沿锁定方向的剩余转角下降超过该值则视为有进展 [rad]
+    double major_arc_stagnation_yaw;
+    //!< 平面位移超过该值则视为仍在挪、刷新看门狗 [m]；<=0 关闭位移豁免
+    double major_arc_stagnation_xy;
+    //!< 优劣弧均失败时降 forward_drive 并 latch，允许倒车求解
+    bool dual_arc_reverse_enable;
+    //!< 连续双弧失败达到该次数后才降权允许倒车；1 表示首次失败即进
+    int dual_arc_reverse_fail_num;
+    //!< 进入 latch 后最早允许按「连续前进」切回 [s]
+    double dual_arc_reverse_min_hold;
+    //!< latch 最长保持 [s]；到时 probe 高权重，失败则同周期再进；<=0 关闭超时
+    double dual_arc_reverse_timeout;
+    //!< 饱和后 cmd_vx 达到该值才计为前进 [m/s]
+    double dual_arc_reverse_forward_vx;
+    //!< 连续前进帧数达到后（且过 min_hold）切回
+    int dual_arc_reverse_forward_num;
+    //!< 双弧失败 latch 进出时是否发布 /backward_mode
+    bool dual_arc_reverse_publish_backward_mode;
   } rotation; //!< Parameters related to in-place rotation
 
   /**
@@ -569,6 +597,8 @@ public:
     robot.use_proportional_saturation = false;
     robot.map_to_base_transform_max_age = 0.0;
     robot.safe_linear_speed_limit = 2.0;
+    robot.prefer_forward_only = true;
+    robot.allow_backward_velocity = true;
 
     // GoalTolerance
 
@@ -792,6 +822,18 @@ public:
     rotation.decel_blend_start_rad = 0.0;
     rotation.rotation_limit_duration = 3.0;
     rotation.rotation_limit_distance = 0.3;
+    rotation.major_arc_retry_enable = true;
+    rotation.major_arc_retry_heading_threshold = 0.0;
+    rotation.major_arc_stagnation_timeout = 2.0;
+    rotation.major_arc_stagnation_yaw = 0.15;
+    rotation.major_arc_stagnation_xy = 0.06;
+    rotation.dual_arc_reverse_enable = true;
+    rotation.dual_arc_reverse_fail_num = 3;
+    rotation.dual_arc_reverse_min_hold = 10.0;
+    rotation.dual_arc_reverse_timeout = 20.0;
+    rotation.dual_arc_reverse_forward_vx = 0.2;
+    rotation.dual_arc_reverse_forward_num = 10;
+    rotation.dual_arc_reverse_publish_backward_mode = true;
   }
   
   /**
