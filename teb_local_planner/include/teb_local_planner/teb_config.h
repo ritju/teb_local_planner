@@ -230,6 +230,15 @@ public:
     double dyn_gate_hold_time; //!< 威胁消失后仍保持 OmegaHold 的时间迟滞 [s]
     double delta_omega_scale; //!< |omega-omega_ref| <= scale * max_vel_theta
     bool publish_near_horizon_debug; //!< 发布 teb_near_horizon_debug MarkerArray 与调试日志
+    //!< PATH 走廊动态停车（独立订阅 /dynamic_obstacles，不进 obstacles）
+    bool path_wait_enable; //!< 是否启用 PATH 动态停车门控
+    std::string path_wait_topic; //!< 确认动态障碍话题
+    double path_wait_lookahead_dist; //!< 沿 PATH 前视弧长 [m]
+    double path_wait_corridor_scale; //!< min_obstacle_dist 缩放，默认 1
+    double path_wait_timeout; //!< 每个未锁 ID 挡路后最多等待 [s]（须 > 检测 t_settle）
+    double path_wait_clear_time; //!< 走廊清空 / 单 ID 离开后去抖 [s]
+    double path_wait_msg_timeout; //!< 动态话题断流超时 [s]
+    bool publish_path_wait_debug; //!< 发布 teb_path_wait_debug MarkerArray
     bool include_costmap_obstacles; //!< Specify whether the obstacles in the costmap should be taken into account directly
     double costmap_obstacles_behind_robot_dist; //!< Limit the occupied local costmap obstacles taken into account for planning behind the robot (specify distance in meters)
     int obstacle_poses_affected; //!< The obstacle position is attached to the closest pose on the trajectory to reduce computational effort, but take a number of neighbors into account as well
@@ -626,6 +635,14 @@ public:
     obstacles.dyn_gate_hold_time = 0.3;
     obstacles.delta_omega_scale = 0.3;
     obstacles.publish_near_horizon_debug = true;
+    obstacles.path_wait_enable = true;
+    obstacles.path_wait_topic = "/dynamic_obstacles";
+    obstacles.path_wait_lookahead_dist = 6.0;
+    obstacles.path_wait_corridor_scale = 1.0;
+    obstacles.path_wait_timeout = 6.0;
+    obstacles.path_wait_clear_time = 0.5;
+    obstacles.path_wait_msg_timeout = 0.5;
+    obstacles.publish_path_wait_debug = true;
     obstacles.include_costmap_obstacles = true;
     obstacles.costmap_obstacles_behind_robot_dist = 1.5;
     obstacles.obstacle_poses_affected = 25;

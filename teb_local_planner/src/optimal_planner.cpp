@@ -766,7 +766,7 @@ void TebOptimalPlanner::AddEdgesNearHorizonOmegaHold()
   if (node_)
   {
     RCLCPP_INFO_THROTTLE(
-        node_->get_logger(), *node_->get_clock(), 1000,
+        node_->get_logger(), *node_->get_clock(), 2000,
         "[NearHorizon] AddEdgesNearHorizonOmegaHold: edges=%d omega_ref=%.3f delta_allow=%.3f T_near=%.2f",
         edges_added, omega_ref, delta_allow, T_near);
   }

@@ -63,6 +63,7 @@
  #include <visualization_msgs/msg/marker_array.hpp>
  #include <visualization_msgs/msg/marker.hpp>
  #include <costmap_converter_msgs/msg/obstacle_msg.hpp>
+ #include <costmap_converter_msgs/msg/obstacle_array_msg.hpp>
  
  // transforms
  #include <tf2_ros/transform_listener.h>
@@ -73,6 +74,7 @@
  #include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
  #include <nav2_costmap_2d/footprint_collision_checker.hpp>
  #include <teb_local_planner/near_horizon_dynamic_safety.h>
+ #include <teb_local_planner/path_dynamic_wait.h>
  
  #include <nav2_util/lifecycle_node.hpp>
  #include <nav2_costmap_2d/costmap_2d_ros.hpp>
@@ -523,6 +525,21 @@
      * @param obst_msg pointer to the message containing a list of polygon shaped obstacles
      */
    void customObstacleCB(const costmap_converter_msgs::msg::ObstacleArrayMsg::ConstSharedPtr obst_msg);
+
+   void pathWaitObstacleCB(const costmap_converter_msgs::msg::ObstacleArrayMsg::ConstSharedPtr obst_msg);
+
+   /**
+    * @brief PATH-corridor wait: if confirmed dynamic obstacles block the plan, hold in place.
+    * @return true if cmd_vel is already filled and computeVelocityCommands should return it
+    */
+   bool tryPathWaitHold(
+     const geometry_msgs::msg::PoseStamped & robot_pose,
+     const geometry_msgs::msg::Twist & velocity,
+     geometry_msgs::msg::TwistStamped & cmd_vel);
+
+   bool collectPathWaitObstacles(
+     std::vector<PathWaitObstacle> & out,
+     bool & message_valid);
    
     /**
      * @brief Callback for custom via-points
@@ -823,6 +840,13 @@
    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr near_horizon_debug_marker_pub_;
    DynamicObstacleCache dynamic_obstacle_cache_;
    NearHorizonThreatGate near_horizon_threat_gate_;
+   rclcpp::Subscription<costmap_converter_msgs::msg::ObstacleArrayMsg>::SharedPtr path_wait_obst_sub_;
+   std::mutex path_wait_obst_mutex_;
+   costmap_converter_msgs::msg::ObstacleArrayMsg path_wait_obstacle_msg_;
+   rclcpp::Time path_wait_receive_time_{0, 0, RCL_ROS_TIME};
+   bool path_wait_msg_valid_ = false;
+   PathDynamicWaitGate path_dynamic_wait_gate_;
+   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr path_wait_debug_marker_pub_;
    int last_published_protruding_obstacle_marker_count_{0};
    int last_published_corner_footprint_marker_count_{0};
    WallMonitorCorridor protrusion_monitor_corridor_;
@@ -918,20 +942,13 @@
      const geometry_msgs::msg::Pose& vehicle_pose);
 
    /**
-    * @brief 末端路径点(plan系)变换到控制器坐标系后用 footprint 做占据检测；无障碍返回 true。
-    */
-   bool globalPlanPoseFootprintFreeInControllerFrame(
-     const geometry_msgs::msg::PoseStamped& pose_plan_frame,
-     const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
-     geometry_msgs::msg::PoseStamped* out_pose_global_frame) const;
-
-   /**
     * 车体系足迹只沿 ±y 外扩当前 min_obstacle_dist（贴边已换成 edge_min_obstacle_dist）；x 不变。
     */
    std::vector<geometry_msgs::msg::Point> lateralPaddedFootprintSpec() const;
 
    /**
-    * 与 globalPlanPoseFootprintFreeInControllerFrame 相同，但用左右扩足迹；供 transformed_plan 尾点。
+    * 路径点(plan 系)变换到控制器系后，用左右扩足迹做占据检测；无障碍返回 true。
+    * 占用表、几何锁/占用锁、行终点收缩共用此判定。
     */
    bool globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
      const geometry_msgs::msg::PoseStamped& pose_plan_frame,

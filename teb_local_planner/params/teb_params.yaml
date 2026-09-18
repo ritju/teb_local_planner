@@ -116,6 +116,17 @@ controller_server:
       publish_near_horizon_debug: True
       weight_near_horizon_omega_hold: 50.0
 
+      # PATH-corridor wait for /dynamic_obstacles (see 动态障碍物识别与停车绕行方案.md)
+      # Do NOT remap that topic onto `obstacles`. T_wait must stay > detector t_settle (2.0 s).
+      path_wait_enable: True
+      path_wait_topic: /dynamic_obstacles
+      path_wait_lookahead_dist: 6.0
+      path_wait_corridor_scale: 1.0  # half_width = footprint_half_width + min_obstacle_dist * scale
+      path_wait_timeout: 6.0  # per-ID wait before latch/detour
+      path_wait_clear_time: 0.5  # corridor empty and per-ID leave debounce
+      path_wait_msg_timeout: 0.5
+      publish_path_wait_debug: True
+
       costmap_converter_plugin: "costmap_converter::CostmapToPolygonsDBSMCCH"
       costmap_converter_spin_thread: True
       costmap_converter_rate: 5
@@ -155,7 +166,7 @@ controller_server:
       # 贴边模式膨胀权重（切换时覆盖 weight_inflation）；0 避免路缘膨胀顶开贴边
       edge_weight_inflation: 0.0
       # 贴边/障碍代价调试日志间隔 [s]；<=0 关闭
-      debug_wall_obstacle_cost_interval: 1.0
+      debug_wall_obstacle_cost_interval: 2.0
 
       # Homotopy Class Planner
 

@@ -93,6 +93,7 @@ add_library(teb_local_planner SHARED
    src/wall_protrusion_check.cpp
    src/graph_search.cpp
    src/near_horizon_dynamic_safety.cpp
+   src/path_dynamic_wait.cpp
 )
 
 set(ament_dependencies
@@ -138,6 +139,9 @@ target_link_libraries(teb_local_planner
 
 target_compile_definitions(teb_local_planner PUBLIC "PLUGINLIB__DISABLE_BOOST_FUNCTIONS")
 
+add_executable(path_wait_test_node src/path_wait_test_node.cpp)
+ament_target_dependencies(path_wait_test_node ${ament_dependencies})
+target_link_libraries(path_wait_test_node teb_local_planner ${EXTERNAL_LIBS})
 
 #############
 ## Install ##
@@ -146,6 +150,10 @@ target_compile_definitions(teb_local_planner PUBLIC "PLUGINLIB__DISABLE_BOOST_FU
 ## Mark executables and/or libraries for installation
 install(TARGETS teb_local_planner
    DESTINATION lib
+)
+
+install(TARGETS path_wait_test_node
+   DESTINATION lib/${PROJECT_NAME}
 )
 
 ## Mark cpp header files for installation
@@ -161,7 +169,7 @@ install(FILES
 
 install(PROGRAMS scripts/cmd_vel_to_ackermann_drive.py DESTINATION lib/${PROJECT_NAME})
 
-install(DIRECTORY params DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY params launch cfg DESTINATION share/${PROJECT_NAME})
 
 ament_export_include_directories(include)
 ament_export_libraries(teb_local_planner)

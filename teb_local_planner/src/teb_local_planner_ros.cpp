@@ -1250,6 +1250,19 @@ bool clippedFootprintOutlineTouchesBlockingCost(
                 rclcpp::SystemDefaultsQoS(),
                 std::bind(&TebLocalPlannerROS::customObstacleCB, this, std::placeholders::_1));
 
+    {
+      rclcpp::QoS path_wait_qos(rclcpp::KeepLast(1));
+      path_wait_qos.reliable();
+      path_wait_obst_sub_ = node->create_subscription<costmap_converter_msgs::msg::ObstacleArrayMsg>(
+          cfg_->obstacles.path_wait_topic,
+          path_wait_qos,
+          std::bind(&TebLocalPlannerROS::pathWaitObstacleCB, this, std::placeholders::_1));
+      RCLCPP_INFO(
+          logger_,
+          "TEB 独立订阅动态障碍话题 %s（PATH 停车门控，不并入 obstacles）",
+          cfg_->obstacles.path_wait_topic.c_str());
+    }
+
     // setup callback for custom via-points
     via_points_sub_ = node->create_subscription<nav_msgs::msg::Path>(
                 "via_points", 
@@ -1423,11 +1436,13 @@ bool clippedFootprintOutlineTouchesBlockingCost(
       node->create_publisher<visualization_msgs::msg::MarkerArray>("teb_collision_footprint_markers", 1);
     near_horizon_debug_marker_pub_ =
       node->create_publisher<visualization_msgs::msg::MarkerArray>("teb_near_horizon_debug", 1);
+    path_wait_debug_marker_pub_ =
+      node->create_publisher<visualization_msgs::msg::MarkerArray>("teb_path_wait_debug", 1);
     edge_distance_publisher_  = node->create_publisher<std_msgs::msg::Float32>("edge_distance", 1);
     RCLCPP_INFO(logger_,
                 "TEB 创建发布话题 /teb_selected_wall_line、/teb_monitor_corridor_markers、"
                 "/teb_protruding_obstacle_markers、/teb_corner_approach_footprint_markers、"
-                "/teb_collision_footprint_markers、/teb_near_horizon_debug、/edge_distance、"
+                "/teb_collision_footprint_markers、/teb_near_horizon_debug、/teb_path_wait_debug、/edge_distance、"
                 "/teb_transformed_path、/teb_global_plan");
 
     // Create persistent client for static_layer parameter updates
@@ -2106,6 +2121,14 @@ void TebLocalPlannerROS::configure(
     );
   }
 
+  {
+    geometry_msgs::msg::TwistStamped wait_cmd;
+    if (tryPathWaitHold(robot_pose, velocity, wait_cmd))
+    {
+      return wait_cmd;
+    }
+  }
+
   // Check if in-place rotation should be performed before TEB planning
   const bool use_inplace_rotation =
     shouldRotateInPlace(velocity, transformed_plan, robot_pose);
@@ -2239,7 +2262,7 @@ void TebLocalPlannerROS::configure(
      cfg_->near_horizon_runtime.omega_ref = robot_vel_.angular.z;
 
      RCLCPP_INFO_THROTTLE(
-         logger_, *clock_, 1000,
+         logger_, *clock_, 2000,
          "[NearHorizon] 近动态障碍物门控 mode=%d as_static_edges=%d cache=%zu raw_threat=%d enable=%d "
          "overlap_excl=%d trig_id=%d reason=%s omega_ref=%.3f delta=%.3f "
          "(roi f/r/l/r=%.2f/%.2f/%.2f/%.2f T_near=%.2f hold=%.2f)",
@@ -3804,27 +3827,6 @@ bool TebLocalPlannerROS::pruneArrivedLockedCorner(
    return true;
  }
 
-bool TebLocalPlannerROS::globalPlanPoseFootprintFreeInControllerFrame(
-  const geometry_msgs::msg::PoseStamped& pose_plan_frame,
-  const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
-  geometry_msgs::msg::PoseStamped* out_pose_global_frame) const
-{
-  
-  geometry_msgs::msg::PoseStamped pose_global;
-  tf2::doTransform(pose_plan_frame, pose_global, plan_to_global_transform);
-  if (out_pose_global_frame) {
-    *out_pose_global_frame = pose_global;
-  }
-  geometry_msgs::msg::Pose2D pose2d;
-  pose2d.x = pose_global.pose.position.x;
-  pose2d.y = pose_global.pose.position.y;
-  pose2d.theta = tf2::getYaw(pose_global.pose.orientation);
-
-  const dwb_critics::Footprint oriented_footprint =
-    dwb_critics::getOrientedFootprint(pose2d, footprint_spec_);
-  return orientedFootprintNavigableOnPartialCostmap(pose2d, oriented_footprint);
-}
-
 std::vector<geometry_msgs::msg::Point> TebLocalPlannerROS::lateralPaddedFootprintSpec() const
 {
   std::vector<geometry_msgs::msg::Point> footprint = footprint_spec_;
@@ -4472,10 +4474,15 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
     }
     for (int j = segment_start_idx; j <= row_end_idx; ++j) {
       occupied[static_cast<size_t>(j - segment_start_idx)] =
-        !globalPlanPoseFootprintFreeInControllerFrame(
-          global_plan[static_cast<size_t>(j)], plan_to_global_transform, nullptr)
-          ? 1 : 0;
+        globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
+          planPoseAt(j), plan_to_global_transform) ? 0 : 1;
     }
+    auto row_pose_free = [&](const int idx) -> bool {
+      if (idx < segment_start_idx || idx > row_end_idx) {
+        return false;
+      }
+      return occupied[static_cast<size_t>(idx - segment_start_idx)] == 0;
+    };
     int last_occ_in_window = -1;
     for (int j = lookahead_idx; j >= segment_start_idx; --j) {
       if (occupied[static_cast<size_t>(j - segment_start_idx)]) {
@@ -4604,24 +4611,17 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
     }
 
     {
-      auto terminal_laterally_free = [&](const int idx) -> bool {
-        if (idx < segment_start_idx || idx > row_end_idx) {
-          return false;
-        }
-        return globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
-          planPoseAt(idx), plan_to_global_transform);
-      };
-      if (!terminal_laterally_free(end_idx)) {
+      if (!row_pose_free(end_idx)) {
         int found_idx = -1;
         for (int j = end_idx + 1; j <= row_end_idx; ++j) {
-          if (terminal_laterally_free(j)) {
+          if (row_pose_free(j)) {
             found_idx = j;
             break;
           }
         }
         if (found_idx < 0) {
           for (int j = end_idx - 1; j >= segment_start_idx; --j) {
-            if (terminal_laterally_free(j)) {
+            if (row_pose_free(j)) {
               found_idx = j;
               break;
             }
@@ -6019,6 +6019,194 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    custom_obstacle_receive_time_ = clock_->now();
    custom_obstacle_msg_valid_ = true;
  }
+
+void TebLocalPlannerROS::pathWaitObstacleCB(
+  const costmap_converter_msgs::msg::ObstacleArrayMsg::ConstSharedPtr obst_msg)
+{
+  std::lock_guard<std::mutex> l(path_wait_obst_mutex_);
+  path_wait_obstacle_msg_ = *obst_msg;
+  path_wait_receive_time_ = clock_->now();
+  path_wait_msg_valid_ = true;
+}
+
+bool TebLocalPlannerROS::collectPathWaitObstacles(
+  std::vector<PathWaitObstacle> & out,
+  bool & message_valid)
+{
+  out.clear();
+  message_valid = false;
+  costmap_converter_msgs::msg::ObstacleArrayMsg msg;
+  rclcpp::Time recv;
+  {
+    std::lock_guard<std::mutex> l(path_wait_obst_mutex_);
+    if (!path_wait_msg_valid_)
+    {
+      return false;
+    }
+    msg = path_wait_obstacle_msg_;
+    recv = path_wait_receive_time_;
+  }
+
+  const double timeout = cfg_->obstacles.path_wait_msg_timeout;
+  if (timeout > 0.0 && (clock_->now() - recv).seconds() > timeout)
+  {
+    return false;
+  }
+  message_valid = true;
+
+  Eigen::Affine3d obstacle_to_map = Eigen::Affine3d::Identity();
+  const std::string src_frame = msg.header.frame_id.empty() ? cfg_->map_frame : msg.header.frame_id;
+  if (src_frame != cfg_->map_frame)
+  {
+    try
+    {
+      geometry_msgs::msg::TransformStamped tf_msg = tf_->lookupTransform(
+        cfg_->map_frame, src_frame, tf2::TimePointZero, tf2::durationFromSec(0.5));
+      obstacle_to_map = tf2::transformToEigen(tf_msg);
+    }
+    catch (const tf2::TransformException & ex)
+    {
+      RCLCPP_WARN_THROTTLE(
+        logger_, *clock_, 2000,
+        "PATH 停车门控: 动态障碍 TF %s→%s 失败: %s",
+        src_frame.c_str(), cfg_->map_frame.c_str(), ex.what());
+      return false;
+    }
+  }
+
+  out.reserve(msg.obstacles.size());
+  for (const auto & src : msg.obstacles)
+  {
+    PathWaitObstacle dst;
+    dst.id = static_cast<int>(src.id);
+    auto toMap = [&](const geometry_msgs::msg::Point32 & p) {
+      Eigen::Vector3d v(p.x, p.y, p.z);
+      return (obstacle_to_map * v).head<2>();
+    };
+    if (src.polygon.points.size() >= 3)
+    {
+      dst.polygon.reserve(src.polygon.points.size());
+      Eigen::Vector2d acc = Eigen::Vector2d::Zero();
+      for (const auto & p : src.polygon.points)
+      {
+        const Eigen::Vector2d xy = toMap(p);
+        dst.polygon.push_back(xy);
+        acc += xy;
+      }
+      dst.center = acc / static_cast<double>(dst.polygon.size());
+      dst.radius = 0.0;
+    }
+    else if (!src.polygon.points.empty())
+    {
+      dst.center = toMap(src.polygon.points.front());
+      dst.radius = std::max(0.0, static_cast<double>(src.radius));
+      if (src.polygon.points.size() == 2)
+      {
+        dst.polygon.push_back(dst.center);
+        dst.polygon.push_back(toMap(src.polygon.points.back()));
+      }
+    }
+    else
+    {
+      continue;
+    }
+    out.push_back(std::move(dst));
+  }
+  return true;
+}
+
+bool TebLocalPlannerROS::tryPathWaitHold(
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const geometry_msgs::msg::Twist & velocity,
+  geometry_msgs::msg::TwistStamped & cmd_vel)
+{
+  if (!cfg_->obstacles.path_wait_enable)
+  {
+    return false;
+  }
+
+  std::vector<PathWaitObstacle> obsts;
+  bool message_valid = false;
+  collectPathWaitObstacles(obsts, message_valid);
+
+  const double inscribed = cfg_->robot_model ? cfg_->robot_model->getInscribedRadius()
+                                            : robot_inscribed_radius_;
+  const double r_foot = computePathWaitFootprintHalfWidth(footprint_spec_, inscribed);
+  const double min_obs = std::max(cfg_->obstacles.min_obstacle_dist, normal_min_obstacle_dist_);
+  const Eigen::Vector2d robot_xy(robot_pose.pose.position.x, robot_pose.pose.position.y);
+
+  const PathWaitResult result = path_dynamic_wait_gate_.evaluate(
+    global_plan_, robot_xy, obsts, r_foot, min_obs, *cfg_, clock_->now(), message_valid);
+
+  if (cfg_->obstacles.publish_path_wait_debug && path_wait_debug_marker_pub_)
+  {
+    visualization_msgs::msg::MarkerArray ma;
+    const std::string frame_id = costmap_ros_ ? costmap_ros_->getGlobalFrameID() : cfg_->map_frame;
+    buildPathWaitDebugMarkers(ma, frame_id, clock_->now(), result);
+    path_wait_debug_marker_pub_->publish(ma);
+  }
+
+  RCLCPP_INFO_THROTTLE(
+    logger_, *clock_, 1000,
+    "[PathWait] mode=%s reason=%s hw=%.3f n_dyn=%zu blocking=%s waiting=%s "
+    "latched=%s wait=%.2fs rem=%.2fs msg_valid=%d",
+    pathWaitModeName(result.mode),
+    result.reason.c_str(),
+    result.half_width,
+    obsts.size(),
+    joinPathWaitIds(result.blocking_ids).c_str(),
+    joinPathWaitIds(result.waiting_ids).c_str(),
+    joinPathWaitIds(result.latched_ids).c_str(),
+    result.elapsed_wait_s,
+    result.remaining_wait_s,
+    message_valid ? 1 : 0);
+
+  if (result.mode != PathWaitMode::Wait)
+  {
+    return false;
+  }
+
+  if (result.previous_mode != PathWaitMode::Wait && planner_)
+  {
+    planner_->clearPlanner();
+  }
+
+  cmd_vel.header.stamp = clock_->now();
+  cmd_vel.header.frame_id = costmap_ros_->getBaseFrameID();
+  const double dt = std::max(1e-3, control_duration_);
+  auto approach_zero = [dt](double v, double acc) {
+    const double a = std::max(1e-6, acc);
+    const double step = a * dt;
+    if (std::abs(v) <= step)
+    {
+      return 0.0;
+    }
+    return v - std::copysign(step, v);
+  };
+  cmd_vel.twist.linear.x = approach_zero(velocity.linear.x, cfg_->robot.acc_lim_x);
+  cmd_vel.twist.linear.y = approach_zero(velocity.linear.y, cfg_->robot.acc_lim_y);
+  cmd_vel.twist.angular.z = approach_zero(velocity.angular.z, cfg_->robot.acc_lim_theta);
+  last_cmd_ = cmd_vel.twist;
+
+  if (visualization_)
+  {
+    std::vector<geometry_msgs::msg::PoseStamped> stay;
+    geometry_msgs::msg::PoseStamped p = robot_pose;
+    p.header.stamp = clock_->now();
+    stay.push_back(p);
+    visualization_->publishLocalPlan(stay);
+    visualization_->publishGlobalPlan(global_plan_);
+  }
+  if (global_plan_pub_ && !global_plan_.empty())
+  {
+    nav_msgs::msg::Path global_plan_msg;
+    global_plan_msg.header.stamp = clock_->now();
+    global_plan_msg.header.frame_id = global_plan_.front().header.frame_id;
+    global_plan_msg.poses = global_plan_;
+    global_plan_pub_->publish(global_plan_msg);
+  }
+  return true;
+}
  
  void TebLocalPlannerROS::customViaPointsCB(const nav_msgs::msg::Path::ConstSharedPtr via_points_msg)
  {

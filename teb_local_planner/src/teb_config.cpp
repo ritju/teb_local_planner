@@ -203,6 +203,14 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "dyn_gate_hold_time", rclcpp::ParameterValue(obstacles.dyn_gate_hold_time));
   declare_parameter_if_not_declared(nh, name + "." + "delta_omega_scale", rclcpp::ParameterValue(obstacles.delta_omega_scale));
   declare_parameter_if_not_declared(nh, name + "." + "publish_near_horizon_debug", rclcpp::ParameterValue(obstacles.publish_near_horizon_debug));
+  declare_parameter_if_not_declared(nh, name + "." + "path_wait_enable", rclcpp::ParameterValue(obstacles.path_wait_enable));
+  declare_parameter_if_not_declared(nh, name + "." + "path_wait_topic", rclcpp::ParameterValue(obstacles.path_wait_topic));
+  declare_parameter_if_not_declared(nh, name + "." + "path_wait_lookahead_dist", rclcpp::ParameterValue(obstacles.path_wait_lookahead_dist));
+  declare_parameter_if_not_declared(nh, name + "." + "path_wait_corridor_scale", rclcpp::ParameterValue(obstacles.path_wait_corridor_scale));
+  declare_parameter_if_not_declared(nh, name + "." + "path_wait_timeout", rclcpp::ParameterValue(obstacles.path_wait_timeout));
+  declare_parameter_if_not_declared(nh, name + "." + "path_wait_clear_time", rclcpp::ParameterValue(obstacles.path_wait_clear_time));
+  declare_parameter_if_not_declared(nh, name + "." + "path_wait_msg_timeout", rclcpp::ParameterValue(obstacles.path_wait_msg_timeout));
+  declare_parameter_if_not_declared(nh, name + "." + "publish_path_wait_debug", rclcpp::ParameterValue(obstacles.publish_path_wait_debug));
   declare_parameter_if_not_declared(nh, name + "." + "include_costmap_obstacles", rclcpp::ParameterValue(obstacles.include_costmap_obstacles));
   declare_parameter_if_not_declared(nh, name + "." + "costmap_obstacles_behind_robot_dist", rclcpp::ParameterValue(obstacles.costmap_obstacles_behind_robot_dist));
   declare_parameter_if_not_declared(nh, name + "." + "obstacle_poses_affected", rclcpp::ParameterValue(obstacles.obstacle_poses_affected));
@@ -614,6 +622,14 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "dyn_gate_hold_time", obstacles.dyn_gate_hold_time, obstacles.dyn_gate_hold_time);
   nh->get_parameter_or(name + "." + "delta_omega_scale", obstacles.delta_omega_scale, obstacles.delta_omega_scale);
   nh->get_parameter_or(name + "." + "publish_near_horizon_debug", obstacles.publish_near_horizon_debug, obstacles.publish_near_horizon_debug);
+  nh->get_parameter_or(name + "." + "path_wait_enable", obstacles.path_wait_enable, obstacles.path_wait_enable);
+  nh->get_parameter_or(name + "." + "path_wait_topic", obstacles.path_wait_topic, obstacles.path_wait_topic);
+  nh->get_parameter_or(name + "." + "path_wait_lookahead_dist", obstacles.path_wait_lookahead_dist, obstacles.path_wait_lookahead_dist);
+  nh->get_parameter_or(name + "." + "path_wait_corridor_scale", obstacles.path_wait_corridor_scale, obstacles.path_wait_corridor_scale);
+  nh->get_parameter_or(name + "." + "path_wait_timeout", obstacles.path_wait_timeout, obstacles.path_wait_timeout);
+  nh->get_parameter_or(name + "." + "path_wait_clear_time", obstacles.path_wait_clear_time, obstacles.path_wait_clear_time);
+  nh->get_parameter_or(name + "." + "path_wait_msg_timeout", obstacles.path_wait_msg_timeout, obstacles.path_wait_msg_timeout);
+  nh->get_parameter_or(name + "." + "publish_path_wait_debug", obstacles.publish_path_wait_debug, obstacles.publish_path_wait_debug);
   nh->get_parameter_or(name + "." + "include_costmap_obstacles", obstacles.include_costmap_obstacles, obstacles.include_costmap_obstacles);
   nh->get_parameter_or(name + "." + "costmap_obstacles_behind_robot_dist", obstacles.costmap_obstacles_behind_robot_dist, obstacles.costmap_obstacles_behind_robot_dist);
   nh->get_parameter_or(name + "." + "obstacle_poses_affected", obstacles.obstacle_poses_affected, obstacles.obstacle_poses_affected);
@@ -1594,6 +1610,22 @@ rcl_interfaces::msg::SetParametersResult
         obstacles.delta_omega_scale = parameter.as_double();
       } else if (name == node_name + ".publish_near_horizon_debug") {
         obstacles.publish_near_horizon_debug = parameter.as_bool();
+      } else if (name == node_name + ".path_wait_enable") {
+        obstacles.path_wait_enable = parameter.as_bool();
+      } else if (name == node_name + ".path_wait_topic") {
+        obstacles.path_wait_topic = parameter.as_string();
+      } else if (name == node_name + ".path_wait_lookahead_dist") {
+        obstacles.path_wait_lookahead_dist = parameter.as_double();
+      } else if (name == node_name + ".path_wait_corridor_scale") {
+        obstacles.path_wait_corridor_scale = parameter.as_double();
+      } else if (name == node_name + ".path_wait_timeout") {
+        obstacles.path_wait_timeout = parameter.as_double();
+      } else if (name == node_name + ".path_wait_clear_time") {
+        obstacles.path_wait_clear_time = parameter.as_double();
+      } else if (name == node_name + ".path_wait_msg_timeout") {
+        obstacles.path_wait_msg_timeout = parameter.as_double();
+      } else if (name == node_name + ".publish_path_wait_debug") {
+        obstacles.publish_path_wait_debug = parameter.as_bool();
       } else if (name == node_name + ".include_costmap_obstacles") {
         obstacles.include_costmap_obstacles = parameter.as_bool();
       } else if (name == node_name + ".legacy_obstacle_association") {
