@@ -537,6 +537,23 @@
      const geometry_msgs::msg::Twist & velocity,
      geometry_msgs::msg::TwistStamped & cmd_vel);
 
+   /**
+    * @brief 原终点被占用且已锁定沿路径退让点时，车到退让点（或已越过）则减速到零，不再朝原终点优化。
+    * @return true 时 cmd_vel 已填好，调用方应直接返回
+    */
+   bool tryGoalStandoffHold(
+     const geometry_msgs::msg::PoseStamped & robot_pose,
+     const geometry_msgs::msg::Twist & velocity,
+     geometry_msgs::msg::TwistStamped & cmd_vel);
+
+   /**
+    * @brief 终点被占用、无退让点且 base 距终点小于 last_occupied_goal_dist 时零速度。
+    *        条件消失后保持 0.4s 再退出。超过 last_occupied_goal_hold_timeout 则抛出失败。
+    */
+   bool tryOccupiedGoalNearHold(
+     const geometry_msgs::msg::Twist & velocity,
+     geometry_msgs::msg::TwistStamped & cmd_vel);
+
    bool collectPathWaitObstacles(
      std::vector<PathWaitObstacle> & out,
      bool & message_valid);
@@ -963,13 +980,17 @@
      const std::vector<geometry_msgs::msg::Point> & oriented_footprint) const;
 
    /**
-    * @brief 参照 SMAC Hybrid：仅在末端点在局部代价地图上碰撞时，在 plan 系平面内网格搜索偏移，取欧式距离最短的无碰位姿。
-    * @return 若末端已无障碍或搜索到替代位姿则为 true；无法找到仍为 false。
+    * @brief 原终点足迹被占用时，沿路径往回锁定退让点（足迹无碰且沿路径离开终点不少于净空）。
+    *        原终点恢复空闲则解除锁定。不再在终点周围取最近空闲格。
+    * @param standoff_idx_out 锁定时为退让点在 global_plan 中的下标，否则为 -1
+    * @param effective_last_plan_pose 空路径注入用的终点；锁定时为退让点
+    * @return 原终点空闲，或已锁定退让点
     */
-   bool adjustOccupiedGlobalPlanGoalInPlace(
-     const geometry_msgs::msg::PoseStamped& original_last_pose_plan_frame,
+   bool selectGoalStandoffAlongPlan(
+     const std::vector<geometry_msgs::msg::PoseStamped>& global_plan,
      const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
-     geometry_msgs::msg::PoseStamped& last_pose_plan_frame_inout) const;
+     int& standoff_idx_out,
+     geometry_msgs::msg::PoseStamped& effective_last_plan_pose) const;
 
    double new_vehicle_distance_threshold_;  //!< Distance threshold for adding/removing vehicles from global_vehicle_poses_
    double erase_vehicle_distance_threshold_;  //!< Distance threshold for adding/removing vehicles from global_vehicle_poses_
@@ -981,6 +1002,19 @@
   geometry_msgs::msg::PoseStamped last_rotation_pose_;  //!< Robot pose when last in-place rotation started, finished, or failed
   rclcpp::Time last_rotation_pose_time_{0};
   bool was_inplace_rotation_active_{false};
+  //! 原终点被占用时沿路径锁定的退让点。transformGlobalPlan 为 const，状态用 mutable。
+  mutable bool goal_standoff_latched_{false};
+  mutable int goal_standoff_plan_idx_{-1};
+  mutable geometry_msgs::msg::PoseStamped goal_standoff_pose_plan_;
+  mutable geometry_msgs::msg::PoseStamped goal_standoff_pose_global_;
+  mutable bool goal_standoff_force_hold_{false};
+  bool goal_standoff_hold_active_{false};
+  //! 本拍终点被占用且没有退让点。距离在路径系，由 transformGlobalPlan 写入。
+  mutable bool occupied_goal_no_standoff_{false};
+  mutable double occupied_goal_dist_m_{std::numeric_limits<double>::infinity()};
+  bool occupied_goal_near_hold_active_{false};
+  rclcpp::Time occupied_goal_near_hold_since_{0};
+  rclcpp::Time occupied_goal_near_clear_since_{0};
   std::vector<geometry_msgs::msg::PoseStamped> major_arc_plan_;
   bool major_arc_active_{false};
   RotType major_arc_rotdir_{RotType::none};
@@ -1008,7 +1042,7 @@
    /**
     * @brief Check if in-place rotation should be performed
     * @param velocity Current robot velocity (linear threshold only; collision prediction uses configured rotate speed)
-    * @param transformed_plan The transformed plan (lookahead target heading only)
+    * @param transformed_plan The transformed plan (lookahead target heading only). 到最近边距离大于 approach_max_lateral_dist 时不原地转
     * @param robot_pose Current robot pose
     * @return true if rotation should be performed, false otherwise
     */

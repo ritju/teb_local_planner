@@ -1595,16 +1595,53 @@ void TebLocalPlannerROS::configure(
    }
  
    // store the global plan
+   constexpr double kMinAdjacentSpacing = 1e-5;
+   auto orientationIsFinite = [](const geometry_msgs::msg::Quaternion & orientation) -> bool {
+     if (!std::isfinite(orientation.x) || !std::isfinite(orientation.y) ||
+         !std::isfinite(orientation.z) || !std::isfinite(orientation.w))
+     {
+       return false;
+     }
+     return std::isfinite(tf2::getYaw(orientation));
+   };
+
    global_plan_.clear();
    global_plan_.reserve(orig_global_plan.poses.size());
    origin_plan_.clear();
    origin_plan_.reserve(orig_global_plan.poses.size());
-   for(const auto &in_pose :orig_global_plan.poses) {
+   size_t dropped_nan_orientation = 0;
+   size_t dropped_close_pose = 0;
+   for (const auto & in_pose : orig_global_plan.poses) {
      geometry_msgs::msg::PoseStamped out_pose;
      out_pose.pose = in_pose.pose;
      out_pose.header = orig_global_plan.header;
+     const bool orientation_finite = orientationIsFinite(out_pose.pose.orientation);
+     if (!global_plan_.empty()) {
+       const double dx = out_pose.pose.position.x - global_plan_.back().pose.position.x;
+       const double dy = out_pose.pose.position.y - global_plan_.back().pose.position.y;
+       if (std::hypot(dx, dy) < kMinAdjacentSpacing) {
+         // 朝向都有效时删后一个；否则删朝向无效的点（保留点的朝向已经有效）。
+         if (orientation_finite) {
+           ++dropped_close_pose;
+         } else {
+           ++dropped_nan_orientation;
+         }
+         continue;
+       }
+     }
+     if (!orientation_finite) {
+       ++dropped_nan_orientation;
+       continue;
+     }
      global_plan_.push_back(out_pose);
      origin_plan_.push_back(out_pose);
+   }
+   if (dropped_nan_orientation > 0 || dropped_close_pose > 0) {
+     RCLCPP_WARN(
+       logger_,
+       "setPlan：剔除无效路径点，方向无效 %zu，相邻距离 < %.0e %zu，剩余 %zu / %zu",
+       dropped_nan_orientation, kMinAdjacentSpacing, dropped_close_pose,
+       global_plan_.size(), orig_global_plan.poses.size());
    }
    if (!global_plan_.empty()) {
     RCLCPP_INFO(logger_, "TEB 设置全局路径，路径点数：%zu", global_plan_.size());
@@ -1616,6 +1653,15 @@ void TebLocalPlannerROS::configure(
      RCLCPP_INFO(logger_, "setPlan：清除优弧锁");
    }
    resetMajorArcLock();
+   goal_standoff_latched_ = false;
+   goal_standoff_plan_idx_ = -1;
+   goal_standoff_force_hold_ = false;
+   goal_standoff_hold_active_ = false;
+   occupied_goal_no_standoff_ = false;
+   occupied_goal_dist_m_ = std::numeric_limits<double>::infinity();
+   occupied_goal_near_hold_active_ = false;
+   occupied_goal_near_hold_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
+   occupied_goal_near_clear_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
  
  
    // we do not clear the local planner here, since setPlan is called frequently whenever the global planner updates the plan.
@@ -2126,6 +2172,22 @@ void TebLocalPlannerROS::configure(
     if (tryPathWaitHold(robot_pose, velocity, wait_cmd))
     {
       return wait_cmd;
+    }
+  }
+
+  {
+    geometry_msgs::msg::TwistStamped standoff_cmd;
+    if (tryGoalStandoffHold(robot_pose, velocity, standoff_cmd))
+    {
+      return standoff_cmd;
+    }
+  }
+
+  {
+    geometry_msgs::msg::TwistStamped occupied_goal_cmd;
+    if (tryOccupiedGoalNearHold(velocity, occupied_goal_cmd))
+    {
+      return occupied_goal_cmd;
     }
   }
 
@@ -3945,97 +4007,118 @@ bool TebLocalPlannerROS::orientedFootprintNavigableOnPartialCostmap(
   return clipped_outline_ok();
 }
 
-bool TebLocalPlannerROS::adjustOccupiedGlobalPlanGoalInPlace(
-  const geometry_msgs::msg::PoseStamped& original_last_pose_plan_frame,
+bool TebLocalPlannerROS::selectGoalStandoffAlongPlan(
+  const std::vector<geometry_msgs::msg::PoseStamped>& global_plan,
   const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
-  geometry_msgs::msg::PoseStamped& last_pose_plan_frame_inout) const
+  int& standoff_idx_out,
+  geometry_msgs::msg::PoseStamped& effective_last_plan_pose) const
 {
-  
-  last_pose_plan_frame_inout = original_last_pose_plan_frame;
-  if (globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
-      original_last_pose_plan_frame, plan_to_global_transform))
-  {
+  standoff_idx_out = -1;
+  goal_standoff_force_hold_ = false;
+  if (global_plan.empty()) {
+    goal_standoff_latched_ = false;
+    goal_standoff_plan_idx_ = -1;
+    effective_last_plan_pose = geometry_msgs::msg::PoseStamped();
+    return false;
+  }
+
+  const geometry_msgs::msg::PoseStamped & original_goal = global_plan.back();
+  effective_last_plan_pose = original_goal;
+  auto footprint_free = [&](const geometry_msgs::msg::PoseStamped & pose) -> bool {
+    return globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
+      pose, plan_to_global_transform);
+  };
+  auto remember_standoff = [&](const int idx) {
+    goal_standoff_latched_ = true;
+    goal_standoff_plan_idx_ = idx;
+    goal_standoff_pose_plan_ = global_plan[static_cast<size_t>(idx)];
+    tf2::doTransform(
+      goal_standoff_pose_plan_, goal_standoff_pose_global_, plan_to_global_transform);
+    standoff_idx_out = idx;
+    effective_last_plan_pose = goal_standoff_pose_plan_;
+  };
+
+  if (footprint_free(original_goal)) {
+    if (goal_standoff_latched_) {
+      RCLCPP_INFO(logger_, "终点退让: 原终点已空闲，解除锁定");
+    }
+    goal_standoff_latched_ = false;
+    goal_standoff_plan_idx_ = -1;
     return true;
   }
-  const double tol = cfg_->trajectory.transform_global_plan_goal_occupied_tolerance;
-  const double res = cfg_->trajectory.transform_global_plan_goal_search_resolution;
-  if (tol <= 1e-9 || res <= 1e-9) {
-    RCLCPP_WARN(
-      logger_,
-      "transformGlobalPlan: 路径终点被占用但终点搜索已关闭 "
-      "(transform_global_plan_goal_occupied_tolerance / goal_search_resolution <= 0)");
-    return false;
-  }
-  {
-    geometry_msgs::msg::PoseStamped occupied_global;
-    tf2::doTransform(original_last_pose_plan_frame, occupied_global, plan_to_global_transform);
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000,
-      "transformGlobalPlan: 路径终点 footprint 碰撞，开始在路径坐标系网格搜索 "
-      "(frame=%s, 容差=%.3f m, 分辨率=%.3f m)",
-      original_last_pose_plan_frame.header.frame_id.c_str(), tol, res);
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000,
-      "transformGlobalPlan: 终点调整前 — 路径系[%s]: x=%.3f y=%.3f yaw=%.3f | "
-      "控制器系[%s]: x=%.3f y=%.3f yaw=%.3f",
-      original_last_pose_plan_frame.header.frame_id.c_str(),
-      original_last_pose_plan_frame.pose.position.x,
-      original_last_pose_plan_frame.pose.position.y,
-      tf2::getYaw(original_last_pose_plan_frame.pose.orientation),
-      occupied_global.header.frame_id.c_str(),
-      occupied_global.pose.position.x,
-      occupied_global.pose.position.y,
-      tf2::getYaw(occupied_global.pose.orientation));
-  }
-  double min_dist_sq = std::numeric_limits<double>::infinity();
-  geometry_msgs::msg::PoseStamped best = original_last_pose_plan_frame;
-  bool found = false;
-  for (double goal_search_x = -tol; goal_search_x < tol + 0.1; goal_search_x += res) {
-    for (double goal_search_y = -tol; goal_search_y < tol + 0.1; goal_search_y += res) {
-      geometry_msgs::msg::PoseStamped search_goal = original_last_pose_plan_frame;
-      search_goal.pose.position.x += goal_search_x;
-      search_goal.pose.position.y += goal_search_y;
-      if (!globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
-          search_goal, plan_to_global_transform))
-      {
-        continue;
-      }
-      const double dist_sq = goal_search_x * goal_search_x + goal_search_y * goal_search_y;
-      if (dist_sq < min_dist_sq) {
-        min_dist_sq = dist_sq;
-        best = search_goal;
-        found = true;
+
+  const double inscribed = (cfg_->robot_model != nullptr)
+    ? cfg_->robot_model->getInscribedRadius()
+    : robot_inscribed_radius_;
+  const double min_clearance = std::max(
+    0.0, std::max(cfg_->obstacles.min_obstacle_dist, normal_min_obstacle_dist_)) +
+    std::max(0.0, inscribed);
+
+  const int plan_size = static_cast<int>(global_plan.size());
+  auto arc_from_goal = [&](const int idx) -> double {
+    double arc = 0.0;
+    for (int i = plan_size - 1; i > idx; --i) {
+      arc += std::hypot(
+        global_plan[static_cast<size_t>(i)].pose.position.x -
+          global_plan[static_cast<size_t>(i - 1)].pose.position.x,
+        global_plan[static_cast<size_t>(i)].pose.position.y -
+          global_plan[static_cast<size_t>(i - 1)].pose.position.y);
+    }
+    return arc;
+  };
+
+  if (goal_standoff_latched_) {
+    int matched_idx = -1;
+    double matched_dist = 0.05;
+    for (int idx = 0; idx < plan_size - 1; ++idx) {
+      const double dist = std::hypot(
+        global_plan[static_cast<size_t>(idx)].pose.position.x -
+          goal_standoff_pose_plan_.pose.position.x,
+        global_plan[static_cast<size_t>(idx)].pose.position.y -
+          goal_standoff_pose_plan_.pose.position.y);
+      if (dist <= matched_dist) {
+        matched_dist = dist;
+        matched_idx = idx;
       }
     }
+    if (matched_idx >= 0 &&
+        footprint_free(global_plan[static_cast<size_t>(matched_idx)]) &&
+        arc_from_goal(matched_idx) + 1e-9 >= min_clearance)
+    {
+      remember_standoff(matched_idx);
+      return true;
+    }
+    RCLCPP_INFO(logger_, "终点退让: 锁定点失效，重新沿路径后退");
+    goal_standoff_latched_ = false;
+    goal_standoff_plan_idx_ = -1;
   }
-  if (!found) {
-    RCLCPP_WARN_THROTTLE(logger_, *(clock_), 1000,
-      "transformGlobalPlan: 路径终点被占用，容差 %.3f m 内未找到空闲位姿 "
-      "(路径坐标系网格搜索)",
-      tol);
-    return false;
+
+  double arc = 0.0;
+  for (int idx = plan_size - 2; idx >= 0; --idx) {
+    arc += std::hypot(
+      global_plan[static_cast<size_t>(idx + 1)].pose.position.x -
+        global_plan[static_cast<size_t>(idx)].pose.position.x,
+      global_plan[static_cast<size_t>(idx + 1)].pose.position.y -
+        global_plan[static_cast<size_t>(idx)].pose.position.y);
+    if (arc + 1e-9 < min_clearance) {
+      continue;
+    }
+    if (!footprint_free(global_plan[static_cast<size_t>(idx)])) {
+      continue;
+    }
+    remember_standoff(idx);
+    RCLCPP_INFO(
+      logger_,
+      "终点退让: 原终点被占用，锁定路径点 %d，沿路径后退 %.3f m (净空 %.3f m)",
+      idx, arc, min_clearance);
+    return true;
   }
-  {
-    const double dx = best.pose.position.x - original_last_pose_plan_frame.pose.position.x;
-    const double dy = best.pose.position.y - original_last_pose_plan_frame.pose.position.y;
-    geometry_msgs::msg::PoseStamped best_global;
-    tf2::doTransform(best, best_global, plan_to_global_transform);
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000,
-      "transformGlobalPlan: 终点调整后 — 路径系[%s]: x=%.3f y=%.3f yaw=%.3f | "
-      "控制器系[%s]: x=%.3f y=%.3f yaw=%.3f",
-      best.header.frame_id.c_str(),
-      best.pose.position.x,
-      best.pose.position.y,
-      tf2::getYaw(best.pose.orientation),
-      best_global.header.frame_id.c_str(),
-      best_global.pose.position.x,
-      best_global.pose.position.y,
-      tf2::getYaw(best_global.pose.orientation));
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 1000,
-      "transformGlobalPlan: 终点调整增量 (路径坐标系): dx=%.3f m dy=%.3f m | "
-      "水平偏移=%.3f m",
-      dx, dy, std::hypot(dx, dy));
-  }
-  last_pose_plan_frame_inout = best;
-  return true;
+
+  RCLCPP_WARN_THROTTLE(
+    logger_, *(clock_), 1000,
+    "终点退让: 原终点被占用，沿路径未找到净空 %.3f m 以上的空闲点",
+    min_clearance);
+  return false;
 }
 
 namespace {
@@ -4386,13 +4469,22 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
     const int n_plan = static_cast<int>(global_plan.size());
     const int global_goal_idx = n_plan - 1;
     geometry_msgs::msg::PoseStamped effective_last_plan_pose = global_plan.back();
-    // 每个周期都对全局最后一个点做可达搜索；函数内部若已自由则立刻返回
-    (void)adjustOccupiedGlobalPlanGoalInPlace(
-      global_plan.back(), plan_to_global_transform, effective_last_plan_pose);
+    int standoff_idx = -1;
+    // 原终点被占用时沿路径锁定退让点；空闲则解除。不再把终点挪到周围最近空闲格。
+    const bool standoff_selected = selectGoalStandoffAlongPlan(
+      global_plan, plan_to_global_transform, standoff_idx, effective_last_plan_pose);
+    if (standoff_idx >= 0 && i > standoff_idx) {
+      goal_standoff_force_hold_ = true;
+    }
+    occupied_goal_no_standoff_ = !standoff_selected;
+    if (occupied_goal_no_standoff_) {
+      occupied_goal_dist_m_ = std::hypot(
+        robot_pose.pose.position.x - global_plan.back().pose.position.x,
+        robot_pose.pose.position.y - global_plan.back().pose.position.y);
+    } else {
+      occupied_goal_dist_m_ = std::numeric_limits<double>::infinity();
+    }
     auto planPoseAt = [&](int idx) -> const geometry_msgs::msg::PoseStamped & {
-      if (idx == global_goal_idx) {
-        return effective_last_plan_pose;
-      }
       return global_plan[static_cast<size_t>(idx)];
     };
 
@@ -4642,6 +4734,19 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
           need_prune_remaining_row = true;
           prune_include_start = has_path_after_row;
           end_idx = segment_start_idx;
+        }
+      }
+    }
+
+    if (standoff_idx >= 0) {
+      end_idx = std::min(end_idx, standoff_idx);
+      if (prune_row_from_idx && prune_row_to_idx &&
+          *prune_row_from_idx >= 0 && *prune_row_to_idx >= standoff_idx)
+      {
+        *prune_row_to_idx = standoff_idx - 1;
+        if (*prune_row_from_idx > *prune_row_to_idx) {
+          *prune_row_from_idx = -1;
+          *prune_row_to_idx = -1;
         }
       }
     }
@@ -6207,6 +6312,139 @@ bool TebLocalPlannerROS::tryPathWaitHold(
   }
   return true;
 }
+
+bool TebLocalPlannerROS::tryGoalStandoffHold(
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const geometry_msgs::msg::Twist & velocity,
+  geometry_msgs::msg::TwistStamped & cmd_vel)
+{
+  if (!goal_standoff_latched_) {
+    goal_standoff_hold_active_ = false;
+    return false;
+  }
+
+  bool should_hold = goal_standoff_force_hold_;
+  if (!should_hold) {
+    if (goal_standoff_pose_global_.header.frame_id != robot_pose.header.frame_id) {
+      goal_standoff_hold_active_ = false;
+      return false;
+    }
+    const double dist = std::hypot(
+      robot_pose.pose.position.x - goal_standoff_pose_global_.pose.position.x,
+      robot_pose.pose.position.y - goal_standoff_pose_global_.pose.position.y);
+    const double xy_tol = std::max(0.05, cfg_->goal_tolerance.xy_goal_tolerance);
+    should_hold = dist <= xy_tol;
+  }
+  if (!should_hold) {
+    goal_standoff_hold_active_ = false;
+    return false;
+  }
+
+  if (!goal_standoff_hold_active_ && planner_) {
+    planner_->clearPlanner();
+    RCLCPP_INFO(logger_, "终点退让: 到达退让点，改为零速度保持");
+  }
+  goal_standoff_hold_active_ = true;
+
+  cmd_vel.header.stamp = clock_->now();
+  cmd_vel.header.frame_id = costmap_ros_->getBaseFrameID();
+  const double dt = std::max(1e-3, control_duration_);
+  auto approach_zero = [dt](double speed, double acc) {
+    const double step = std::max(1e-6, acc) * dt;
+    if (std::abs(speed) <= step) {
+      return 0.0;
+    }
+    return speed - std::copysign(step, speed);
+  };
+  cmd_vel.twist.linear.x = approach_zero(velocity.linear.x, cfg_->robot.acc_lim_x);
+  cmd_vel.twist.linear.y = approach_zero(velocity.linear.y, cfg_->robot.acc_lim_y);
+  cmd_vel.twist.angular.z = approach_zero(velocity.angular.z, cfg_->robot.acc_lim_theta);
+  last_cmd_ = cmd_vel.twist;
+  RCLCPP_INFO_THROTTLE(
+    logger_, *clock_, 1000,
+    "终点退让: 零速度保持 (force=%s)",
+    goal_standoff_force_hold_ ? "是" : "否");
+  return true;
+}
+
+bool TebLocalPlannerROS::tryOccupiedGoalNearHold(
+  const geometry_msgs::msg::Twist & velocity,
+  geometry_msgs::msg::TwistStamped & cmd_vel)
+{
+  const double dist_limit = cfg_->trajectory.last_occupied_goal_dist;
+  if (dist_limit <= 0.0) {
+    occupied_goal_near_hold_active_ = false;
+    return false;
+  }
+
+  constexpr double kReleaseDelaySec = 0.4;
+  const rclcpp::Time now = clock_->now();
+  const bool within_dist = occupied_goal_no_standoff_ && occupied_goal_dist_m_ < dist_limit;
+  if (within_dist) {
+    occupied_goal_near_clear_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
+    if (!occupied_goal_near_hold_active_) {
+      occupied_goal_near_hold_active_ = true;
+      occupied_goal_near_hold_since_ = now;
+      if (planner_) {
+        planner_->clearPlanner();
+      }
+      RCLCPP_INFO(
+        logger_,
+        "终点占用且无退让点，base 距终点 %.3f m < %.3f m，零速度",
+        occupied_goal_dist_m_, dist_limit);
+    }
+  } else if (occupied_goal_near_hold_active_) {
+    if (occupied_goal_near_clear_since_.nanoseconds() == 0) {
+      occupied_goal_near_clear_since_ = now;
+    }
+    const double clear_elapsed = (now - occupied_goal_near_clear_since_).seconds();
+    if (clear_elapsed >= kReleaseDelaySec) {
+      occupied_goal_near_hold_active_ = false;
+      occupied_goal_near_hold_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
+      occupied_goal_near_clear_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
+      RCLCPP_INFO(logger_, "终点占用近距停车解除");
+      return false;
+    }
+  } else {
+    return false;
+  }
+
+  const double timeout = cfg_->trajectory.last_occupied_goal_hold_timeout;
+  if (timeout > 0.0 && occupied_goal_near_hold_since_.nanoseconds() > 0) {
+    const double held = (now - occupied_goal_near_hold_since_).seconds();
+    if (held >= timeout) {
+      occupied_goal_near_hold_active_ = false;
+      occupied_goal_near_hold_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
+      occupied_goal_near_clear_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
+      RCLCPP_ERROR(
+        logger_,
+        "终点占用且无退让点，近距零速度已持续 %.1f s，本次控制失败",
+        held);
+      throw nav2_core::PlannerException(
+        "终点被占用且无退让点，近距零速度超时");
+    }
+  }
+
+  cmd_vel.header.stamp = now;
+  cmd_vel.header.frame_id = costmap_ros_->getBaseFrameID();
+  const double dt = std::max(1e-3, control_duration_);
+  auto approach_zero = [dt](double speed, double acc) {
+    const double step = std::max(1e-6, acc) * dt;
+    if (std::abs(speed) <= step) {
+      return 0.0;
+    }
+    return speed - std::copysign(step, speed);
+  };
+  cmd_vel.twist.linear.x = approach_zero(velocity.linear.x, cfg_->robot.acc_lim_x);
+  cmd_vel.twist.linear.y = approach_zero(velocity.linear.y, cfg_->robot.acc_lim_y);
+  cmd_vel.twist.angular.z = approach_zero(velocity.angular.z, cfg_->robot.acc_lim_theta);
+  last_cmd_ = cmd_vel.twist;
+  RCLCPP_INFO_THROTTLE(
+    logger_, *clock_, 1000,
+    "终点占用近距停车: dist=%.3f m limit=%.3f m",
+    occupied_goal_dist_m_, dist_limit);
+  return true;
+}
  
  void TebLocalPlannerROS::customViaPointsCB(const nav_msgs::msg::Path::ConstSharedPtr via_points_msg)
  {
@@ -7454,6 +7692,52 @@ std::vector<geometry_msgs::msg::PoseStamped> TebLocalPlannerROS::buildMajorArcOr
           elapsed, rotation_limit_duration, robot_dist, rotation_limit_distance);
         return false;
       }
+    }
+  }
+
+  // 离局部路径过远时不对齐到前瞻切向。侧向切入由 TEB 完成，避免先转到路径方向再被优化轨迹转回去。
+  // 距离是点到 transformed_plan 各边的最短距离（垂足限制在线段上）。本函数调用时路径起点尚未改写成机器人位姿。
+  const double max_lateral = cfg_->rotation.approach_max_lateral_dist;
+  if (max_lateral > 0.0 && transformed_plan.size() >= 2)
+  {
+    const double robot_x = robot_pose.pose.position.x;
+    const double robot_y = robot_pose.pose.position.y;
+    double min_lateral = std::numeric_limits<double>::infinity();
+    for (size_t i = 1; i < transformed_plan.size(); ++i)
+    {
+      const double edge_start_x = transformed_plan[i - 1].pose.position.x;
+      const double edge_start_y = transformed_plan[i - 1].pose.position.y;
+      const double edge_end_x = transformed_plan[i].pose.position.x;
+      const double edge_end_y = transformed_plan[i].pose.position.y;
+      const double edge_dx = edge_end_x - edge_start_x;
+      const double edge_dy = edge_end_y - edge_start_y;
+      const double edge_length_sq = edge_dx * edge_dx + edge_dy * edge_dy;
+      double edge_distance;
+      if (edge_length_sq < 1e-12) {
+        edge_distance = std::hypot(robot_x - edge_start_x, robot_y - edge_start_y);
+      } else {
+        const double projection = std::clamp(
+          ((robot_x - edge_start_x) * edge_dx + (robot_y - edge_start_y) * edge_dy) / edge_length_sq,
+          0.0, 1.0);
+        edge_distance = std::hypot(
+          robot_x - (edge_start_x + projection * edge_dx),
+          robot_y - (edge_start_y + projection * edge_dy));
+      }
+      if (edge_distance < min_lateral) {
+        min_lateral = edge_distance;
+      }
+    }
+    if (min_lateral > max_lateral)
+    {
+      if (was_inplace_rotation_active_) {
+        stampRotationAnchor();
+      }
+      was_inplace_rotation_active_ = false;
+      RCLCPP_INFO_THROTTLE(
+        logger_, *clock_, 500,
+        "原地转: shouldRotateInPlace=false，横向距离否决 (lateral=%.3f > %.3f m)",
+        min_lateral, max_lateral);
+      return false;
     }
   }
 

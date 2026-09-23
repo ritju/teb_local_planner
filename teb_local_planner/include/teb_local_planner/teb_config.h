@@ -158,6 +158,10 @@ public:
     double transform_global_plan_goal_occupied_tolerance; //!< 末端被占据时，平面偏移搜索半径 [m]
     //!< transformGlobalPlan: 末端位姿微调时的平面网格步长 [m]，与 SMAC Hybrid 等价的 goal_search_resolution
     double transform_global_plan_goal_search_resolution; //!< 末端偏移搜索网格步长 [m]
+    //!< 终点被占用且沿路径无退让点时，base 到终点小于该距离则发零速度 [m]；<=0 关闭
+    double last_occupied_goal_dist;
+    //!< 上述零速度持续超过该时间则本次控制失败，交给上层恢复 [s]；<=0 不超时
+    double last_occupied_goal_hold_timeout;
     //!< hasReverseSegmentInPlan: 参与倒车判定的路点段最小弦长 [m]；过短则向前扩窗至 i+2, i+3, ...
     double reverse_segment_min_segment_length_m; //!< 倒车判定的最小段弦长 [m]
     //!< hasReverseSegmentInPlan: 位移方向与 pose 航向夹角下限 [deg]，接近 180° 时判为倒车（如 150 表示 150°~180°）
@@ -453,6 +457,7 @@ public:
     double max_angular_accel; //!< Maximum angular acceleration for in-place rotation [rad/s^2]
     double simulate_ahead_time; //!< Time to simulate ahead for collision checking during rotation [s] (deprecated, not used)
     double forward_lookahead_distance; //!< Forward lookahead distance to select target pose for rotation [m]
+    double approach_max_lateral_dist; //!< 机器人到 transformed_plan 最近边的距离超过该值则不原地转 [m]；<=0 关闭
     //!< 是否启用原地转前的路径 footprint 扫掠（默认关，仅做原地转向扫掠）
     bool path_footprint_check_enable;
     //!< 原地转路径 footprint 碰障采样间距 [m]（沿 transformed_plan 弧长）
@@ -580,6 +585,8 @@ public:
     trajectory.transform_global_plan_closest_search_max_accum_dist = 0.0;
     trajectory.transform_global_plan_goal_occupied_tolerance = 1.0;
     trajectory.transform_global_plan_goal_search_resolution = 0.2;
+    trajectory.last_occupied_goal_dist = 0.8;
+    trajectory.last_occupied_goal_hold_timeout = 15.0;
     trajectory.reverse_segment_min_segment_length_m = 0.05;
     trajectory.reverse_segment_min_angle_deg = 150.0;
     trajectory.reverse_segment_arc_length_ratio = 0.3;
@@ -832,6 +839,7 @@ public:
     rotation.rotate_to_heading_angular_vel = 0.35;
     rotation.max_angular_accel = 0.35;
     rotation.forward_lookahead_distance = 0.5;  // 0.5 meters forward
+    rotation.approach_max_lateral_dist = 0.3;
     rotation.path_footprint_check_enable = false;
     rotation.path_footprint_sample_spacing = 0.2;
     rotation.path_footprint_check_cost_mode = "both";

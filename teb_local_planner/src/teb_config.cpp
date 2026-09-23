@@ -150,6 +150,12 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
     nh, name + "." + "transform_global_plan_goal_search_resolution",
     rclcpp::ParameterValue(trajectory.transform_global_plan_goal_search_resolution));
   declare_parameter_if_not_declared(
+    nh, name + "." + "last_occupied_goal_dist",
+    rclcpp::ParameterValue(trajectory.last_occupied_goal_dist));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "last_occupied_goal_hold_timeout",
+    rclcpp::ParameterValue(trajectory.last_occupied_goal_hold_timeout));
+  declare_parameter_if_not_declared(
     nh, name + "." + "reverse_segment_min_segment_length_m",
     rclcpp::ParameterValue(trajectory.reverse_segment_min_segment_length_m));
   declare_parameter_if_not_declared(
@@ -374,6 +380,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "rotate_to_heading_angular_vel", rclcpp::ParameterValue(rotation.rotate_to_heading_angular_vel));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_max_angular_accel", rclcpp::ParameterValue(rotation.max_angular_accel));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_forward_lookahead_distance", rclcpp::ParameterValue(rotation.forward_lookahead_distance));
+  declare_parameter_if_not_declared(nh, name + "." + "rotation_approach_max_lateral_dist", rclcpp::ParameterValue(rotation.approach_max_lateral_dist));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_path_footprint_check_enable", rclcpp::ParameterValue(rotation.path_footprint_check_enable));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_path_footprint_sample_spacing", rclcpp::ParameterValue(rotation.path_footprint_sample_spacing));
   declare_parameter_if_not_declared(nh, name + "." + "rotation_path_footprint_check_cost_mode", rclcpp::ParameterValue(rotation.path_footprint_check_cost_mode));
@@ -563,6 +570,14 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
     name + "." + "transform_global_plan_goal_search_resolution",
     trajectory.transform_global_plan_goal_search_resolution,
     trajectory.transform_global_plan_goal_search_resolution);
+  nh->get_parameter_or(
+    name + "." + "last_occupied_goal_dist",
+    trajectory.last_occupied_goal_dist,
+    trajectory.last_occupied_goal_dist);
+  nh->get_parameter_or(
+    name + "." + "last_occupied_goal_hold_timeout",
+    trajectory.last_occupied_goal_hold_timeout,
+    trajectory.last_occupied_goal_hold_timeout);
   nh->get_parameter_or(
     name + "." + "reverse_segment_min_segment_length_m",
     trajectory.reverse_segment_min_segment_length_m,
@@ -843,6 +858,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "rotate_to_heading_angular_vel", rotation.rotate_to_heading_angular_vel, rotation.rotate_to_heading_angular_vel);
   nh->get_parameter_or(name + "." + "rotation_max_angular_accel", rotation.max_angular_accel, rotation.max_angular_accel);
   nh->get_parameter_or(name + "." + "rotation_forward_lookahead_distance", rotation.forward_lookahead_distance, rotation.forward_lookahead_distance);
+  nh->get_parameter_or(name + "." + "rotation_approach_max_lateral_dist", rotation.approach_max_lateral_dist, rotation.approach_max_lateral_dist);
   nh->get_parameter_or(name + "." + "rotation_path_footprint_check_enable", rotation.path_footprint_check_enable, rotation.path_footprint_check_enable);
   nh->get_parameter_or(name + "." + "rotation_path_footprint_sample_spacing", rotation.path_footprint_sample_spacing, rotation.path_footprint_sample_spacing);
   nh->get_parameter_or(name + "." + "rotation_path_footprint_check_cost_mode", rotation.path_footprint_check_cost_mode, rotation.path_footprint_check_cost_mode);
@@ -1104,6 +1120,10 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.transform_global_plan_goal_occupied_tolerance = parameter.as_double();
       } else if (name == node_name + ".transform_global_plan_goal_search_resolution") {
         trajectory.transform_global_plan_goal_search_resolution = parameter.as_double();
+      } else if (name == node_name + ".last_occupied_goal_dist") {
+        trajectory.last_occupied_goal_dist = parameter.as_double();
+      } else if (name == node_name + ".last_occupied_goal_hold_timeout") {
+        trajectory.last_occupied_goal_hold_timeout = parameter.as_double();
       } else if (name == node_name + ".reverse_segment_min_segment_length_m") {
         trajectory.reverse_segment_min_segment_length_m = parameter.as_double();
       } else if (name == node_name + ".reverse_segment_min_angle_deg") {
@@ -1477,6 +1497,8 @@ rcl_interfaces::msg::SetParametersResult
         rotation.max_angular_accel = parameter.as_double();
       } else if (name == node_name + ".rotation_forward_lookahead_distance") {
         rotation.forward_lookahead_distance = parameter.as_double();
+      } else if (name == node_name + ".rotation_approach_max_lateral_dist") {
+        rotation.approach_max_lateral_dist = parameter.as_double();
       } else if (name == node_name + ".rotation_path_footprint_sample_spacing") {
         rotation.path_footprint_sample_spacing = parameter.as_double();
       } else if (name == node_name + ".rotation_path_footprint_check_cost_mode") {

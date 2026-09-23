@@ -55,6 +55,12 @@ controller_server:
       dual_arc_reverse_forward_vx: 0.2
       dual_arc_reverse_forward_num: 10
       dual_arc_reverse_publish_backward_mode: True
+      # 到局部路径最近边的距离超过该值则不原地转，侧向切入交给 TEB；<=0 关闭（见 原地转横向距离否决方案.md）
+      rotation_approach_max_lateral_dist: 0.3
+      # 终点被占用且无退让点时，base 到终点小于该距离则零速度；<=0 关闭
+      last_occupied_goal_dist: 0.8
+      # 上述零速度超过该时间则本次控制失败，避免一直锁住；<=0 不超时
+      last_occupied_goal_hold_timeout: 15.0
       # Contour feasibility (see 动态障碍物避让.md)
       feasibility_check_obstacle_contours: True
       feasibility_check_dynamic_prediction: True
