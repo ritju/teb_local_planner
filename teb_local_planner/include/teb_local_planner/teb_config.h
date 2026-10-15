@@ -491,8 +491,6 @@ public:
     double dual_arc_reverse_forward_vx;
     //!< 连续前进帧数达到后（且过 min_hold）切回
     int dual_arc_reverse_forward_num;
-    //!< 双弧失败 latch 进出时是否发布 /backward_mode
-    bool dual_arc_reverse_publish_backward_mode;
   } rotation; //!< Parameters related to in-place rotation
 
   /**
@@ -858,7 +856,6 @@ public:
     rotation.dual_arc_reverse_timeout = 20.0;
     rotation.dual_arc_reverse_forward_vx = 0.2;
     rotation.dual_arc_reverse_forward_num = 10;
-    rotation.dual_arc_reverse_publish_backward_mode = true;
   }
   
   /**

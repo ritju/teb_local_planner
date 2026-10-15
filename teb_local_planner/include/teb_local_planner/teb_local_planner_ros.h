@@ -716,12 +716,12 @@
    /** 检测 transformed_plan 倒车弧长占比：短段扩窗后位移与航向夹角接近 180° */
    bool hasReverseSegmentInPlan(
      const std::vector<geometry_msgs::msg::PoseStamped> & plan) const;
-   /** 边沿发布 /backward_mode（几何倒车检测或双弧失败 latch，供 controller 门控） */
+   /** 边沿发布 /backward_mode（仅几何倒车检测，供 controller 门控） */
    void publishBackwardMode(bool backward);
    void updateBackwardModePublication(bool reverse_segment);
    void resetBackwardModePublicationState(bool publish_false);
    void enterDualArcReverseLatch();
-   void exitDualArcReverseLatch(bool reverse_segment);
+   void exitDualArcReverseLatch();
    void resetDualArcReverseLatch();
    /** 应用窄通道 TEB 参数（降低 forward_drive 惩罚、允许倒车初始化等） */
    void applyNarrowPassageTebSettings();

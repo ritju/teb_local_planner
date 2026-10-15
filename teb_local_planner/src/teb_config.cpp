@@ -400,7 +400,6 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "dual_arc_reverse_timeout", rclcpp::ParameterValue(rotation.dual_arc_reverse_timeout));
   declare_parameter_if_not_declared(nh, name + "." + "dual_arc_reverse_forward_vx", rclcpp::ParameterValue(rotation.dual_arc_reverse_forward_vx));
   declare_parameter_if_not_declared(nh, name + "." + "dual_arc_reverse_forward_num", rclcpp::ParameterValue(rotation.dual_arc_reverse_forward_num));
-  declare_parameter_if_not_declared(nh, name + "." + "dual_arc_reverse_publish_backward_mode", rclcpp::ParameterValue(rotation.dual_arc_reverse_publish_backward_mode));
 
   // Homotopy Class Planner
   declare_parameter_if_not_declared(nh, name + "." + "enable_homotopy_class_planning", rclcpp::ParameterValue(hcp.enable_homotopy_class_planning));
@@ -878,7 +877,6 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "dual_arc_reverse_timeout", rotation.dual_arc_reverse_timeout, rotation.dual_arc_reverse_timeout);
   nh->get_parameter_or(name + "." + "dual_arc_reverse_forward_vx", rotation.dual_arc_reverse_forward_vx, rotation.dual_arc_reverse_forward_vx);
   nh->get_parameter_or(name + "." + "dual_arc_reverse_forward_num", rotation.dual_arc_reverse_forward_num, rotation.dual_arc_reverse_forward_num);
-  nh->get_parameter_or(name + "." + "dual_arc_reverse_publish_backward_mode", rotation.dual_arc_reverse_publish_backward_mode, rotation.dual_arc_reverse_publish_backward_mode);
 
   // footprint model
   if (!nh->get_parameter(name + "." + "footprint_model.type", model_name))
@@ -1690,8 +1688,6 @@ rcl_interfaces::msg::SetParametersResult
         rotation.major_arc_retry_enable = parameter.as_bool();
       } else if (name == node_name + ".dual_arc_reverse_enable") {
         rotation.dual_arc_reverse_enable = parameter.as_bool();
-      } else if (name == node_name + ".dual_arc_reverse_publish_backward_mode") {
-        rotation.dual_arc_reverse_publish_backward_mode = parameter.as_bool();
       }
     }
 

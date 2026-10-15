@@ -1329,13 +1329,11 @@ bool clippedFootprintOutlineTouchesBlockingCost(
       resetBackwardModePublicationState(true);
       RCLCPP_INFO(
         logger_,
-        "TEB 已发布 /backward_mode（几何倒车检测 / 双弧失败 latch），"
-        "arc_length_ratio=%.2f backward_check_duration=%.2f backward_check_num=%d "
-        "dual_arc_publish=%d",
+        "TEB 已发布 /backward_mode（仅几何倒车检测），"
+        "arc_length_ratio=%.2f backward_check_duration=%.2f backward_check_num=%d",
         cfg_->trajectory.reverse_segment_arc_length_ratio,
         cfg_->trajectory.backward_check_duration,
-        cfg_->trajectory.backward_check_num,
-        cfg_->rotation.dual_arc_reverse_publish_backward_mode ? 1 : 0);
+        cfg_->trajectory.backward_check_num);
     }
     // 备份正常模式参数，供狭窄通道 RAII 恢复
     normal_weight_kinematics_forward_drive_ = cfg_->optim.weight_kinematics_forward_drive;
@@ -2112,7 +2110,7 @@ void TebLocalPlannerROS::configure(
   const bool narrow_mode = narrowPolygonsAvailable() && latched_narrow_passage_;
   const bool reverse_segment = hasReverseSegmentInPlan(transformed_plan);
   if (!cfg_->rotation.dual_arc_reverse_enable && dual_arc_reverse_active_) {
-    exitDualArcReverseLatch(reverse_segment);
+    exitDualArcReverseLatch();
   }
   bool dual_arc_timeout_probe = false;
   const bool other_narrow_sources =
@@ -2134,9 +2132,7 @@ void TebLocalPlannerROS::configure(
       }
     }
   }
-  const bool dual_arc_topic =
-    dual_arc_reverse_active_ && cfg_->rotation.dual_arc_reverse_publish_backward_mode;
-  updateBackwardModePublication(reverse_segment || dual_arc_topic);
+  updateBackwardModePublication(reverse_segment);
   const bool dual_arc_for_weights =
     dual_arc_reverse_active_ && !dual_arc_timeout_probe;
   const bool enable_narrow_teb = (enable_backward_cmd_received && enable_backward_cmd) ?
@@ -2575,7 +2571,7 @@ void TebLocalPlannerROS::configure(
 
    if (dual_arc_reverse_active_) {
      if (dual_arc_timeout_probe) {
-       exitDualArcReverseLatch(reverse_segment);
+       exitDualArcReverseLatch();
        updateNarrowPassageTebSettings(other_narrow_sources);
      } else {
        const double vx_thr = cfg_->rotation.dual_arc_reverse_forward_vx;
@@ -2593,7 +2589,7 @@ void TebLocalPlannerROS::configure(
            logger_,
            "双弧失败: 连续前进 %zu 帧 vx=%.3f 且保持 %.2fs，切回高权重",
            dual_arc_reverse_forward_count_, cmd_vel.twist.linear.x, elapsed_s);
-         exitDualArcReverseLatch(reverse_segment);
+         exitDualArcReverseLatch();
          updateNarrowPassageTebSettings(other_narrow_sources);
        }
      }
@@ -5470,17 +5466,12 @@ void TebLocalPlannerROS::enterDualArcReverseLatch()
   dual_arc_reverse_fail_count_ = 0;
   if (newly) {
     RCLCPP_INFO(logger_, "双弧失败: 进入倒车友好权重 latch");
-    if (cfg_->rotation.dual_arc_reverse_publish_backward_mode) {
-      publishBackwardMode(true);
-      backward_exit_false_count_ = 0;
-      backward_exit_window_start_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
-    }
   } else {
     RCLCPP_INFO(logger_, "双弧失败: 超时 probe 仍不可行，重新 latch");
   }
 }
 
-void TebLocalPlannerROS::exitDualArcReverseLatch(const bool reverse_segment)
+void TebLocalPlannerROS::exitDualArcReverseLatch()
 {
   if (!dual_arc_reverse_active_) {
     return;
@@ -5489,11 +5480,6 @@ void TebLocalPlannerROS::exitDualArcReverseLatch(const bool reverse_segment)
   dual_arc_reverse_forward_count_ = 0;
   dual_arc_reverse_fail_count_ = 0;
   RCLCPP_INFO(logger_, "双弧失败: 退出倒车友好权重 latch");
-  if (cfg_->rotation.dual_arc_reverse_publish_backward_mode && !reverse_segment) {
-    publishBackwardMode(false);
-    backward_exit_false_count_ = 0;
-    backward_exit_window_start_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
-  }
 }
 
 void TebLocalPlannerROS::resetDualArcReverseLatch()
