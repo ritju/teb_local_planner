@@ -168,6 +168,8 @@ public:
     double reverse_segment_min_angle_deg; //!< 倒车判定最小夹角阈值 [deg]
     //!< hasReverseSegmentInPlan: 倒车路径弧长占判定区间总弧长的比例阈值 [0,1]
     double reverse_segment_arc_length_ratio; //!< 倒车弧长占比阈值
+    //!< 从 global_plan 当前点向前纳入倒车判定的弧长 [m]；<=0 用剩余整段
+    double reverse_segment_lookahead_dist;
     //!< /backward_mode true→false: 连续非倒车帧防抖窗口时长 [s]
     double backward_check_duration; //!< backward_mode 退出防抖窗口时长 [s]
     //!< /backward_mode true→false: 窗口内连续 reverse_segment=false 帧数
@@ -588,6 +590,7 @@ public:
     trajectory.reverse_segment_min_segment_length_m = 0.05;
     trajectory.reverse_segment_min_angle_deg = 150.0;
     trajectory.reverse_segment_arc_length_ratio = 0.3;
+    trajectory.reverse_segment_lookahead_dist = 6.0;
     trajectory.backward_check_duration = 1.0;
     trajectory.backward_check_num = 2;
 

@@ -1,4 +1,11 @@
 /workspaces/capella_coverage_server/install/lib/libteb_local_planner.so
+/workspaces/capella_coverage_server/install/lib/teb_local_planner/path_wait_test_node
+/workspaces/capella_coverage_server/install/lib/teb_local_planner/split_modules_viz_node
+/workspaces/capella_coverage_server/install/lib/teb_local_planner/teb_main_flow_viz_node
+/workspaces/capella_coverage_server/install/include//teb_local_planner/detail/async_wait.hpp
+/workspaces/capella_coverage_server/install/include//teb_local_planner/detail/costmap_segment_clip.hpp
+/workspaces/capella_coverage_server/install/include//teb_local_planner/detail/edge_mode_env.hpp
+/workspaces/capella_coverage_server/install/include//teb_local_planner/detail/plan_corner_geometry.hpp
 /workspaces/capella_coverage_server/install/include//teb_local_planner/distance_calculations.h
 /workspaces/capella_coverage_server/install/include//teb_local_planner/equivalence_relations.h
 /workspaces/capella_coverage_server/install/include//teb_local_planner/g2o_types/base_teb_edges.h
@@ -27,6 +34,7 @@
 /workspaces/capella_coverage_server/install/include//teb_local_planner/near_horizon_dynamic_safety.h
 /workspaces/capella_coverage_server/install/include//teb_local_planner/obstacles.h
 /workspaces/capella_coverage_server/install/include//teb_local_planner/optimal_planner.h
+/workspaces/capella_coverage_server/install/include//teb_local_planner/path_dynamic_wait.h
 /workspaces/capella_coverage_server/install/include//teb_local_planner/planner_interface.h
 /workspaces/capella_coverage_server/install/include//teb_local_planner/pose_se2.h
 /workspaces/capella_coverage_server/install/include//teb_local_planner/recovery_behaviors.h
@@ -41,6 +49,14 @@
 /workspaces/capella_coverage_server/install/share/teb_local_planner_plugin.xml
 /workspaces/capella_coverage_server/install/lib/teb_local_planner/cmd_vel_to_ackermann_drive.py
 /workspaces/capella_coverage_server/install/share/teb_local_planner/params/teb_params.yaml
+/workspaces/capella_coverage_server/install/share/teb_local_planner/launch/path_wait_test.launch.py
+/workspaces/capella_coverage_server/install/share/teb_local_planner/launch/split_modules_viz.launch.py
+/workspaces/capella_coverage_server/install/share/teb_local_planner/launch/teb_main_flow_viz.launch.py
+/workspaces/capella_coverage_server/install/share/teb_local_planner/cfg/TebLocalPlannerReconfigure.cfg
+/workspaces/capella_coverage_server/install/share/teb_local_planner/cfg/path_wait_test.rviz
+/workspaces/capella_coverage_server/install/share/teb_local_planner/cfg/rviz_test_optim.rviz
+/workspaces/capella_coverage_server/install/share/teb_local_planner/cfg/split_modules_viz.rviz
+/workspaces/capella_coverage_server/install/share/teb_local_planner/cfg/teb_main_flow_viz.rviz
 /workspaces/capella_coverage_server/install/share/teb_local_planner/environment/library_path.sh
 /workspaces/capella_coverage_server/install/share/teb_local_planner/environment/library_path.dsv
 /workspaces/capella_coverage_server/install/share/teb_local_planner//teb_local_planner_plugin.xml

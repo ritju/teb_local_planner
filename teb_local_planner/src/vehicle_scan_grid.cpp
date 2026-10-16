@@ -4,6 +4,7 @@
 #include "teb_local_planner/teb_local_planner_ros.h"
 
 #include <tf2_eigen/tf2_eigen.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_sensor_msgs/tf2_sensor_msgs.hpp>
 
 #include <sensor_msgs/point_cloud2_iterator.hpp>
@@ -457,6 +458,129 @@ void TebLocalPlannerROS::publishVehicleScanOccupancyGrid()
   }
 
   vehicle_scan_grid_pub_->publish(msg);
+}
+
+void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArray::ConstSharedPtr msg)
+{
+  
+  if (!msg || !initialized_ || !costmap_ros_ || !tf_) {
+    return;
+  }
+
+  // 获取机器人在 map 坐标系下的当前位姿
+  geometry_msgs::msg::PoseStamped robot_pose_map;
+  try {
+    geometry_msgs::msg::TransformStamped tf_base_to_map =
+      tf_->lookupTransform(
+        cfg_->map_frame,
+        costmap_ros_->getBaseFrameID(),
+        tf2::TimePointZero,
+        tf2::durationFromSec(0.5));
+
+    robot_pose_map.header.stamp = tf_base_to_map.header.stamp;
+    robot_pose_map.header.frame_id = cfg_->map_frame;
+    robot_pose_map.pose.position.x = tf_base_to_map.transform.translation.x;
+    robot_pose_map.pose.position.y = tf_base_to_map.transform.translation.y;
+    robot_pose_map.pose.position.z = tf_base_to_map.transform.translation.z;
+    robot_pose_map.pose.orientation = tf_base_to_map.transform.rotation;
+  } catch (const tf2::TransformException &ex) {
+    RCLCPP_WARN_THROTTLE(
+      logger_, *(clock_), 2000,
+      "车辆位姿回调: 获取机器人 map 系位姿失败: %s", ex.what());
+    return;
+  }
+
+  const double new_vehicle_distance_threshold_sq = new_vehicle_distance_threshold_ * new_vehicle_distance_threshold_;
+
+  // 先构造当前消息中、距离机器人小于阈值的候选车辆（位姿统一转换到 map 坐标系）
+  std::vector<geometry_msgs::msg::PoseStamped> near_vehicles;
+  near_vehicles.reserve(msg->poses.size());
+
+  for (const auto &pose : msg->poses) {
+    geometry_msgs::msg::PoseStamped vehicle_pose;
+    vehicle_pose.header = msg->header;
+    vehicle_pose.pose = pose;
+
+    // 如有必要，将车辆位姿转换到 map 坐标系
+    if (vehicle_pose.header.frame_id != cfg_->map_frame) {
+      try {
+        geometry_msgs::msg::TransformStamped tf_to_map =
+          tf_->lookupTransform(
+            cfg_->map_frame,
+            vehicle_pose.header.frame_id,
+            tf2::TimePointZero,
+            tf2::durationFromSec(0.5));
+        tf2::doTransform(vehicle_pose, vehicle_pose, tf_to_map);
+      } catch (const tf2::TransformException &ex) {
+        RCLCPP_WARN_THROTTLE(
+          logger_, *(clock_), 2000,
+          "车辆位姿回调: 车辆位姿变换到 map 系失败: %s", ex.what());
+        continue;
+      }
+    }
+
+    const double dx = vehicle_pose.pose.position.x - robot_pose_map.pose.position.x;
+    const double dy = vehicle_pose.pose.position.y - robot_pose_map.pose.position.y;
+    const double dist_sq = dx * dx + dy * dy;
+
+    if (dist_sq <= new_vehicle_distance_threshold_sq) {
+      RCLCPP_INFO_THROTTLE(
+        logger_, *(clock_), 2000,
+        "车辆位姿回调: 发现附近车辆 (%.2f, %.2f)，距机器人: %.2f m",
+        vehicle_pose.pose.position.x, vehicle_pose.pose.position.y, std::sqrt(dist_sq));
+      near_vehicles.emplace_back(vehicle_pose);
+    }
+  }
+
+  // 更新全局车辆列表：
+  // (1) 先根据机器人位置剔除 global_vehicle_poses_ 中距离超过阈值的车辆
+  // (2) 再从 near_vehicles 中加入新的车辆，如果与现有车辆距离太近则不加入
+  const double erase_vehicle_distance_threshold_sq = erase_vehicle_distance_threshold_ * erase_vehicle_distance_threshold_;
+  {
+    std::lock_guard<std::mutex> veh_lock(global_vehicle_poses_mutex_);
+
+    // (1) 移除距离机器人超过阈值的已有车辆
+    auto it = global_vehicle_poses_.begin();
+    while (it != global_vehicle_poses_.end()) {
+      const double dx = it->pose.position.x - robot_pose_map.pose.position.x;
+      const double dy = it->pose.position.y - robot_pose_map.pose.position.y;
+      const double dist_sq = dx * dx + dy * dy;
+
+      if (dist_sq > erase_vehicle_distance_threshold_sq) {
+        RCLCPP_INFO_THROTTLE(
+          logger_, *(clock_), 2000,
+          "车辆位姿回调: 从全局列表移除车辆 (%.2f, %.2f)，距机器人: %.2f m",
+          it->pose.position.x, it->pose.position.y, std::sqrt(dist_sq));
+        it = global_vehicle_poses_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    // (2) 对每一个候选车辆，若与现有车辆“距离相近”则认为是同一辆车，不重复加入
+    for (const auto &candidate : near_vehicles) {
+      bool exists_similar = false;
+      for (const auto &existing : global_vehicle_poses_) {
+        const double dx = existing.pose.position.x - candidate.pose.position.x;
+        const double dy = existing.pose.position.y - candidate.pose.position.y;
+        const double dist_sq = dx * dx + dy * dy;
+        if (dist_sq <= same_vehicle_threshold_sq_) {
+          RCLCPP_INFO_THROTTLE(
+            logger_, *(clock_), 2000,
+            "车辆位姿回调: 候选车辆 (%.2f, %.2f) 与已有车辆 (%.2f, %.2f) 过近 (%.2f m)，不加入全局列表",
+            candidate.pose.position.x, candidate.pose.position.y,
+            existing.pose.position.x, existing.pose.position.y,
+            std::sqrt(dist_sq));
+          exists_similar = true;
+          break;
+        }
+      }
+
+      if (!exists_similar) {
+        global_vehicle_poses_.emplace_back(candidate);
+      }
+    }
+  }
 }
 
 }  // namespace teb_local_planner

@@ -1,207 +1,359 @@
-controller_server:
-  ros__parameters:
-    odom_topic: /odom
-    use_sim_time: True
-    controller_frequency: 5.0
-    controller_plugin_types: ["teb_local_planner::TebLocalPlannerROS"]
-    controller_plugins: ["FollowPath"]
-    FollowPath:
-      plugin: teb_local_planner::TebLocalPlannerROS
 
-      teb_autosize: 1.0
-      dt_ref: 0.3
-      dt_hysteresis: 0.1
-      max_samples: 500
-      global_plan_overwrite_orientation: False
-      allow_init_with_backwards_motion: False
-      max_global_plan_lookahead_dist: 3.0
-      transform_global_plan_costmap_span_scale: 1.0  # plan-length cap & row-end search = scale * max(costmap full x,y) [m]; <=0 disables
-      transformed_plan_collision_pose_to_end_distance: 1.0  # free tail after last collision on current row [m]
-      transformed_plan_collision_pose_safe_distance_front: 0.4  # fallback: min along-path gap if terminal is behind occupied [m]
-      transformed_plan_collision_pose_safe_distance_back: 1.0  # fallback: min along-path gap if terminal is past occupied [m]
-      transformed_plan_row_terminal_arrive_distance: 1.0  # arrived at row-terminal safe pose → prune remaining row [m]
-      cut_path_before_corner_lethal_dist: 1.0
-      cut_path_before_corner_inscribed_dist: 1.5
-      prune_before_corner_distance: 4.0   # unused by arrived-corner prune; kept for ray/legacy
-      prune_corner_residual_distance: 0.5  # unused by arrived-corner prune; kept for yaml compatibility
-      prune_before_corner_linear_x_threshold: 0.1  # |linear.x| must be below this to prune at corner obstacle [m/s]
-      last_corner_record_distance: 0.3  # along-path arc from closest pose to locked corner to prune that corner [m]
-      last_corner_distinct_distance: 0.2  # unused (no spatial dedup); kept for yaml compatibility
-      corner_approach_ray_check_enable: true
-      corner_approach_check_sample_spacing: 0.2
-      corner_approach_check_cost_mode: both  # both | lethal | inscribed
-      corner_approach_check_margin: -1.0  # <0: use min_obstacle_dist; >=0: fixed body-frame pad [m]
-      corner_approach_footprint_marker_enable: false
-      global_plan_viapoint_sep: 0.3
-      global_plan_prune_distance: 1.0
-      global_plan_prune_max_accum_dist: 8.0   # <=0: search full path for prune point
-      prune_angle_threshold: 90.0  # [deg] pruneGlobalPlan heading align vs robot yaw
-      rough_global_plan_prune_distance: 3.0   # coarse-pass prune distance [m]; <=0 disables coarse pass
-      rough_global_plan_prune_max_accum_dist: -1.0  # coarse-pass search range [m]; <=0 searches entire plan
-      exact_arc_length: False
-      feasibility_check_no_poses: 2
-      # 劣弧 TEB 不可行时优弧展开 yaw 再优化；heading_threshold=0 表示一侧失败即试另一侧
-      major_arc_retry_enable: True
-      major_arc_retry_heading_threshold: 0.0
-      # 优弧锁停滞看门狗：timeout 内剩余转角下降不足 yaw、位移也不足 xy 则解锁；timeout<=0 关闭
-      major_arc_stagnation_timeout: 2.0
-      major_arc_stagnation_yaw: 0.15
-      major_arc_stagnation_xy: 0.06
-      # 双弧均失败：连续 fail_num 次后降 forward_drive 并 latch；连续前进 + min_hold 切回；timeout probe 高权重
-      dual_arc_reverse_enable: True
-      dual_arc_reverse_fail_num: 3
-      dual_arc_reverse_min_hold: 10.0
-      dual_arc_reverse_timeout: 20.0
-      dual_arc_reverse_forward_vx: 0.2
-      dual_arc_reverse_forward_num: 10
-      # 到局部路径最近边的距离超过该值则不原地转，侧向切入交给 TEB；<=0 关闭（见 原地转横向距离否决方案.md）
-      rotation_approach_max_lateral_dist: 0.3
-      # 终点被占用且无退让点时，base 到终点小于该距离则零速度；<=0 关闭
-      last_occupied_goal_dist: 0.8
-      # 上述零速度超过该时间则本次控制失败，避免一直锁住；<=0 不超时
-      last_occupied_goal_hold_timeout: 15.0
-      # Contour feasibility (see 动态障碍物避让.md)
-      feasibility_check_obstacle_contours: True
-      feasibility_check_dynamic_prediction: True
-      feas_contour_margin: 0.0
-      feas_pred_T: 1.0
-      feas_pred_R: 3.0
-      feas_pred_gate_mode: "both_or"  # rel | abs | both_or
-      feas_pred_delta_omega_abs: 0.8
-      feas_pred_delta_omega_rel: -1.0  # <=0 → delta_omega_scale * max_vel_theta
-      feas_pred_v_min: 0.05
-      publish_feedback: False
-      publish_dynamic_obstacle_debug: False  # RViz: teb_dynamic_obstacle_debug
-      dynamic_obstacle_debug_pose_stride: 1
-      dynamic_obstacle_debug_time_z_scale: 1.0  # z=scale*t; same-t footprint & obstacle share height (0=flat)
-          
-      # Robot
-              
-      max_vel_x: 0.26
-      # 不再用此开关把 vx 下界钉成 0（会导致优化无解）；倒车由 max_vel_x_backwards 限制，前进偏好用 weight_kinematics_forward_drive
-      prefer_forward_only: True
-      max_vel_theta: 1.0 
-      acc_lim_x: 2.5
-      acc_lim_theta: 3.2
+  controller_server:
+    ros__parameters:
+      use_sim_time: True
+      controller_frequency: 10.0
+      min_x_velocity_threshold: 0.01
+      min_y_velocity_threshold: 0.5
+      min_theta_velocity_threshold: 0.001
+      failure_tolerance: 5.0
+      progress_checker_plugin: "progress_checker"
+      goal_checker_plugins: ["general_goal_checker"] # "precise_goal_checker"
+      prune_dist_behind_robot: 2.0
+      prune_max_accum_dist: 8.0  # <=0: search full path for prune point
+      prune_angle_threshold: 1.57079632679  # rad, default 90deg
+      remaining_path_length_threshold: 4.0
+      teb_global_plan_topic: teb_global_plan
+      teb_remaining_path_length_threshold: 4.0
+      controller_plugins: ["FollowPath"]
 
-      footprint_model: # types: "point", "circular", "two_circles", "line", "polygon"
-        type: "circular"
-        radius: 0.17 # for type "circular"
+      # Progress checker parameters
+      progress_checker:
+        plugin: "nav2_controller::SimpleProgressChecker"
+        required_movement_radius: 0.5
+        movement_time_allowance: 30.0
+      general_goal_checker:
+        stateful: true
+        plugin: "nav2_controller::SimpleGoalChecker"
+        xy_goal_tolerance: 0.5
+        yaw_goal_tolerance: 3.14
 
-      # GoalTolerance
-              
-      free_goal_vel: False
-          
-      # Obstacles
-          
-      min_obstacle_dist: 0.27
-      inflation_dist: 0.6
-      include_costmap_obstacles: True
-      costmap_obstacles_behind_robot_dist: 1.0
-      obstacle_poses_affected: 15
+      # laser-line parameters
+      theta_thr: 0.1  # path和直线角度误差
+      dis_thr: 0.9    # path和直线距离误差
+      # path_topic: "/path"
+      wall_lines_topic: "/wall_lines_stamped"
+      time_tolerance: 0.2  # 话题时效性误差
+      tf_tolerance: 0.1    # tf变换误差
 
-      dynamic_obstacle_inflation_dist: 0.6
-      include_dynamic_obstacles: True
+      global_frame: "map"
+      costmap_converter_rate: 5  # 降低更新频率，与 costmap 更新频率同步（5.0 Hz），避免读取不完整数据
+      cluster_max_pts: 100
+      cluster_min_pts: 1
+      cluster_max_distance: 0.2
+      convex_hull_min_pt_separation: 0.1
 
-      # Near-horizon predictable dynamic safety (see 动态障碍物避让.md)
-      dynamic_safety_predictable_mode: True
-      dynamic_obstacles_as_static_edges: True
-      dynamic_obstacle_cache_time: 0.3
-      dyn_gate_T_near: 1.0
-      dyn_gate_v_x_max: 2.0
-      dyn_gate_omega_z_max: 1.0
-      dyn_gate_inflation: 0.3
-      dyn_gate_overlap_dist: 0.05
-      dyn_gate_roi_front: 1.0
-      dyn_gate_roi_rear: 1.0
-      dyn_gate_roi_left: 1.0
-      dyn_gate_roi_right: 1.0
-      dyn_gate_hold_time: 0.3
-      delta_omega_scale: 0.3
-      publish_near_horizon_debug: True
-      weight_near_horizon_omega_hold: 50.0
+      # TEB parameters
+      FollowPath:
+        plugin: teb_local_planner::TebLocalPlannerROS
+        # 原地转向参数
+        rotation_linear_vel_threshold: 0.35 # 允许原地转向的最大线速度
+        rotation_angle_threshold: 0.3875 # 允许原地转向的最小角度
+        rotate_to_heading_angular_vel: 0.35 # 旋转角速度
+        rotation_max_angular_accel: 0.8 # 最大角加速度
+        rotation_forward_lookahead_distance: 0.5 # 获取路径点方向的截断距离
+        rotation_rotate_min_angular_vel: 0.2 # 终点处的角速度
+        rotation_limit_duration: 30.0 # 转向点有效保持时间，防止反复旋转造成的摇摆
+        rotation_limit_distance: 0.3 # 小于次距离，判断属于同一个转向点
+        rotation_decel_blend_start_rad: 0.0 # 当角度小于此值时，开始减速
+        rotation_path_footprint_check_enable: false # 原地转前是否做路径 footprint 扫掠；false 时只做原地转向扫掠
+        rotation_path_footprint_check_cost_mode: "lethal" # 路径点与局部轮廓的代价计算模式，"both"、"lethal"、"inscribed"
+        # 角点处理参数
+        theta_threshold: 135 # 路径点与前后路径点角度小于该阈值，判定为角点
+        prune_before_corner_linear_x_threshold: 0.2  # 角点被障碍物占用时，机器人背离角度的线速度大于该阈值，则截断全局路径lethal或inscribed长度
+        cut_path_before_corner_lethal_dist: 3.0 # 角点被lethal障碍物占用时的，向前裁剪全局路径的距离
+        cut_path_before_corner_inscribed_dist: 3.0 # 角点被inscribed障碍物占用时，向内裁剪全局路径的距离
+        prune_before_corner_distance: 4.0   # 识别到角点后，向前截断全局路径的距离
+        prune_corner_residual_distance: 0.5  # 截断全局路径的剩余路径长度最小值
+        corner_approach_check_margin: -1.0 # 角点处理参数，-1.0表示用min_obstacle_dist
+        corner_approach_check_sample_spacing: 0.2 # 角点处理参数，采样间隔
+        corner_approach_check_cost_mode: "lethal" # 角点处理参数，代价计算模式，"both"、"lethal"、"inscribed"
+        corner_approach_footprint_marker_enable: true
+        # 贴边参数配置
+        min_wall_dist: 0.75 # 机器人外轮廓最小贴边距离
+        distance_tolerance: 1.15 # 路径与贴边线距离小于该阈值，允许贴边
+        parallel_tolerance: 10.0 # 贴边线与路径点方向角度误差小于该阈值，允许贴边
+        edge_acc_lim_theta: 0.2 # 贴边最大角加速度
+        edge_max_vel_theta: 0.2 # 贴边最大角速度
+        edge_max_vel_x: 0.5 # 贴边最大线速度
+        edge_weight_optimaltime: 10.0 # 贴边优化时间权重
+        edge_min_obstacle_dist: 0.10 # 贴边时距离障碍物最小距离
+        edge_weight_inflation: 0.0 # 贴边时障碍物膨胀距离权重
+        edge_footprint_vertices: "[[1.15, 0.6], [1.15, -0.6], [-0.65, -0.6], [-0.65, 0.6]]" # 贴边轮廓顶点
+        min_wall_line_length: 1.0 # 贴边特征长度大于该值，允许贴边
+        min_path_line_length: 2.0 # 路径长度大于该值，允许贴边
+        transform_path_line_length: 2.5 # 路径长度大于该值，允许贴边
+        keep_wall_line_time: 5.0 # 贴边线保持时间
+        static_layer_enable_delay: 5.0 # 静态层启用延迟
 
-      # PATH-corridor wait for /dynamic_obstacles (see 动态障碍物识别与停车绕行方案.md)
-      # Do NOT remap that topic onto `obstacles`. T_wait must stay > detector t_settle (2.0 s).
-      path_wait_enable: True
-      path_wait_topic: /dynamic_obstacles
-      path_wait_lookahead_dist: 6.0
-      path_wait_corridor_scale: 1.0  # half_width = footprint_half_width + min_obstacle_dist * scale
-      path_wait_timeout: 6.0  # per-ID wait before latch/detour
-      path_wait_clear_time: 0.5  # corridor empty and per-ID leave debounce
-      path_wait_msg_timeout: 0.5
-      publish_path_wait_debug: True
+        # robot_dist < min_wall_dist: weight *= clamp(robot_dist/min_wall_dist, lower, upper)
+        wall_line_dist_weight_scale_under_min_lower: 0.8
+        wall_line_dist_weight_scale_under_min_upper: 1.0
+        # robot_dist in [min_wall_dist, distance_tolerance]: weight scales from 1.0*W to this*W
+        wall_line_dist_robot_weight_radius: 2.0 # 机器人前向渐变权重距离，避免在机器人处权重过大，导致路径不平滑
+        wall_line_dist_weight_scale_at_robot: 0.6 # 起点附近贴边权重
+        wall_line_dist_weight_scale_far: 1.0 # 达到wall_line_dist_weight_scale_far距离附近贴边权重
+        wall_line_dist_weight_scale_at_distance_tolerance: 0.7 # 机器人与贴边线距离增大而权重减小的比例
+        
+        switch_static_layer: true # 贴边时是否开关局部代价图静态图层
+        switch_local_footprint: true # 贴边时是否调整局部轮廓为edge_footprint_vertices
+        switch_global_footprint: true # 贴边时是否调整全局轮廓为edge_footprint_vertices
+        wall_line_safety_offset: 0.00 # 贴边线偏移距离，裁剪障碍物轮廓时使用
+        wall_line_extension_distance: 6.0 # 贴边线扩展距离
+        wall_line_lock_distance_threshold: 0.20 # 多帧贴边线距离差小于该阈值，判定为锁定
+        wall_line_lock_angle_threshold: 3.0 # 多帧贴边线角度差小于该阈值，判定为锁定
+        wall_line_lock_min_stable_count: 10 # 多帧贴边线角度差小于该阈值，判定为锁定
 
-      costmap_converter_plugin: "costmap_converter::CostmapToPolygonsDBSMCCH"
-      costmap_converter_spin_thread: True
-      costmap_converter_rate: 5
+        # Wall side clearance (scheme A); enable on edge-following robots
+        wall_side_clearance_mode: true
+        desired_side_clearance: 0.15
+        side_clearance_push: 0.075
+        side_clearance_attract_max: 0.4
+        weight_wall_side_pull: 40.0
+        weight_wall_side_push: 200.0
+        debug_wall_obstacle_cost_interval: 2.0
 
-      # Optimization
-          
-      no_inner_iterations: 5
-      no_outer_iterations: 4
-      optimization_activate: True
-      optimization_verbose: False
-      penalty_epsilon: 0.1
-      obstacle_cost_exponent: 4.0
-      weight_max_vel_x: 0.5
-      weight_max_vel_theta: 0.5
-      weight_acc_lim_x: 0.5
-      weight_acc_lim_theta: 10.5
-      weight_kinematics_nh: 1000.0
-      weight_kinematics_forward_drive: 3.0
-      weight_kinematics_turning_radius: 1.0
-      weight_optimaltime: 1.0 # must be > 0
-      weight_shortest_path: 0.0
-      weight_obstacle: 100.0
-      weight_inflation: 0.2
-      weight_dynamic_obstacle: 10.0 # not in use yet
-      weight_dynamic_obstacle_inflation: 0.2
-      weight_viapoint: 50.0
-      weight_adapt_factor: 2.0
+        paired_mission_and_reference_path_topic: "paired_mission_and_reference_path" # 配对路径和贴边参考线话题
+        removed_plan_topic: "removed_plan" # Remove path topic，用于选择贴边参考线
+        paths_near_edge_match_distance_threshold: 0.3 # 贴边线匹配距离阈值
+        paths_near_edge_match_angle_threshold_deg: 10.0 # 贴边线匹配角度阈值
+        fusion_primary_lock_duration: 5.0 # 融合贴边参考线和识别的贴边特征锁定时间
+        reference_match_max_angle_deg: 10.0 # 融合贴边参考线和识别的贴边特征匹配角度阈值
+        reference_match_max_distance_m: 0.5 # 融合贴边参考线和识别的贴边特征匹配距离阈值
+        reference_no_valid_path_timeout: 5.0 # 融合贴边参考线和识别的贴边特征匹配时间阈值
+        mission_segment_front_pose_match_threshold_m: 0.1 # 判断当前路径点首点与配对的路径点的距离
 
-      # Wall side clearance (scheme A); enable on edge-following robots
-      wall_side_clearance_mode: true
-      desired_side_clearance: 0.08
-      side_clearance_push: 0.05
-      side_clearance_attract_max: 0.35
-      weight_wall_side_pull: 80.0
-      weight_wall_side_push: 200.0
-      weight_wall_line_dist: 40.0
-      # 贴边模式膨胀权重（切换时覆盖 weight_inflation）；0 避免路缘膨胀顶开贴边
-      edge_weight_inflation: 0.0
-      # 贴边/障碍代价调试日志间隔 [s]；<=0 关闭
-      debug_wall_obstacle_cost_interval: 2.0
+        wall_line_obstacle_filter_distance: 0.075 # 贴边线裁剪机器人一侧障碍物的距离阈值，正值裁剪，负值关闭
+        # 障碍物轮廓点与机器人距离小于该阈值时，裁剪用wall_line_obstacle_filter_distance，
+        # 大于该阈值时，按照wall_line_obstacle_filter_distance_scale方法，最大为wall_line_obstacle_filter_distance_max
+        wall_line_obstacle_protrusion_base_distance: 6.0
+        wall_line_obstacle_filter_distance_scale: 0.075 # 裁剪距离放大系数
+        wall_line_obstacle_filter_distance_max: 0.1 # 裁剪距离最大值，负值关闭
+        wall_line_obstacle_along_wall_rear_margin: 0.5 # 障碍物轮廓在机器人后方时，计入的最大距离
+        wall_line_protrusion_exit_forward_max: 5.0 # 障碍物轮廓在机器人前方时，计入的最大距离
+        wall_line_protrusion_exit_lateral_max: 1.8 # 障碍物轮廓在机器人侧面时，计入的最大距离
+        wall_line_protrusion_exit_depth_min: 0.5 # 障碍物轮廓在机器人侧超过这个距离时，退出贴边
+        wall_line_protrusion_exit_depth_max: 1.8 # 障碍物轮廓在机器人小于该距离阈值，退出贴边
+        # 贴边障碍裁剪：与墙线交叠最小沿墙长度 [m]；裁后面积下限 [m^2]；顶点去重距离 [m]
+        wall_line_obstacle_clip_intersect_min_span: 0.01 # 与墙线交叠最小沿墙长度
+        wall_line_obstacle_clip_min_keep_area_sq: 0.001 # 裁后面积下限
+        wall_line_obstacle_clip_vertex_dedupe_dist: 0.02 # 顶点去重距离
+        # 障碍物轮廓裁剪参数
+        obstacle_protrusion_reenter_distance: 5.0 # 凸出的障碍物轮廓与机器人距离小于该阈值，退出贴边
+        obstacle_protrusion_timeout: 10.0 # 凸出的障碍物轮廓保存时间
+        obstacle_protrusion_min_confirm_frames: 1 # 凸出的障碍物轮廓帧数超过该阈值，退出贴边
+        obstacle_protrusion_confirm_window: 3.0 # 凸出的障碍物轮廓确认窗口时间
+        obstacle_protrusion_max_stored: 100 # 凸出的障碍物轮廓队列长度
+        # 贴边时识别的车辆参数，先判断距离是否小于new_vehicle_distance_threshold，再判断前后方范围，最后判断左右范围，都满足则退出贴边
+        new_vehicle_distance_threshold: 5.0 # 车辆距离机器人距离小于该阈值，允许判断是否退出贴边
+        erase_vehicle_distance_threshold: 10.0 # 检测到的车辆与机器人距离大于该阈值，删除车辆
+        close_vehicle_distance_threshold: 1.5 # 判断识别到的车辆是否是同一辆的距离阈值
+        vehicle_exit_corridor_wall_inner_m: 0.5 # 贴边时，机器人考虑车辆在墙线远离机器人一侧的最大距离
+        vehicle_exit_corridor_wall_robot_side_m: 2.0 # 贴边时，机器人考虑车辆在墙线靠近机器人一侧的最大距离
+        vehicle_exit_corridor_rear_m: 1.5 # 贴边时，机器人考虑车辆在机器人后方的最大距离
+        vehicle_exit_corridor_front_m: 6.0 # 贴边时，机器人考虑车辆在机器人前方的最大距离
+        # 开启车辆识别扩大障碍物轮廓参数
+        enable_vehicle_scan_grid: false # 是否开启车辆识别扩大障碍物轮廓
+        vehicle_scan_topic: "/vehicle_scan_points" # 车辆点云话题
+        vehicle_scan_grid_resolution: 0.2 # 维护车辆栅格地图分辨率
+        vehicle_scan_grid_width: 10.0 # 维护车辆栅格地图宽度
+        vehicle_scan_grid_height: 10.0 # 维护车辆栅格地图长度
+        vehicle_scan_polygon_fill_threshold: 10 # 维护车辆栅格地图填充阈值
+        vehicle_scan_max_stale_cycles: 10 # 维护车辆栅格地图最大过期周期
+        vehicle_scan_hull_inflation: 1.5 # 维护车辆栅格地图凸包膨胀距离
+        publish_vehicle_scan_grid: false # 是否发布维护车辆栅格地图
+        vehicle_scan_grid_topic: "/teb_vehicle_scan_grid" # 维护车辆栅格地图话题
+        # 前2D激光雷达侵占距离检查
+        enable_front_scan_protrusion_check: true
+        front_scan_topic: "/front_scan"
+        front_scan_min_range_base_footprint: 2.0
+        front_scan_max_range_base_footprint: 10.0
+        monitor_corridor_path_heading_length: 2.0
+        monitor_corridor_heading_angle_deg: 60.0
 
-      # Homotopy Class Planner
+        # Trajectory
+        teb_autosize: 1.0
+        dt_ref: 0.2
+        dt_hysteresis: 0.02
+        max_samples: 100
+        min_samples: 3
+        global_plan_overwrite_orientation: false
+        allow_init_with_backwards_motion: false
+        max_global_plan_lookahead_dist: 5.0 # 3.0
+        global_plan_viapoint_sep: 0.5
 
-      enable_homotopy_class_planning: True
-      enable_multithreading: True
-      max_number_classes: 4
-      selection_cost_hysteresis: 5.0
-      selection_prefer_initial_plan: 1.0
-      selection_obst_cost_scale: 1.0
-      selection_alternative_time_cost: True
+        global_plan_prune_distance: 1.0
+        global_plan_prune_max_accum_dist: 8.0
+        rough_global_plan_prune_distance: 5.0
+        rough_global_plan_prune_max_accum_dist: 50.0
 
-      roadmap_graph_no_samples: 15
-      roadmap_graph_area_width: 5.0
-      roadmap_graph_area_length_scale: 1.0
-      h_signature_prescaler: 0.5
-      h_signature_threshold: 0.1
-      obstacle_heading_threshold: 0.45
-      switching_blocking_period: 0.0
-      viapoints_all_candidates: True
-      delete_detours_backwards: True
-      max_ratio_detours_duration_best_duration: 3.0
-      visualize_hc_graph: False
-      visualize_with_time_as_z_axis_scale: 0.0
+        transform_global_plan_closest_search_max_accum_dist: 2.0
+        transform_global_plan_costmap_span_scale: 2.0  # plan-length cap & row-end search = scale * max(costmap full x,y) [m]; <=0 disables
+        transformed_plan_collision_pose_to_end_distance: 4.0
+        transformed_plan_collision_pose_safe_distance_front: 0.2  # fallback: min along-path gap if terminal is behind occupied [m]
+        transformed_plan_collision_pose_safe_distance_back: 1.0  # fallback: min along-path gap if terminal is past occupied [m]
+        transformed_plan_row_terminal_arrive_distance: 0.3  # arrived at row-terminal safe pose → prune remaining row [m]
+        transform_global_plan_goal_occupied_tolerance: 0.3
+        transform_global_plan_goal_search_resolution: 0.1
+        prune_angle_threshold: 90.0  # [deg] heading align for prune and current-row split
 
-      # Recovery
-      
-      shrink_horizon_backup: True
-      shrink_horizon_min_duration: 10.0
-      oscillation_recovery: True
-      oscillation_v_eps: 0.1
-      oscillation_omega_eps: 0.1
-      oscillation_recovery_min_duration: 10.0
-      oscillation_filter_duration: 10.0
+        exact_arc_length: false
+        feasibility_check_no_poses: 1000
+        feasibility_check_lookahead_distance: 10.0
+        publish_feedback: false
+        wheel_base: 0.422
+        control_look_ahead_poses: 4
+        is_footprint_dynamic: true
+        map_to_base_transform_max_age: 1.0
+
+        # PATH-corridor wait for /dynamic_obstacles (see 动态障碍物识别与停车绕行方案.md)
+        # Do NOT remap that topic onto `obstacles`. T_wait must stay > detector t_settle (2.0 s).
+        path_wait_enable: False
+        path_wait_topic: /dynamic_obstacles
+        path_wait_lookahead_dist: 6.0
+        path_wait_corridor_scale: 1.0  # half_width = footprint_half_width + min_obstacle_dist * scale
+        path_wait_timeout: 6.0  # per-ID wait before latch/detour
+        path_wait_clear_time: 0.5  # corridor empty and per-ID leave debounce
+        path_wait_msg_timeout: 0.5
+        publish_path_wait_debug: True
+
+        # 允许后退参数
+        reverse_segment_min_segment_length_m: 0.05 # 相邻路径点长度大于该阈值，允许后退
+        reverse_segment_min_angle_deg: 150.0 # 相邻路径点角度大于该阈值，允许后退
+        trajectory.reverse_segment_arc_length_ratio: 0.6 #倒车路径长度与机器人当前路径长度比例阈值
+        backward_check_duration: 1.0 # 退出后退模式，防抖时间
+        backward_check_num: 2 # 退出后退模式，防抖次数
+
+        # Robot
+        max_vel_x: 0.5
+        max_vel_theta: 0.4
+        acc_lim_x: 0.3
+        acc_lim_theta: 0.6
+        max_vel_x_backwards: 0.5
+        safe_linear_speed_limit: 2.0
+
+        footprint_model: # types: "point", "circular", "two_circles", "line", "polygon"
+          type: "polygon"
+          vertices: "[[1.15, 0.65], [1.15, -0.65], [-0.68, -0.65], [-0.68, 0.65]]"
+
+        # GoalTolerance
+        free_goal_vel: false
+
+        # Obstacles
+        min_obstacle_dist: 0.15
+        inflation_dist: 0.4
+        include_costmap_obstacles: true
+        costmap_obstacles_behind_robot_dist: 1.5
+        obstacle_poses_affected: 30
+        obstacle_proximity_upper_bound: 0.5
+        obstacle_proximity_lower_bound: 0.01
+
+        dynamic_obstacle_inflation_dist: 0.7
+        include_dynamic_obstacles: false
+
+        min_resolution_collision_check_angular: 0.017 # 0.087 radians = 5 degrees
+        # 劣弧 TEB 不可行时优弧展开 yaw 再优化；heading_threshold=0 表示一侧失败即试另一侧
+        major_arc_retry_enable: True
+        major_arc_retry_heading_threshold: 0.0
+        # 优弧锁停滞看门狗：timeout 内剩余转角下降不足 yaw、位移也不足 xy 则解锁；timeout<=0 关闭
+        major_arc_stagnation_timeout: 3.0
+        major_arc_stagnation_yaw: 0.2
+        major_arc_stagnation_xy: 0.1
+        # 双弧均失败：连续 fail_num 次后降 forward_drive 并 latch；连续前进 + min_hold 切回；timeout probe 高权重
+        dual_arc_reverse_enable: True
+        dual_arc_reverse_fail_num: 5
+        dual_arc_reverse_min_hold: 10.0
+        dual_arc_reverse_timeout: 20.0
+        dual_arc_reverse_forward_vx: 0.2
+        dual_arc_reverse_forward_num: 10
+        dual_arc_reverse_publish_backward_mode: False
+
+        # Near-horizon predictable dynamic safety (see 动态障碍物避让.md)
+        dynamic_safety_predictable_mode: False
+        dynamic_obstacles_as_static_edges: True
+        dynamic_obstacle_cache_time: 0.5
+        dyn_gate_T_near: 3.0
+        dyn_gate_v_x_max: 5.0
+        dyn_gate_omega_z_max: 1.0
+        dyn_gate_inflation: 0.5
+        dyn_gate_overlap_dist: 0.5
+        dyn_gate_roi_front: 1.0
+        dyn_gate_roi_rear: 1.0
+        dyn_gate_roi_left: 1.0
+        dyn_gate_roi_right: 1.0
+        dyn_gate_hold_time: 0.5
+        delta_omega_scale: 0.2
+        publish_near_horizon_debug: False
+        # Contour feasibility (see 动态障碍物避让.md)
+        feasibility_check_obstacle_contours: False
+        feasibility_check_dynamic_prediction: False
+        feas_contour_margin: 0.0
+        feas_pred_T: 3.0
+        feas_pred_R: 3.0
+        feas_pred_gate_mode: "both_or"  # rel | abs | both_or
+        feas_pred_delta_omega_abs: 0.2
+        feas_pred_delta_omega_rel: -1.0  # <=0 → delta_omega_scale * max_vel_theta
+        feas_pred_v_min: 0.0
+
+        costmap_converter_plugin: "costmap_converter::CostmapToPolygonsDBSMCCH"
+        costmap_converter_spin_thread: true
+
+        # Optimization
+        no_inner_iterations: 5
+        no_outer_iterations: 4
+        optimization_activate: true
+        optimization_verbose: false
+        penalty_epsilon: 0.05
+        obstacle_cost_exponent: 1.0
+        weight_max_vel_x: 0.1
+        weight_max_vel_theta: 0.1
+        weight_acc_lim_x: 0.1
+        weight_acc_lim_theta: 0.1
+        weight_kinematics_nh: 10000.0
+        weight_kinematics_forward_drive: 100.0
+        weight_kinematics_forward_drive_in_narrow_passages: 1.0
+        weight_kinematics_turning_radius: 1.0
+        weight_optimaltime: 2.0 # must be > 0
+        weight_shortest_path: 0.0
+        weight_obstacle: 1000.0
+        weight_inflation: 1.0
+        weight_dynamic_obstacle: 50.0 # not in use yet
+        weight_dynamic_obstacle_inflation: 0.1
+        weight_velocity_obstacle_ratio: 0.2
+        weight_viapoint: 5.0
+        weight_wall_line_dist: 40.0
+        weight_adapt_factor: 2.0
+        weight_prefer_rotdir: 0.0
+        # Homotopy Class Planner
+
+        enable_homotopy_class_planning: true
+        enable_multithreading: true
+        max_number_classes: 5
+        max_number_plans_in_current_class: 5
+        selection_cost_hysteresis: 1.0
+        selection_prefer_initial_plan: 2.0
+        selection_obst_cost_scale: 2.0
+        selection_dropping_probability: 0.05
+        selection_alternative_time_cost: false
+
+        roadmap_graph_no_samples: 15
+        roadmap_graph_area_width: 5.0
+        roadmap_graph_area_length_scale: 1.0
+        h_signature_prescaler: 1.0
+        h_signature_threshold: 0.1
+        obstacle_heading_threshold: 0.45
+        switching_blocking_period: 0.0
+        viapoints_all_candidates: true
+        delete_detours_backwards: true
+        max_ratio_detours_duration_best_duration: 3.0
+        visualize_hc_graph: false
+        visualize_with_time_as_z_axis_scale: 0.0
+
+        # Recovery
+        shrink_horizon_backup: true
+        shrink_horizon_min_duration: 10.0
+        oscillation_recovery: true
+        oscillation_v_eps: 0.1
+        oscillation_omega_eps: 0.1
+        oscillation_recovery_min_duration: 10.0
+        oscillation_filter_duration: 10.0

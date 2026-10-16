@@ -713,7 +713,9 @@
    bool isPointInNarrowPassage(double x, double y) const;
    bool isFootprintFullyOutsideNarrowPassages(
      const geometry_msgs::msg::PoseStamped & pose) const;
-   /** 检测 transformed_plan 倒车弧长占比：短段扩窗后位移与航向夹角接近 180° */
+   /** 从 global_plan 当前点向前截取 reverse_segment_lookahead_dist 再做倒车判定 */
+   bool hasReverseSegmentAhead() const;
+   /** 短段扩窗后，位移与航向夹角接近 180° 的弧长占比达到阈值则为倒车段 */
    bool hasReverseSegmentInPlan(
      const std::vector<geometry_msgs::msg::PoseStamped> & plan) const;
    /** 边沿发布 /backward_mode（仅几何倒车检测，供 controller 门控） */
@@ -1205,6 +1207,8 @@
    bool backward_mode_initial_sent_{false};
    size_t backward_exit_false_count_{0};
    rclcpp::Time backward_exit_window_start_{0, 0, RCL_ROS_TIME};
+
+   friend struct TebSplitModuleTestAccess;
 
  protected:
    // Dynamic parameters handler

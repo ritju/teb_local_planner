@@ -88,6 +88,15 @@ add_library(teb_local_planner SHARED
    src/teb_config.cpp
    src/homotopy_class_planner.cpp
    src/teb_local_planner_ros.cpp
+   src/teb_plan_window.cpp
+   src/teb_obstacle_update.cpp
+   src/teb_edge_line_update.cpp
+   src/teb_edge_following.cpp
+   src/teb_narrow_backward.cpp
+   src/teb_costmap_params.cpp
+   src/teb_path_hold.cpp
+   src/teb_rotation.cpp
+   src/teb_corner_collision_debug.cpp
    src/vehicle_scan_grid.cpp
    src/front_scan_protrusion.cpp
    src/wall_protrusion_check.cpp
@@ -143,6 +152,20 @@ add_executable(path_wait_test_node src/path_wait_test_node.cpp)
 ament_target_dependencies(path_wait_test_node ${ament_dependencies})
 target_link_libraries(path_wait_test_node teb_local_planner ${EXTERNAL_LIBS})
 
+add_executable(split_modules_viz_node src/split_modules_viz_node.cpp)
+target_include_directories(split_modules_viz_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
+ament_target_dependencies(split_modules_viz_node ${ament_dependencies})
+target_link_libraries(split_modules_viz_node teb_local_planner ${EXTERNAL_LIBS})
+
+add_executable(teb_main_flow_viz_node src/teb_main_flow_viz_node.cpp)
+target_include_directories(teb_main_flow_viz_node PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/test
+  /opt/ros/humble/src/gtest_vendor/include)
+ament_target_dependencies(teb_main_flow_viz_node ${ament_dependencies})
+target_link_libraries(teb_main_flow_viz_node teb_local_planner ${EXTERNAL_LIBS})
+target_compile_definitions(teb_main_flow_viz_node PRIVATE
+  "TEB_PARAMS_YAML=\"${CMAKE_CURRENT_SOURCE_DIR}/params/teb_params.yaml\"")
+
 #############
 ## Install ##
 #############
@@ -152,7 +175,7 @@ install(TARGETS teb_local_planner
    DESTINATION lib
 )
 
-install(TARGETS path_wait_test_node
+install(TARGETS path_wait_test_node split_modules_viz_node teb_main_flow_viz_node
    DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -182,12 +205,25 @@ pluginlib_export_plugin_description_file(nav2_core teb_local_planner_plugin.xml)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  #ament_add_gtest(homotopy_class_planner_test
-  #    test/homotopy_class_planner_test.cpp
-  #)
-  #target_link_libraries(homotopy_class_planner_test
-  #    teb_local_planner
-  #)
+  set(_split_module_tests
+    teb_plan_window_test
+    teb_obstacle_update_test
+    teb_edge_line_update_test
+    teb_edge_following_test
+    teb_narrow_backward_test
+    teb_costmap_params_test
+    teb_path_hold_test
+    teb_rotation_test
+    teb_corner_collision_debug_test
+    teb_main_flow_test
+  )
+  foreach(_split_test ${_split_module_tests})
+    ament_add_gtest(${_split_test} test/${_split_test}.cpp)
+    target_link_libraries(${_split_test} teb_local_planner ${EXTERNAL_LIBS})
+    ament_target_dependencies(${_split_test} ${ament_dependencies})
+    target_compile_definitions(${_split_test} PRIVATE
+      "TEB_PARAMS_YAML=\"${CMAKE_CURRENT_SOURCE_DIR}/params/teb_params.yaml\"")
+  endforeach()
 endif()
 
 ament_package()
