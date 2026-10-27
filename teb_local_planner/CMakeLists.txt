@@ -103,6 +103,7 @@ add_library(teb_local_planner SHARED
    src/graph_search.cpp
    src/near_horizon_dynamic_safety.cpp
    src/path_dynamic_wait.cpp
+   src/front_steering_plot.cpp
 )
 
 set(ament_dependencies
@@ -157,6 +158,10 @@ target_include_directories(split_modules_viz_node PRIVATE ${CMAKE_CURRENT_SOURCE
 ament_target_dependencies(split_modules_viz_node ${ament_dependencies})
 target_link_libraries(split_modules_viz_node teb_local_planner ${EXTERNAL_LIBS})
 
+add_executable(front_steering_viz_node src/front_steering_viz_node.cpp)
+ament_target_dependencies(front_steering_viz_node ${ament_dependencies})
+target_link_libraries(front_steering_viz_node teb_local_planner ${EXTERNAL_LIBS})
+
 add_executable(teb_main_flow_viz_node src/teb_main_flow_viz_node.cpp)
 target_include_directories(teb_main_flow_viz_node PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/test
@@ -175,7 +180,7 @@ install(TARGETS teb_local_planner
    DESTINATION lib
 )
 
-install(TARGETS path_wait_test_node split_modules_viz_node teb_main_flow_viz_node
+install(TARGETS path_wait_test_node split_modules_viz_node teb_main_flow_viz_node front_steering_viz_node
    DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -216,6 +221,8 @@ if(BUILD_TESTING)
     teb_rotation_test
     teb_corner_collision_debug_test
     teb_main_flow_test
+    teb_front_steering_test
+    teb_plan_curvature_test
   )
   foreach(_split_test ${_split_module_tests})
     ament_add_gtest(${_split_test} test/${_split_test}.cpp)

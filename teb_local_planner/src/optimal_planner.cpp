@@ -48,6 +48,8 @@
 #include <teb_local_planner/g2o_types/edge_near_horizon_omega_hold.h>
 #include <teb_local_planner/g2o_types/edge_acceleration.h>
 #include <teb_local_planner/g2o_types/edge_kinematics.h>
+#include <teb_local_planner/g2o_types/edge_front_steering.h>
+#include <teb_local_planner/front_steering_model.hpp>
 #include <teb_local_planner/g2o_types/edge_time_optimal.h>
 #include <teb_local_planner/g2o_types/edge_shortest_path.h>
 #include <teb_local_planner/g2o_types/edge_obstacle.h>
@@ -411,10 +413,18 @@ bool TebOptimalPlanner::buildGraph(double weight_multiplier)
 
   AddEdgesShortestPath();
   
-  if (cfg_->robot.min_turning_radius == 0 || cfg_->optim.weight_kinematics_turning_radius == 0)
-    AddEdgesKinematicsDiffDrive(); // we have a differential drive robot
+  const bool front_steering = cfg_->robot.front_steering_rear_drive;
+  const bool user_carlike =
+    cfg_->robot.min_turning_radius != 0 && cfg_->optim.weight_kinematics_turning_radius != 0;
+  if (front_steering && !cfg_->robot.include_edge_kinematics_carlike)
+    AddEdgesKinematicsNonHolonomic();
+  else if (front_steering || user_carlike)
+    AddEdgesKinematicsCarlike();
   else
-    AddEdgesKinematicsCarlike(); // we have a carlike robot since the turning radius is bounded from below.
+    AddEdgesKinematicsDiffDrive();
+
+  if (front_steering)
+    AddEdgesFrontSteering();
 
   AddEdgesPreferRotDir();
 
@@ -1180,6 +1190,26 @@ void TebOptimalPlanner::AddEdgesKinematicsDiffDrive()
   }	 
 }
 
+void TebOptimalPlanner::AddEdgesKinematicsNonHolonomic()
+{
+  if (cfg_->optim.weight_kinematics_nh == 0)
+    return;
+
+  Eigen::Matrix<double,2,2> information_kinematics;
+  information_kinematics.fill(0.0);
+  information_kinematics(0, 0) = cfg_->optim.weight_kinematics_nh;
+
+  for (int i = 0; i < teb_.sizePoses() - 1; ++i)
+  {
+    EdgeKinematicsDiffDrive* kinematics_edge = new EdgeKinematicsDiffDrive;
+    kinematics_edge->setVertex(0, teb_.PoseVertex(i));
+    kinematics_edge->setVertex(1, teb_.PoseVertex(i + 1));
+    kinematics_edge->setInformation(information_kinematics);
+    kinematics_edge->setTebConfig(*cfg_);
+    optimizer_->addEdge(kinematics_edge);
+  }
+}
+
 void TebOptimalPlanner::AddEdgesKinematicsCarlike()
 {
   if (cfg_->optim.weight_kinematics_nh==0 && cfg_->optim.weight_kinematics_turning_radius==0)
@@ -1202,6 +1232,67 @@ void TebOptimalPlanner::AddEdgesKinematicsCarlike()
   }  
 }
 
+
+void TebOptimalPlanner::AddEdgesFrontSteering()
+{
+  if (!cfg_->robot.front_steering_rear_drive)
+    return;
+
+  const int pose_count = teb_.sizePoses();
+  if (cfg_->optim.weight_steering_kinematics > 0.0)
+  {
+    Eigen::Matrix<double,1,1> information;
+    information << cfg_->optim.weight_steering_kinematics;
+    for (int i = 0; i < pose_count - 1; ++i)
+    {
+      EdgeSteeringKinematics* edge = new EdgeSteeringKinematics;
+      edge->setVertex(0, teb_.PoseVertex(i));
+      edge->setVertex(1, teb_.PoseVertex(i + 1));
+      edge->setVertex(2, teb_.TimeDiffVertex(i));
+      edge->setInformation(information);
+      edge->setTebConfig(*cfg_);
+      optimizer_->addEdge(edge);
+    }
+  }
+
+  if (cfg_->optim.weight_steering_rate > 0.0)
+  {
+    Eigen::Matrix<double,1,1> information;
+    information << cfg_->optim.weight_steering_rate;
+    for (int i = 0; i < pose_count - 2; ++i)
+    {
+      EdgeSteeringRate* edge = new EdgeSteeringRate;
+      edge->setVertex(0, teb_.PoseVertex(i));
+      edge->setVertex(1, teb_.PoseVertex(i + 1));
+      edge->setVertex(2, teb_.PoseVertex(i + 2));
+      edge->setVertex(3, teb_.TimeDiffVertex(i));
+      edge->setVertex(4, teb_.TimeDiffVertex(i + 1));
+      edge->setInformation(information);
+      edge->setTebConfig(*cfg_);
+      optimizer_->addEdge(edge);
+    }
+  }
+
+  if (cfg_->optim.weight_steering_acceleration > 0.0)
+  {
+    Eigen::Matrix<double,1,1> information;
+    information << cfg_->optim.weight_steering_acceleration;
+    for (int i = 0; i < pose_count - 3; ++i)
+    {
+      EdgeSteeringAcceleration* edge = new EdgeSteeringAcceleration;
+      edge->setVertex(0, teb_.PoseVertex(i));
+      edge->setVertex(1, teb_.PoseVertex(i + 1));
+      edge->setVertex(2, teb_.PoseVertex(i + 2));
+      edge->setVertex(3, teb_.PoseVertex(i + 3));
+      edge->setVertex(4, teb_.TimeDiffVertex(i));
+      edge->setVertex(5, teb_.TimeDiffVertex(i + 1));
+      edge->setVertex(6, teb_.TimeDiffVertex(i + 2));
+      edge->setInformation(information);
+      edge->setTebConfig(*cfg_);
+      optimizer_->addEdge(edge);
+    }
+  }
+}
 
 void TebOptimalPlanner::AddEdgesPreferRotDir()
 {
@@ -1526,6 +1617,20 @@ void TebOptimalPlanner::extractVelocity(const PoseSE2& pose1, const PoseSE2& pos
   }
   
   Eigen::Vector2d deltaS = pose2.position() - pose1.position();
+
+  if (cfg_->robot.front_steering_rear_drive)
+  {
+    SegmentKinematics segment;
+    if (computeSteeringSegment(
+        pose1, pose2, dt, cfg_->robot.wheelbase, cfg_->robot.steering_min_speed,
+        cfg_->robot.steering_omega_epsilon, segment))
+    {
+      vx = segment.velocity;
+      vy = 0.0;
+      omega = segment.omega;
+      return;
+    }
+  }
   
   if (cfg_->robot.max_vel_y == 0) // nonholonomic robot
   {
@@ -1585,6 +1690,39 @@ bool TebOptimalPlanner::getVelocityCommand(double& vx, double& vy, double& omega
 	  
   // Get velocity from the first two configurations
   extractVelocity(teb_.Pose(0), teb_.Pose(look_ahead_poses), dt, vx, vy, omega);
+  return true;
+}
+
+bool TebOptimalPlanner::getOptimizedFrontSteeringDynamics(
+  double& steering_rate, double& steering_acceleration) const
+{
+  steering_rate = 0.0;
+  steering_acceleration = 0.0;
+  if (!cfg_ || !cfg_->robot.front_steering_rear_drive || teb_.sizePoses() < 3)
+  {
+    return false;
+  }
+
+  const int segment_count = std::min(3, teb_.sizePoses() - 1);
+  SegmentKinematics segments[3];
+  for (int index = 0; index < segment_count; ++index)
+  {
+    if (!computeSteeringSegment(
+        teb_.Pose(index), teb_.Pose(index + 1), teb_.TimeDiff(index),
+        cfg_->robot.wheelbase, cfg_->robot.steering_min_speed, cfg_->robot.steering_omega_epsilon,
+        segments[index]))
+    {
+      return false;
+    }
+  }
+  if (segment_count >= 2)
+  {
+    steering_rate = steeringRate(segments[0], segments[1]);
+  }
+  if (segment_count >= 3)
+  {
+    steering_acceleration = steeringAcceleration(segments[0], segments[1], segments[2]);
+  }
   return true;
 }
 

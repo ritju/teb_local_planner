@@ -149,6 +149,19 @@ bool HomotopyClassPlanner::getVelocityCommand(double& vx, double& vy, double& om
   return best_teb->getVelocityCommand(vx, vy, omega, look_ahead_poses);
 }
 
+bool HomotopyClassPlanner::getOptimizedFrontSteeringDynamics(
+  double& steering_rate, double& steering_acceleration) const
+{
+  TebOptimalPlannerConstPtr best_teb = bestTeb();
+  if (!best_teb)
+  {
+    steering_rate = 0.0;
+    steering_acceleration = 0.0;
+    return false;
+  }
+  return best_teb->getOptimizedFrontSteeringDynamics(steering_rate, steering_acceleration);
+}
+
 
 
 

@@ -37,6 +37,7 @@
  *********************************************************************/
 
 #include "teb_local_planner/teb_config.h"
+#include "teb_local_planner/front_steering_model.hpp"
 
 #include <algorithm>
 
@@ -184,6 +185,17 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "min_turning_radius", rclcpp::ParameterValue(robot.min_turning_radius));
   declare_parameter_if_not_declared(nh, name + "." + "wheelbase", rclcpp::ParameterValue(robot.wheelbase));
   declare_parameter_if_not_declared(nh, name + "." + "cmd_angle_instead_rotvel", rclcpp::ParameterValue(robot.cmd_angle_instead_rotvel));
+  declare_parameter_if_not_declared(nh, name + "." + "front_steering_rear_drive", rclcpp::ParameterValue(robot.front_steering_rear_drive));
+  declare_parameter_if_not_declared(nh, name + "." + "rear_track", rclcpp::ParameterValue(robot.rear_track));
+  declare_parameter_if_not_declared(nh, name + "." + "max_steering_angle", rclcpp::ParameterValue(robot.max_steering_angle));
+  declare_parameter_if_not_declared(nh, name + "." + "max_steering_rate", rclcpp::ParameterValue(robot.max_steering_rate));
+  declare_parameter_if_not_declared(nh, name + "." + "max_steering_acceleration", rclcpp::ParameterValue(robot.max_steering_acceleration));
+  declare_parameter_if_not_declared(nh, name + "." + "steering_min_speed", rclcpp::ParameterValue(robot.steering_min_speed));
+  declare_parameter_if_not_declared(nh, name + "." + "steering_omega_epsilon", rclcpp::ParameterValue(robot.steering_omega_epsilon));
+  declare_parameter_if_not_declared(nh, name + "." + "no_inplace_rotation", rclcpp::ParameterValue(robot.no_inplace_rotation));
+  declare_parameter_if_not_declared(nh, name + "." + "front_steering_hard_limit", rclcpp::ParameterValue(robot.front_steering_hard_limit));
+  declare_parameter_if_not_declared(nh, name + "." + "include_edge_kinematics_carlike", rclcpp::ParameterValue(robot.include_edge_kinematics_carlike));
+  declare_parameter_if_not_declared(nh, name + "." + "auto_min_turning_radius", rclcpp::ParameterValue(robot.auto_min_turning_radius));
   declare_parameter_if_not_declared(nh, name + "." + "is_footprint_dynamic", rclcpp::ParameterValue(robot.is_footprint_dynamic));
   declare_parameter_if_not_declared(nh, name + "." + "prefer_forward_only", rclcpp::ParameterValue(robot.prefer_forward_only));
   declare_parameter_if_not_declared(nh, name + "." + "map_to_base_transform_max_age", rclcpp::ParameterValue(robot.map_to_base_transform_max_age));
@@ -258,6 +270,9 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "weight_kinematics_forward_drive", rclcpp::ParameterValue(optim.weight_kinematics_forward_drive));
   declare_parameter_if_not_declared(nh, name + "." + "weight_kinematics_forward_drive_in_narrow_passages", rclcpp::ParameterValue(optim.weight_kinematics_forward_drive_in_narrow_passages));
   declare_parameter_if_not_declared(nh, name + "." + "weight_kinematics_turning_radius", rclcpp::ParameterValue(optim.weight_kinematics_turning_radius));
+  declare_parameter_if_not_declared(nh, name + "." + "weight_steering_kinematics", rclcpp::ParameterValue(optim.weight_steering_kinematics));
+  declare_parameter_if_not_declared(nh, name + "." + "weight_steering_rate", rclcpp::ParameterValue(optim.weight_steering_rate));
+  declare_parameter_if_not_declared(nh, name + "." + "weight_steering_acceleration", rclcpp::ParameterValue(optim.weight_steering_acceleration));
   declare_parameter_if_not_declared(nh, name + "." + "weight_optimaltime", rclcpp::ParameterValue(optim.weight_optimaltime));
   declare_parameter_if_not_declared(nh, name + "." + "weight_shortest_path", rclcpp::ParameterValue(optim.weight_shortest_path));
   declare_parameter_if_not_declared(nh, name + "." + "weight_obstacle", rclcpp::ParameterValue(optim.weight_obstacle));
@@ -615,6 +630,17 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "min_turning_radius", robot.min_turning_radius, robot.min_turning_radius);
   nh->get_parameter_or(name + "." + "wheelbase", robot.wheelbase, robot.wheelbase);
   nh->get_parameter_or(name + "." + "cmd_angle_instead_rotvel", robot.cmd_angle_instead_rotvel, robot.cmd_angle_instead_rotvel);
+  nh->get_parameter_or(name + "." + "front_steering_rear_drive", robot.front_steering_rear_drive, robot.front_steering_rear_drive);
+  nh->get_parameter_or(name + "." + "rear_track", robot.rear_track, robot.rear_track);
+  nh->get_parameter_or(name + "." + "max_steering_angle", robot.max_steering_angle, robot.max_steering_angle);
+  nh->get_parameter_or(name + "." + "max_steering_rate", robot.max_steering_rate, robot.max_steering_rate);
+  nh->get_parameter_or(name + "." + "max_steering_acceleration", robot.max_steering_acceleration, robot.max_steering_acceleration);
+  nh->get_parameter_or(name + "." + "steering_min_speed", robot.steering_min_speed, robot.steering_min_speed);
+  nh->get_parameter_or(name + "." + "steering_omega_epsilon", robot.steering_omega_epsilon, robot.steering_omega_epsilon);
+  nh->get_parameter_or(name + "." + "no_inplace_rotation", robot.no_inplace_rotation, robot.no_inplace_rotation);
+  nh->get_parameter_or(name + "." + "front_steering_hard_limit", robot.front_steering_hard_limit, robot.front_steering_hard_limit);
+  nh->get_parameter_or(name + "." + "include_edge_kinematics_carlike", robot.include_edge_kinematics_carlike, robot.include_edge_kinematics_carlike);
+  nh->get_parameter_or(name + "." + "auto_min_turning_radius", robot.auto_min_turning_radius, robot.auto_min_turning_radius);
   nh->get_parameter_or(name + "." + "is_footprint_dynamic", robot.is_footprint_dynamic, robot.is_footprint_dynamic);
   nh->get_parameter_or(name + "." + "prefer_forward_only", robot.prefer_forward_only, robot.prefer_forward_only);
   nh->get_parameter_or(name + "." + "map_to_base_transform_max_age", robot.map_to_base_transform_max_age, robot.map_to_base_transform_max_age);
@@ -689,6 +715,9 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "weight_kinematics_forward_drive", optim.weight_kinematics_forward_drive, optim.weight_kinematics_forward_drive);
   nh->get_parameter_or(name + "." + "weight_kinematics_forward_drive_in_narrow_passages", optim.weight_kinematics_forward_drive_in_narrow_passages, optim.weight_kinematics_forward_drive_in_narrow_passages);
   nh->get_parameter_or(name + "." + "weight_kinematics_turning_radius", optim.weight_kinematics_turning_radius, optim.weight_kinematics_turning_radius);
+  nh->get_parameter_or(name + "." + "weight_steering_kinematics", optim.weight_steering_kinematics, optim.weight_steering_kinematics);
+  nh->get_parameter_or(name + "." + "weight_steering_rate", optim.weight_steering_rate, optim.weight_steering_rate);
+  nh->get_parameter_or(name + "." + "weight_steering_acceleration", optim.weight_steering_acceleration, optim.weight_steering_acceleration);
   nh->get_parameter_or(name + "." + "weight_optimaltime", optim.weight_optimaltime, optim.weight_optimaltime);
   nh->get_parameter_or(name + "." + "weight_shortest_path", optim.weight_shortest_path, optim.weight_shortest_path);
   nh->get_parameter_or(name + "." + "weight_obstacle", optim.weight_obstacle, optim.weight_obstacle);
@@ -1019,6 +1048,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   }
 
 
+  applyFrontSteeringDefaults();
   checkParameters();
   checkDeprecated(nh, name);
 }
@@ -1165,6 +1195,18 @@ rcl_interfaces::msg::SetParametersResult
         robot.min_turning_radius = parameter.as_double();
       } else if (name == node_name + ".wheelbase") {
         robot.wheelbase = parameter.as_double();
+      } else if (name == node_name + ".rear_track") {
+        robot.rear_track = parameter.as_double();
+      } else if (name == node_name + ".max_steering_angle") {
+        robot.max_steering_angle = parameter.as_double();
+      } else if (name == node_name + ".max_steering_rate") {
+        robot.max_steering_rate = parameter.as_double();
+      } else if (name == node_name + ".max_steering_acceleration") {
+        robot.max_steering_acceleration = parameter.as_double();
+      } else if (name == node_name + ".steering_min_speed") {
+        robot.steering_min_speed = parameter.as_double();
+      } else if (name == node_name + ".steering_omega_epsilon") {
+        robot.steering_omega_epsilon = parameter.as_double();
       } else if (name == node_name + ".safe_linear_speed_limit") {
         robot.safe_linear_speed_limit = parameter.as_double();
       } else if (name == node_name + ".map_to_base_transform_max_age") {
@@ -1234,6 +1276,12 @@ rcl_interfaces::msg::SetParametersResult
         optim.weight_kinematics_forward_drive_in_narrow_passages = parameter.as_double();
       } else if (name == node_name + ".weight_kinematics_turning_radius") {
         optim.weight_kinematics_turning_radius = parameter.as_double();
+      } else if (name == node_name + ".weight_steering_kinematics") {
+        optim.weight_steering_kinematics = parameter.as_double();
+      } else if (name == node_name + ".weight_steering_rate") {
+        optim.weight_steering_rate = parameter.as_double();
+      } else if (name == node_name + ".weight_steering_acceleration") {
+        optim.weight_steering_acceleration = parameter.as_double();
       } else if (name == node_name + ".weight_optimaltime") {
         optim.weight_optimaltime = parameter.as_double();
       } else if (name == node_name + ".weight_shortest_path") {
@@ -1597,6 +1645,16 @@ rcl_interfaces::msg::SetParametersResult
       // Robot
       else if (name == node_name + ".cmd_angle_instead_rotvel") {
         robot.cmd_angle_instead_rotvel = parameter.as_bool();
+      } else if (name == node_name + ".front_steering_rear_drive") {
+        robot.front_steering_rear_drive = parameter.as_bool();
+      } else if (name == node_name + ".no_inplace_rotation") {
+        robot.no_inplace_rotation = parameter.as_bool();
+      } else if (name == node_name + ".front_steering_hard_limit") {
+        robot.front_steering_hard_limit = parameter.as_bool();
+      } else if (name == node_name + ".include_edge_kinematics_carlike") {
+        robot.include_edge_kinematics_carlike = parameter.as_bool();
+      } else if (name == node_name + ".auto_min_turning_radius") {
+        robot.auto_min_turning_radius = parameter.as_bool();
       } else if (name == node_name + ".is_footprint_dynamic") {
         robot.is_footprint_dynamic = parameter.as_bool();
       } else if (name == node_name + ".prefer_forward_only") {
@@ -1727,6 +1785,7 @@ rcl_interfaces::msg::SetParametersResult
       }
     }
   }
+  applyFrontSteeringDefaults();
   checkParameters();
 
   if (reload_footprint) {
@@ -1779,6 +1838,21 @@ rcl_interfaces::msg::SetParametersResult
 }
     
     
+void TebConfig::applyFrontSteeringDefaults()
+{
+  if (!robot.front_steering_rear_drive || !robot.auto_min_turning_radius)
+  {
+    return;
+  }
+  const double radius = minimumTurningRadius(robot.wheelbase, robot.max_steering_angle);
+  if (!(radius > 0.0))
+  {
+    RCLCPP_WARN(logger_,
+                "auto_min_turning_radius 已打开，但无法由 wheelbase 和 max_steering_angle 计算半径，沿用 min_turning_radius=%.3f。",
+                robot.min_turning_radius);
+  }
+}
+
 void TebConfig::checkParameters() const
 {
   //rclcpp::Logger logger_{rclcpp::get_logger("TEBLocalPlanner")};
@@ -1827,6 +1901,28 @@ void TebConfig::checkParameters() const
   
   if (robot.cmd_angle_instead_rotvel && robot.min_turning_radius==0)
     RCLCPP_WARN(logger_, "TebLocalPlannerROS() Param Warning: parameter cmd_angle_instead_rotvel is non-zero but min_turning_radius is set to zero: undesired behavior. You are mixing a carlike and a diffdrive robot");
+
+  if (robot.front_steering_rear_drive && robot.cmd_angle_instead_rotvel)
+    RCLCPP_WARN(logger_, "前轮转向后轮驱动要求输出后轴中心角速度，cmd_angle_instead_rotvel 应为 false。");
+
+  if (robot.front_steering_rear_drive && robot.wheelbase <= 0.0)
+    RCLCPP_WARN(logger_, "前轮转向后轮驱动要求 wheelbase > 0。");
+
+  if (robot.front_steering_rear_drive && (robot.max_steering_angle <= 0.0 || robot.max_steering_angle >= 1.5))
+    RCLCPP_WARN(logger_, "max_steering_angle 应在 (0, 1.5) rad 内。");
+
+  if (robot.front_steering_rear_drive && robot.rear_track <= 0.0)
+    RCLCPP_WARN(logger_, "rear_track 应大于 0，否则无法换算左右后轮速度。");
+
+  if (robot.front_steering_rear_drive && robot.max_vel_y != 0.0)
+    RCLCPP_WARN(logger_, "前轮转向后轮驱动会把 vy 置 0，max_vel_y 应为 0。");
+
+  if (robot.front_steering_rear_drive && robot.include_edge_kinematics_carlike &&
+      optim.weight_steering_kinematics > 0.0 && optim.weight_kinematics_turning_radius > 0.0)
+  {
+    RCLCPP_WARN(logger_,
+                "EdgeKinematicsCarlike 与 EdgeSteeringKinematics 同时约束最大曲率，且几何定义不同。若不需要重复计权，将 include_edge_kinematics_carlike 设为 false。");
+  }
   
   // positive weight_adapt_factor
   if (optim.weight_adapt_factor < 1.0)

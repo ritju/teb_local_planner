@@ -37,6 +37,7 @@
  *********************************************************************/
 
  #include "teb_local_planner/teb_local_planner_ros.h"
+#include "teb_local_planner/front_steering_model.hpp"
 
  //#include <tf_conversions/tf_eigen.h>
  #include <boost/algorithm/string.hpp>
@@ -50,6 +51,7 @@
 #include <system_error>
 #include <chrono>
 #include <functional>
+#include <mutex>
 #include <string>
  
  // pluginlib macros
@@ -458,11 +460,25 @@ using detail::normalizeEdgeModeEnv;
     path_wait_debug_marker_pub_ =
       node->create_publisher<visualization_msgs::msg::MarkerArray>("teb_path_wait_debug", 1);
     edge_distance_publisher_  = node->create_publisher<std_msgs::msg::Float32>("edge_distance", 1);
+    steering_angular_velocity_pub_ = node->create_publisher<std_msgs::msg::Float64>(
+      "/front_steering/steering_angular_velocity", 10);
+    steering_angular_acceleration_pub_ = node->create_publisher<std_msgs::msg::Float64>(
+      "/front_steering/steering_angular_acceleration", 10);
+    optimized_steering_angular_velocity_pub_ = node->create_publisher<std_msgs::msg::Float64>(
+      "/front_steering/optimized_steering_angular_velocity", 10);
+    optimized_steering_angular_acceleration_pub_ = node->create_publisher<std_msgs::msg::Float64>(
+      "/front_steering/optimized_steering_angular_acceleration", 10);
+    steering_publish_timer_ = node->create_wall_timer(
+      std::chrono::duration<double>(std::max(0.02, control_duration_)),
+      std::bind(&TebLocalPlannerROS::publishFrontSteeringTopics, this));
     RCLCPP_INFO(logger_,
                 "TEB 创建发布话题 /teb_selected_wall_line、/teb_monitor_corridor_markers、"
                 "/teb_protruding_obstacle_markers、/teb_corner_approach_footprint_markers、"
                 "/teb_collision_footprint_markers、/teb_near_horizon_debug、/teb_path_wait_debug、/edge_distance、"
-                "/teb_transformed_path、/teb_global_plan");
+                "/teb_transformed_path、/teb_global_plan、"
+                "/front_steering/steering_angular_velocity、/front_steering/steering_angular_acceleration、"
+                "/front_steering/optimized_steering_angular_velocity、"
+                "/front_steering/optimized_steering_angular_acceleration");
 
     // Create persistent client for static_layer parameter updates
     static_layer_client_ = node->create_client<rcl_interfaces::srv::SetParameters>("/local_costmap/local_costmap/set_parameters");
@@ -1211,6 +1227,7 @@ void TebLocalPlannerROS::configure(
 
   // Check if in-place rotation should be performed before TEB planning
   const bool use_inplace_rotation =
+    !cfg_->robot.front_steering_rear_drive &&
     shouldRotateInPlace(velocity, transformed_plan, robot_pose);
   if (use_inplace_rotation)
   {
@@ -1394,6 +1411,7 @@ void TebLocalPlannerROS::configure(
      if (!planner_->plan(plan_in, &start_vel, cfg_->goal_tolerance.free_goal_vel)) {
        return false;
      }
+     refreshOptimizedFrontSteeringCache();
      if (planner_->hasDiverged()) {
        return false;
      }
@@ -1566,11 +1584,16 @@ void TebLocalPlannerROS::configure(
    // Saturate velocity, if the optimization results violates the constraints (could be possible due to soft constraints).
    saturateVelocity(cmd_vel.twist.linear.x, cmd_vel.twist.linear.y, cmd_vel.twist.angular.z, cfg_->robot.max_vel_x, cfg_->robot.max_vel_y,
                     cfg_->robot.max_vel_theta, cfg_->robot.max_vel_x_backwards);
- 
+
+   if (cfg_->robot.front_steering_rear_drive && cfg_->robot.front_steering_hard_limit)
+   {
+     applyFrontSteeringCommandLimits(
+       cmd_vel.twist.linear.x, cmd_vel.twist.linear.y, cmd_vel.twist.angular.z);
+   }
    // convert rot-vel to steering angle if desired (carlike robot).
    // The min_turning_radius is allowed to be slighly smaller since it is a soft-constraint
    // and opposed to the other constraints not affected by penalty_epsilon. The user might add a safety margin to the parameter itself.
-   if (cfg_->robot.cmd_angle_instead_rotvel)
+   if (!cfg_->robot.front_steering_rear_drive && cfg_->robot.cmd_angle_instead_rotvel)
    {
      cmd_vel.twist.angular.z = convertTransRotVelToSteeringAngle(cmd_vel.twist.linear.x, cmd_vel.twist.angular.z, cfg_->robot.wheelbase, 0.95*cfg_->robot.min_turning_radius);
      if (!std::isfinite(cmd_vel.twist.angular.z))
@@ -1652,6 +1675,113 @@ void TebLocalPlannerROS::configure(
    return cmd_vel;
  }
  
+
+ void TebLocalPlannerROS::applyFrontSteeringCommandLimits(double& vx, double& vy, double& omega)
+ {
+   FrontSteeringCommandState previous;
+   {
+     std::lock_guard<std::mutex> lock(steering_topic_mutex_);
+     previous.valid = front_steering_cmd_valid_;
+     previous.steering_angle = front_steering_delta_;
+     previous.steering_rate = front_steering_delta_rate_;
+   }
+   const double dt_ctrl = control_duration_ > 1e-4 ? control_duration_ : cfg_->trajectory.dt_ref;
+   const FrontSteeringCommand command = projectFrontSteeringCommand(
+     vx, vy, omega, dt_ctrl, cfg_->robot, previous);
+   vx = command.vx;
+   vy = command.vy;
+   omega = command.omega;
+   {
+     const double steering_acceleration =
+       (previous.valid && dt_ctrl > 1e-4) ?
+       (command.steering_rate - previous.steering_rate) / dt_ctrl : 0.0;
+     std::lock_guard<std::mutex> lock(steering_topic_mutex_);
+     front_steering_delta_acceleration_ = steering_acceleration;
+     front_steering_delta_ = command.steering_angle;
+     front_steering_delta_rate_ = command.steering_rate;
+     front_steering_cmd_valid_ = true;
+   }
+   front_steering_rear_left_ = command.rear_left;
+   front_steering_rear_right_ = command.rear_right;
+   RCLCPP_DEBUG(
+     logger_, "前轮转向指令 v=%.3f omega=%.3f delta=%.3f rate=%.3f acc=%.3f vL=%.3f vR=%.3f",
+     vx, omega, front_steering_delta_, command.steering_rate, front_steering_delta_acceleration_,
+     front_steering_rear_left_, front_steering_rear_right_);
+ }
+
+ void TebLocalPlannerROS::refreshOptimizedFrontSteeringCache()
+ {
+   if (!planner_ || !cfg_ || !cfg_->robot.front_steering_rear_drive)
+   {
+     return;
+   }
+   double steering_rate = 0.0;
+   double steering_acceleration = 0.0;
+   if (!planner_->getOptimizedFrontSteeringDynamics(steering_rate, steering_acceleration))
+   {
+     return;
+   }
+   std::lock_guard<std::mutex> lock(steering_topic_mutex_);
+   optimized_steering_rate_ = steering_rate;
+   optimized_steering_acceleration_ = steering_acceleration;
+   optimized_steering_valid_ = true;
+ }
+
+ void TebLocalPlannerROS::publishFrontSteeringTopics()
+ {
+   if (!cfg_ || !cfg_->robot.front_steering_rear_drive)
+   {
+     return;
+   }
+
+   double optimized_rate = 0.0;
+   double optimized_acceleration = 0.0;
+   bool publish_optimized = false;
+   double limited_rate = 0.0;
+   double limited_acceleration = 0.0;
+   bool publish_limited = false;
+   {
+     std::lock_guard<std::mutex> lock(steering_topic_mutex_);
+     publish_optimized = optimized_steering_valid_;
+     optimized_rate = optimized_steering_rate_;
+     optimized_acceleration = optimized_steering_acceleration_;
+     publish_limited = cfg_->robot.front_steering_hard_limit && front_steering_cmd_valid_;
+     limited_rate = front_steering_delta_rate_;
+     limited_acceleration = front_steering_delta_acceleration_;
+   }
+
+   if (publish_optimized)
+   {
+     if (optimized_steering_angular_velocity_pub_)
+     {
+       std_msgs::msg::Float64 rate_message;
+       rate_message.data = optimized_rate;
+       optimized_steering_angular_velocity_pub_->publish(rate_message);
+     }
+     if (optimized_steering_angular_acceleration_pub_)
+     {
+       std_msgs::msg::Float64 acceleration_message;
+       acceleration_message.data = optimized_acceleration;
+       optimized_steering_angular_acceleration_pub_->publish(acceleration_message);
+     }
+   }
+   if (!publish_limited)
+   {
+     return;
+   }
+   if (steering_angular_velocity_pub_)
+   {
+     std_msgs::msg::Float64 rate_message;
+     rate_message.data = limited_rate;
+     steering_angular_velocity_pub_->publish(rate_message);
+   }
+   if (steering_angular_acceleration_pub_)
+   {
+     std_msgs::msg::Float64 acceleration_message;
+     acceleration_message.data = limited_acceleration;
+     steering_angular_acceleration_pub_->publish(acceleration_message);
+   }
+ }
 
  void TebLocalPlannerROS::saturateVelocity(double& vx, double& vy, double& omega, double max_vel_x, double max_vel_y, double max_vel_theta, double max_vel_x_backwards) const
  {
@@ -1768,8 +1898,9 @@ void TebLocalPlannerROS::configure(
      {
          double max_vel_theta;
          double max_vel_current = last_cmd_.linear.x >= 0 ? cfg_->robot.max_vel_x : cfg_->robot.max_vel_x_backwards;
-         if (cfg_->robot.min_turning_radius!=0 && max_vel_current>0)
-             max_vel_theta = std::max( max_vel_current/std::abs(cfg_->robot.min_turning_radius),  cfg_->robot.max_vel_theta );
+         const double min_turning_radius = effectiveMinTurningRadius(cfg_->robot);
+         if (min_turning_radius != 0 && max_vel_current > 0)
+             max_vel_theta = std::max( max_vel_current/std::abs(min_turning_radius),  cfg_->robot.max_vel_theta );
          else
              max_vel_theta = cfg_->robot.max_vel_theta;
          

@@ -225,6 +225,8 @@ public:
    * @return \c true if command is valid, \c false otherwise
    */
   virtual bool getVelocityCommand(double& vx, double& vy, double& omega, int look_ahead_poses) const;
+
+  virtual bool getOptimizedFrontSteeringDynamics(double& steering_rate, double& steering_acceleration) const;
   
   
   /**
@@ -740,6 +742,16 @@ protected:
    * @see optimizeGraph
    */
   void AddEdgesKinematicsCarlike();
+
+  /**
+   * @brief 只加入非完整约束，不加入最小转弯半径。
+   */
+  void AddEdgesKinematicsNonHolonomic();
+
+  /**
+   * @brief 前轮转向后轮驱动的转角、转角速度和转角加速度边。
+   */
+  void AddEdgesFrontSteering();
   
   /**
    * @brief Add all edges (local cost functions) for prefering a specifiy turning direction (by penalizing the other one)

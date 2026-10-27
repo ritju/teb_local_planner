@@ -47,6 +47,7 @@
 #include "teb_local_planner/g2o_types/vertex_pose.h"
 #include "teb_local_planner/g2o_types/penalties.h"
 #include "teb_local_planner/g2o_types/base_teb_edges.h"
+#include "teb_local_planner/front_steering_model.hpp"
 #include "teb_local_planner/teb_config.h"
 #include "teb_local_planner/misc.h"
 
@@ -208,12 +209,13 @@ public:
 
     // limit minimum turning radius
     double angle_diff = g2o::normalize_theta( conf2->theta() - conf1->theta() );
+    const double min_turning_radius = effectiveMinTurningRadius(cfg_->robot);
     if (angle_diff == 0)
       _error[1] = 0; // straight line motion
     else if (cfg_->trajectory.exact_arc_length) // use exact computation of the radius
-      _error[1] = penaltyBoundFromBelow(fabs(deltaS.norm()/(2*sin(angle_diff/2))), cfg_->robot.min_turning_radius, 0.0);
+      _error[1] = penaltyBoundFromBelow(fabs(deltaS.norm()/(2*sin(angle_diff/2))), min_turning_radius, 0.0);
     else
-      _error[1] = penaltyBoundFromBelow(deltaS.norm() / fabs(angle_diff), cfg_->robot.min_turning_radius, 0.0); 
+      _error[1] = penaltyBoundFromBelow(deltaS.norm() / fabs(angle_diff), min_turning_radius, 0.0); 
     // This edge is not affected by the epsilon parameter, the user might add an exra margin to the min_turning_radius parameter.
     
     TEB_ASSERT_MSG(std::isfinite(_error[0]) && std::isfinite(_error[1]), "EdgeKinematicsCarlike::computeError() _error[0]=%f _error[1]=%f\n",_error[0],_error[1]);

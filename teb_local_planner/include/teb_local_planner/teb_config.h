@@ -193,6 +193,19 @@ public:
     double min_turning_radius; //!< Minimum turning radius of a carlike robot (diff-drive robot: zero);
     double wheelbase; //!< The distance between the drive shaft and steering axle (only required for a carlike robot with 'cmd_angle_instead_rotvel' enabled); The value might be negative for back-wheeled robots!
     bool cmd_angle_instead_rotvel; //!< Substitute the rotational velocity in the commanded velocity message by the corresponding steering angle (check 'axles_distance')
+    bool front_steering_rear_drive; //!< 前轮转向、后轮驱动：输出后轴中心 v、omega
+    double rear_track; //!< 后轮轮距 [m]，用于左右后轮速度换算
+    double max_steering_angle; //!< 前轮最大转角 [rad]
+    double max_steering_rate; //!< 前轮最大转角速度 [rad/s]
+    double max_steering_acceleration; //!< 前轮最大转角加速度 [rad/s^2]
+    double steering_min_speed; //!< 低于该线速度时不再用 omega/v 反解转角 [m/s]
+    double steering_omega_epsilon; //!< 近零速时允许的角速度 [rad/s]
+    bool no_inplace_rotation; //!< 前轮转向模型禁止原地旋转
+    bool front_steering_hard_limit; //!< 对下发指令做前轮转角、角速度、角加速度硬限幅
+    //!< 前轮转向时是否仍加入 EdgeKinematicsCarlike。关闭后曲率只由 EdgeSteeringKinematics 约束，非完整约束仍保留
+    bool include_edge_kinematics_carlike;
+    //!< 前轮转向时由轴距和最大转角计算最小转弯半径，不改写 min_turning_radius
+    bool auto_min_turning_radius;
     bool is_footprint_dynamic; //<! If true, updated the footprint before checking trajectory feasibility
     bool use_proportional_saturation; //<! If true, reduce all twists components (linear x and y, and angular z) proportionally if any exceed its corresponding bounds, instead of saturating each one individually
     double transform_tolerance = 0.5; //<! Tolerance when querying the TF Tree for a transformation (seconds)
@@ -383,6 +396,9 @@ public:
     double weight_kinematics_forward_drive; //!< Optimization weight for forcing the robot to choose only forward directions (positive transl. velocities, only diffdrive robot)
     double weight_kinematics_forward_drive_in_narrow_passages; //!< Reduced forward-drive penalty while in narrow passages or following reverse global plan segments
     double weight_kinematics_turning_radius; //!< Optimization weight for enforcing a minimum turning radius (carlike robots)
+    double weight_steering_kinematics; //!< 速度相关角速度 / 最大前轮转角
+    double weight_steering_rate; //!< 前轮转角速度
+    double weight_steering_acceleration; //!< 前轮转角加速度
     double weight_optimaltime; //!< Optimization weight for contracting the trajectory w.r.t. transition time
     double weight_shortest_path; //!< Optimization weight for contracting the trajectory w.r.t. path length
     double weight_obstacle; //!< Optimization weight for satisfying a minimum separation from obstacles
@@ -610,6 +626,17 @@ public:
     robot.min_turning_radius = 0;
     robot.wheelbase = 1.0;
     robot.cmd_angle_instead_rotvel = false;
+    robot.front_steering_rear_drive = false;
+    robot.rear_track = 0.84;
+    robot.max_steering_angle = 1.0471975511965976;
+    robot.max_steering_rate = 0.5;
+    robot.max_steering_acceleration = 1.0;
+    robot.steering_min_speed = 0.03;
+    robot.steering_omega_epsilon = 1e-3;
+    robot.no_inplace_rotation = true;
+    robot.front_steering_hard_limit = true;
+    robot.include_edge_kinematics_carlike = false;
+    robot.auto_min_turning_radius = false;
     robot.is_footprint_dynamic = false;
     robot.use_proportional_saturation = false;
     robot.map_to_base_transform_max_age = 0.0;
@@ -773,6 +800,9 @@ public:
     optim.weight_kinematics_forward_drive = 1;
     optim.weight_kinematics_forward_drive_in_narrow_passages = 0.0;
     optim.weight_kinematics_turning_radius = 1;
+    optim.weight_steering_kinematics = 500;
+    optim.weight_steering_rate = 300;
+    optim.weight_steering_acceleration = 200;
     optim.weight_optimaltime = 1;
     optim.weight_shortest_path = 0;
     optim.weight_obstacle = 50;
@@ -885,6 +915,11 @@ public:
    * 当通过公开接口修改配置后，应调用该函数检查不合理组合。
    */
   void checkParameters() const;
+
+  /**
+   * @brief 记录前轮转向的曲率边和自动转弯半径设置，不改写用户的 min_turning_radius。
+   */
+  void applyFrontSteeringDefaults();
   
   /**
    * @brief 检查是否使用了已废弃参数并输出提示。

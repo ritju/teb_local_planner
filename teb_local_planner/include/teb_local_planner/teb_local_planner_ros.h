@@ -83,6 +83,8 @@
  // dynamic reconfigure
  //#include "teb_local_planner/TebLocalPlannerReconfigureConfig.h>
  //#include <dynamic_reconfigure/server.h>
+ #include <mutex>
+
  #include "std_msgs/msg/bool.hpp"
  #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/float64.hpp"
@@ -649,6 +651,14 @@
     */
    void saturateVelocity(double& vx, double& vy, double& omega, double max_vel_x, double max_vel_y,
                          double max_vel_theta, double max_vel_x_backwards) const;
+
+   /**
+    * @brief 把速度指令限制到前轮转向后轮驱动模型，并换算左右后轮速度。
+    */
+   void applyFrontSteeringCommandLimits(double& vx, double& vy, double& omega);
+
+   void publishFrontSteeringTopics();
+   void refreshOptimizedFrontSteeringCache();
  
    
    /**
@@ -837,6 +847,11 @@
    rclcpp::Time time_last_oscillation_; //!< Store at which time stamp the last oscillation was detected
    RotType last_preferred_rotdir_; //!< Store recent preferred turning direction
    geometry_msgs::msg::Twist last_cmd_; //!< Store the last control command generated in computeVelocityCommands()
+   bool front_steering_cmd_valid_{false};
+   double front_steering_delta_{0.0};
+   double front_steering_delta_rate_{0.0};
+   double front_steering_rear_left_{0.0};
+   double front_steering_rear_right_{0.0};
    
    std::vector<geometry_msgs::msg::Point> footprint_spec_; //!< Store the footprint of the robot 
    double robot_inscribed_radius_; //!< The radius of the inscribed circle of the robot (collision possible)
@@ -1202,6 +1217,16 @@
    bool enable_backward_cmd_received_{false};
 
    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr backward_mode_pub_;
+   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr steering_angular_velocity_pub_;
+   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr steering_angular_acceleration_pub_;
+   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr optimized_steering_angular_velocity_pub_;
+   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr optimized_steering_angular_acceleration_pub_;
+   rclcpp::TimerBase::SharedPtr steering_publish_timer_;
+   std::mutex steering_topic_mutex_;
+   double front_steering_delta_acceleration_{0.0};
+   double optimized_steering_rate_{0.0};
+   double optimized_steering_acceleration_{0.0};
+   bool optimized_steering_valid_{false};
    bool backward_mode_published_{false};
    bool backward_mode_has_published_{false};
    bool backward_mode_initial_sent_{false};

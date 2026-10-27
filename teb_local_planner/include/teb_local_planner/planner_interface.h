@@ -143,6 +143,16 @@ public:
    * @return \c true if command is valid, \c false otherwise
    */
   virtual bool getVelocityCommand(double& vx, double& vy, double& omega, int look_ahead_poses) const = 0;
+
+  /**
+   * @brief 由当前优化轨迹前几段位姿解算前轮转向角速度和角加速度。
+   */
+  virtual bool getOptimizedFrontSteeringDynamics(double& steering_rate, double& steering_acceleration) const
+  {
+    steering_rate = 0.0;
+    steering_acceleration = 0.0;
+    return false;
+  }
   
   //@}
   
