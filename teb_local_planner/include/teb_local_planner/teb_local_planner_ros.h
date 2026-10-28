@@ -549,7 +549,7 @@
      geometry_msgs::msg::TwistStamped & cmd_vel);
 
    /**
-    * @brief 终点被占用、无退让点且 base 距终点小于 last_occupied_goal_dist 时零速度。
+    * @brief 终点被占用、无退让点且 base 进入常规距离或当前制动距离加缓冲时零速度。
     *        条件消失后保持 0.4s 再退出。超过 last_occupied_goal_hold_timeout 则抛出失败。
     */
    bool tryOccupiedGoalNearHold(
@@ -910,6 +910,10 @@
    double reference_line_hold_robot_perpendicular_distance_to_edge_line_{0.0};
    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr transformed_path;
    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_plan_pub_;
+   mutable rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr
+     safe_terminal_marker_pub_;
+   mutable rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr
+     occupied_goal_stop_marker_pub_;
    double cfg_max_angular_vel_, cfg_max_angular_acc_, cfg_max_vel_x_;
    rclcpp::Time wall_line_update_time_;
    rclcpp::Time curb_line_update_time_;
@@ -1245,6 +1249,3 @@
  }; // end namespace teb_local_planner
  
  #endif // TEB_LOCAL_PLANNER_ROS_H_
- 
- 
- 

@@ -151,6 +151,12 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
     nh, name + "." + "transform_global_plan_goal_search_resolution",
     rclcpp::ParameterValue(trajectory.transform_global_plan_goal_search_resolution));
   declare_parameter_if_not_declared(
+    nh, name + "." + "goal_standoff_stop_distance",
+    rclcpp::ParameterValue(trajectory.goal_standoff_stop_distance));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "occupied_goal_braking_margin",
+    rclcpp::ParameterValue(trajectory.occupied_goal_braking_margin));
+  declare_parameter_if_not_declared(
     nh, name + "." + "last_occupied_goal_dist",
     rclcpp::ParameterValue(trajectory.last_occupied_goal_dist));
   declare_parameter_if_not_declared(
@@ -587,6 +593,14 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
     name + "." + "transform_global_plan_goal_search_resolution",
     trajectory.transform_global_plan_goal_search_resolution,
     trajectory.transform_global_plan_goal_search_resolution);
+  nh->get_parameter_or(
+    name + "." + "goal_standoff_stop_distance",
+    trajectory.goal_standoff_stop_distance,
+    trajectory.goal_standoff_stop_distance);
+  nh->get_parameter_or(
+    name + "." + "occupied_goal_braking_margin",
+    trajectory.occupied_goal_braking_margin,
+    trajectory.occupied_goal_braking_margin);
   nh->get_parameter_or(
     name + "." + "last_occupied_goal_dist",
     trajectory.last_occupied_goal_dist,
@@ -1155,6 +1169,10 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.transform_global_plan_goal_occupied_tolerance = parameter.as_double();
       } else if (name == node_name + ".transform_global_plan_goal_search_resolution") {
         trajectory.transform_global_plan_goal_search_resolution = parameter.as_double();
+      } else if (name == node_name + ".goal_standoff_stop_distance") {
+        trajectory.goal_standoff_stop_distance = parameter.as_double();
+      } else if (name == node_name + ".occupied_goal_braking_margin") {
+        trajectory.occupied_goal_braking_margin = parameter.as_double();
       } else if (name == node_name + ".last_occupied_goal_dist") {
         trajectory.last_occupied_goal_dist = parameter.as_double();
       } else if (name == node_name + ".last_occupied_goal_hold_timeout") {

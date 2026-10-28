@@ -247,8 +247,15 @@ bool TebLocalPlannerROS::tryGoalStandoffHold(
     const double dist = std::hypot(
       robot_pose.pose.position.x - goal_standoff_pose_global_.pose.position.x,
       robot_pose.pose.position.y - goal_standoff_pose_global_.pose.position.y);
-    const double xy_tol = std::max(0.05, cfg_->goal_tolerance.xy_goal_tolerance);
-    should_hold = dist <= xy_tol;
+    const double xy_tol = std::max(
+      0.05, std::max(cfg_->goal_tolerance.xy_goal_tolerance,
+      cfg_->trajectory.goal_standoff_stop_distance));
+    const double linear_speed = std::hypot(velocity.linear.x, velocity.linear.y);
+    const double linear_acc = std::max(1e-6, cfg_->robot.acc_lim_x);
+    const double braking_distance = (linear_speed * linear_speed) / (2.0 * linear_acc);
+    const double braking_margin = std::max(
+      0.0, cfg_->trajectory.occupied_goal_braking_margin);
+    should_hold = dist <= std::max(xy_tol, braking_distance + braking_margin);
   }
   if (!should_hold) {
     goal_standoff_hold_active_ = false;
@@ -294,7 +301,15 @@ bool TebLocalPlannerROS::tryOccupiedGoalNearHold(
 
   constexpr double kReleaseDelaySec = 0.4;
   const rclcpp::Time now = clock_->now();
-  const bool within_dist = occupied_goal_no_standoff_ && occupied_goal_dist_m_ < dist_limit;
+  const double linear_speed = std::hypot(velocity.linear.x, velocity.linear.y);
+  const double linear_acc = std::max(1e-6, cfg_->robot.acc_lim_x);
+  const double braking_distance = (linear_speed * linear_speed) / (2.0 * linear_acc);
+  const double braking_margin = std::max(
+    0.0, cfg_->trajectory.occupied_goal_braking_margin);
+  const double effective_dist_limit = std::max(
+    dist_limit, braking_distance + braking_margin);
+  const bool within_dist = occupied_goal_no_standoff_ &&
+    occupied_goal_dist_m_ < effective_dist_limit;
   if (within_dist) {
     occupied_goal_near_clear_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
     if (!occupied_goal_near_hold_active_) {
@@ -306,7 +321,7 @@ bool TebLocalPlannerROS::tryOccupiedGoalNearHold(
       RCLCPP_INFO(
         logger_,
         "终点占用且无退让点，base 距终点 %.3f m < %.3f m，零速度",
-        occupied_goal_dist_m_, dist_limit);
+        occupied_goal_dist_m_, effective_dist_limit);
     }
   } else if (occupied_goal_near_hold_active_) {
     if (occupied_goal_near_clear_since_.nanoseconds() == 0) {
@@ -357,7 +372,7 @@ bool TebLocalPlannerROS::tryOccupiedGoalNearHold(
   RCLCPP_INFO_THROTTLE(
     logger_, *clock_, 1000,
     "终点占用近距停车: dist=%.3f m limit=%.3f m",
-    occupied_goal_dist_m_, dist_limit);
+    occupied_goal_dist_m_, effective_dist_limit);
   return true;
 }
 
