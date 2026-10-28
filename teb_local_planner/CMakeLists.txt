@@ -9,6 +9,35 @@ if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 14)
 endif()
 
+# The planner pulls in a large ROS2/g2o/Eigen header graph.  A normal
+# ``make -j2`` therefore needs considerably more memory than the final
+# binaries.  Cursor's sandbox has a tight memory budget and can terminate the
+# whole container when two translation units are compiled at once.  Serialize
+# only the compiler invocations in that environment; linking and unrelated
+# packages can still run normally.  The option is also available for other
+# constrained build hosts.
+if(DEFINED ENV{CURSOR_SANDBOX})
+  set(_teb_serialize_compilation_default ON)
+else()
+  set(_teb_serialize_compilation_default OFF)
+endif()
+option(TEB_SERIALIZE_COMPILATION
+  "Serialize C/C++ compiler invocations to reduce peak build memory"
+  ${_teb_serialize_compilation_default})
+if(TEB_SERIALIZE_COMPILATION)
+  set(_teb_compile_lock "${CMAKE_CURRENT_BINARY_DIR}/teb_compile.lock")
+  set(TEB_COMPILE_LOCK_FILE "${_teb_compile_lock}" CACHE FILEPATH
+      "Lock file used to serialize TEB compiler invocations")
+  set(_teb_compile_launcher
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules/serialize_compile.sh")
+  # A semicolon list lets CMake pass the lock path as a launcher argument.
+  set(CMAKE_CXX_COMPILER_LAUNCHER
+      "${_teb_compile_launcher};--lock;${TEB_COMPILE_LOCK_FILE}")
+  set(CMAKE_C_COMPILER_LAUNCHER
+      "${_teb_compile_launcher};--lock;${TEB_COMPILE_LOCK_FILE}")
+  message(STATUS "TEB compiler invocations are serialized (lock: ${TEB_COMPILE_LOCK_FILE})")
+endif()
+
 #if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 #  add_compile_options(-Wall -Wextra -Wpedantic)
 #endif()

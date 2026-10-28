@@ -444,6 +444,12 @@ using detail::normalizeEdgeModeEnv;
 
     transformed_path = node->create_publisher<nav_msgs::msg::Path>("teb_transformed_path", 1);
     global_plan_pub_ = node->create_publisher<nav_msgs::msg::Path>("teb_global_plan", 1);
+    safe_terminal_marker_pub_ =
+      node->create_publisher<visualization_msgs::msg::Marker>(
+      "teb_transformed_plan_safe_terminal", 1);
+    occupied_goal_stop_marker_pub_ =
+      node->create_publisher<visualization_msgs::msg::Marker>(
+      "teb_last_occupied_goal_stop", 1);
     wall_line_marker_publisher_ = node->create_publisher<visualization_msgs::msg::Marker>("teb_selected_wall_line", 1);
     monitor_corridor_marker_pub_ =
       node->create_publisher<visualization_msgs::msg::MarkerArray>("teb_monitor_corridor_markers", 1);
@@ -462,7 +468,8 @@ using detail::normalizeEdgeModeEnv;
                 "TEB 创建发布话题 /teb_selected_wall_line、/teb_monitor_corridor_markers、"
                 "/teb_protruding_obstacle_markers、/teb_corner_approach_footprint_markers、"
                 "/teb_collision_footprint_markers、/teb_near_horizon_debug、/teb_path_wait_debug、/edge_distance、"
-                "/teb_transformed_path、/teb_global_plan");
+                "/teb_transformed_path、/teb_global_plan、"
+                "/teb_transformed_plan_safe_terminal、/teb_last_occupied_goal_stop");
 
     // Create persistent client for static_layer parameter updates
     static_layer_client_ = node->create_client<rcl_interfaces::srv::SetParameters>("/local_costmap/local_costmap/set_parameters");
@@ -1915,6 +1922,8 @@ void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstS
    local_footprint_client_.reset();
    global_footprint_client_.reset();
    backward_mode_pub_.reset();
+   safe_terminal_marker_pub_.reset();
+   occupied_goal_stop_marker_pub_.reset();
    resetBackwardModePublicationState(false);
    initialized_ = false;
  }

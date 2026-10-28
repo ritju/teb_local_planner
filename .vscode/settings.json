@@ -55,5 +55,28 @@
   "C_Cpp_Runner.useLeakSanitizer": false,
   "C_Cpp_Runner.showCompilationTime": false,
   "C_Cpp_Runner.useLinkTimeOptimization": false,
-  "C_Cpp_Runner.msvcSecureNoWarnings": false
+  "C_Cpp_Runner.msvcSecureNoWarnings": false,
+  "ros.distro": "humble",
+  "python.autoComplete.extraPaths": [
+    "/workspaces/capella_coverage_server/build/simulation_launcher",
+    "/workspaces/capella_coverage_server/build/find_free_space",
+    "/workspaces/capella_coverage_server/build/depth_camera_pose_optimize",
+    "/workspaces/capella_coverage_server/build/capella_nav_and_carto_server",
+    "/workspaces/capella_coverage_server/build/capella_ros2_node_supervise",
+    "/workspaces/capella_coverage_server/install/local/lib/python3.10/dist-packages",
+    "/workspaces/capella_coverage_server/install/lib/python3.10/site-packages",
+    "/opt/ros/humble/local/lib/python3.10/dist-packages",
+    "/opt/ros/humble/lib/python3.10/site-packages"
+  ],
+  "python.analysis.extraPaths": [
+    "/workspaces/capella_coverage_server/build/simulation_launcher",
+    "/workspaces/capella_coverage_server/build/find_free_space",
+    "/workspaces/capella_coverage_server/build/depth_camera_pose_optimize",
+    "/workspaces/capella_coverage_server/build/capella_nav_and_carto_server",
+    "/workspaces/capella_coverage_server/build/capella_ros2_node_supervise",
+    "/workspaces/capella_coverage_server/install/local/lib/python3.10/dist-packages",
+    "/workspaces/capella_coverage_server/install/lib/python3.10/site-packages",
+    "/opt/ros/humble/local/lib/python3.10/dist-packages",
+    "/opt/ros/humble/lib/python3.10/site-packages"
+  ]
 }

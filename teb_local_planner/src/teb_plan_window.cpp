@@ -744,6 +744,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
 
     int end_idx = lookahead_idx;
     int last_occ = -1;
+    int safe_distance_terminal_idx = -1;
     int lock_mode = 0;  // 0=none, 1=geometric, 2=occupancy
     bool need_prune_remaining_row = false;
     bool prune_include_start = false;
@@ -854,6 +855,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
         }
         if (safe_idx >= 0) {
           end_idx = safe_idx;
+          safe_distance_terminal_idx = safe_idx;
           const double arrive_dist =
             cfg_->trajectory.transformed_plan_row_terminal_arrive_distance;
           const double remain_to_safe = (safe_idx >= segment_start_idx)
@@ -945,6 +947,113 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
           *prune_row_to_idx = -1;
         }
       }
+    }
+
+    auto publish_decision_marker = [&](const rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr & pub,
+                                       const std::string & ns,
+                                       const geometry_msgs::msg::PoseStamped * pose,
+                                       const float r, const float g, const float b) {
+      if (!pub) {
+        return;
+      }
+      visualization_msgs::msg::Marker marker;
+      marker.header.frame_id = global_frame;
+      marker.header.stamp = clock_->now();
+      marker.ns = ns;
+      marker.id = 0;
+      marker.type = visualization_msgs::msg::Marker::SPHERE;
+      marker.action = pose ? visualization_msgs::msg::Marker::ADD :
+        visualization_msgs::msg::Marker::DELETE;
+      marker.pose.orientation.w = 1.0;
+      marker.scale.x = 0.28;
+      marker.scale.y = 0.28;
+      marker.scale.z = 0.28;
+      if (pose) {
+        marker.pose = pose->pose;
+        marker.pose.position.z += 0.15;
+        marker.color.a = 0.95;
+        marker.color.r = r;
+        marker.color.g = g;
+        marker.color.b = b;
+      }
+      pub->publish(marker);
+    };
+
+    geometry_msgs::msg::PoseStamped safe_terminal_pose;
+    if (safe_distance_terminal_idx >= 0 && safe_distance_terminal_idx < n_plan) {
+      tf2::doTransform(
+        planPoseAt(safe_distance_terminal_idx), safe_terminal_pose, plan_to_global_transform);
+      publish_decision_marker(
+        safe_terminal_marker_pub_, "transformed_plan_safe_terminal", &safe_terminal_pose,
+        0.1F, 0.95F, 0.2F);
+      double front_clear = std::numeric_limits<double>::infinity();
+      double back_clear = std::numeric_limits<double>::infinity();
+      const int safe_offset = safe_distance_terminal_idx - segment_start_idx;
+      const double safe_arc = arc_from_start[static_cast<size_t>(safe_offset)];
+      for (int j = segment_start_idx; j <= row_end_idx; ++j) {
+        if (!occupied[static_cast<size_t>(j - segment_start_idx)]) {
+          continue;
+        }
+        const double occ_arc = arc_from_start[static_cast<size_t>(j - segment_start_idx)];
+        if (j > safe_distance_terminal_idx) {
+          front_clear = std::min(front_clear, occ_arc - safe_arc);
+        } else if (j < safe_distance_terminal_idx) {
+          back_clear = std::min(back_clear, safe_arc - occ_arc);
+        }
+      }
+      RCLCPP_INFO_THROTTLE(
+        logger_, *(clock_), 2000,
+        "安全终点 marker: idx=%d pose=(%.3f, %.3f) front_clear=%.3f/%.3f "
+        "back_clear=%.3f/%.3f frame=%s",
+        safe_distance_terminal_idx, safe_terminal_pose.pose.position.x,
+        safe_terminal_pose.pose.position.y, front_clear, front_dist,
+        back_clear, back_dist, safe_terminal_pose.header.frame_id.c_str());
+    } else {
+      publish_decision_marker(
+        safe_terminal_marker_pub_, "transformed_plan_safe_terminal", nullptr,
+        0.1F, 0.95F, 0.2F);
+    }
+
+    geometry_msgs::msg::PoseStamped occupied_goal_stop_pose;
+    bool has_occupied_goal_stop = occupied_goal_no_standoff_ &&
+      cfg_->trajectory.last_occupied_goal_dist > 1e-9 && n_plan > 0;
+    if (has_occupied_goal_stop) {
+      double remaining = cfg_->trajectory.last_occupied_goal_dist;
+      occupied_goal_stop_pose = global_plan.back();
+      for (int j = n_plan - 1; j > 0; --j) {
+        const auto & p0 = global_plan[static_cast<size_t>(j - 1)].pose.position;
+        const auto & p1 = global_plan[static_cast<size_t>(j)].pose.position;
+        const double segment = distance_points2d(p0, p1);
+        if (segment <= 1e-9) {
+          continue;
+        }
+        if (remaining <= segment) {
+          const double ratio = remaining / segment;
+          occupied_goal_stop_pose.pose.position.x = p1.x + ratio * (p0.x - p1.x);
+          occupied_goal_stop_pose.pose.position.y = p1.y + ratio * (p0.y - p1.y);
+          break;
+        }
+        remaining -= segment;
+        occupied_goal_stop_pose = global_plan[static_cast<size_t>(j - 1)];
+      }
+      geometry_msgs::msg::PoseStamped occupied_goal_stop_global;
+      tf2::doTransform(
+        occupied_goal_stop_pose, occupied_goal_stop_global, plan_to_global_transform);
+      publish_decision_marker(
+        occupied_goal_stop_marker_pub_, "last_occupied_goal_stop",
+        &occupied_goal_stop_global, 1.0F, 0.15F, 0.1F);
+      RCLCPP_INFO_THROTTLE(
+        logger_, *(clock_), 2000,
+        "占用终点停车点 marker: goal_dist=%.3f m stop_dist=%.3f m "
+        "pose=(%.3f, %.3f) frame=%s",
+        occupied_goal_dist_m_, cfg_->trajectory.last_occupied_goal_dist,
+        occupied_goal_stop_global.pose.position.x,
+        occupied_goal_stop_global.pose.position.y,
+        occupied_goal_stop_global.header.frame_id.c_str());
+    } else {
+      publish_decision_marker(
+        occupied_goal_stop_marker_pub_, "last_occupied_goal_stop", nullptr,
+        1.0F, 0.15F, 0.1F);
     }
 
     for (int k = segment_start_idx; k <= end_idx; ++k) {

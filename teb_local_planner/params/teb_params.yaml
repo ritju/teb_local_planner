@@ -195,6 +195,8 @@
         transformed_plan_row_terminal_arrive_distance: 0.3  # arrived at row-terminal safe pose → prune remaining row [m]
         transform_global_plan_goal_occupied_tolerance: 0.3
         transform_global_plan_goal_search_resolution: 0.1
+        goal_standoff_stop_distance: 0.08
+        occupied_goal_braking_margin: 0.15
         prune_angle_threshold: 90.0  # [deg] heading align for prune and current-row split
 
         exact_arc_length: false
