@@ -538,7 +538,7 @@
      geometry_msgs::msg::TwistStamped & cmd_vel);
 
    /**
-    * @brief 原终点被占用且已锁定沿路径退让点时，车到退让点（或已越过）则减速到零，不再朝原终点优化。
+    * @brief 兼容保留：原终点退让锁已停用，不再由该函数触发终点停车。
     * @return true 时 cmd_vel 已填好，调用方应直接返回
     */
    bool tryGoalStandoffHold(
@@ -547,7 +547,7 @@
      geometry_msgs::msg::TwistStamped & cmd_vel);
 
    /**
-    * @brief 终点被占用、无退让点且 base 进入常规距离或当前制动距离加缓冲时零速度。
+    * @brief 原终点 footprint 被占用时立即输出零速度并等待。
     *        条件消失后保持 0.4s 再退出。超过 last_occupied_goal_hold_timeout 则抛出失败。
     */
    bool tryOccupiedGoalNearHold(
@@ -986,11 +986,11 @@
      const std::vector<geometry_msgs::msg::Point> & oriented_footprint) const;
 
    /**
-    * @brief 原终点足迹被占用时，沿路径往回锁定退让点（足迹无碰且沿路径离开终点不少于净空）。
-    *        原终点恢复空闲则解除锁定。不再在终点周围取最近空闲格。
-    * @param standoff_idx_out 锁定时为退让点在 global_plan 中的下标，否则为 -1
-    * @param effective_last_plan_pose 空路径注入用的终点；锁定时为退让点
-    * @return 原终点空闲，或已锁定退让点
+    * @brief 检查原终点 footprint 是否空闲。
+    *        原终点占用时不再搜索沿路径退让点，由停车保持逻辑立即输出零速度等待。
+    * @param standoff_idx_out 始终为 -1（保留接口兼容）
+    * @param effective_last_plan_pose 空路径注入用的原始终点
+    * @return 原终点空闲时为 true，否则为 false
     */
    bool selectGoalStandoffAlongPlan(
      const std::vector<geometry_msgs::msg::PoseStamped>& global_plan,
@@ -1008,14 +1008,14 @@
   geometry_msgs::msg::PoseStamped last_rotation_pose_;  //!< Robot pose when last in-place rotation started, finished, or failed
   rclcpp::Time last_rotation_pose_time_{0};
   bool was_inplace_rotation_active_{false};
-  //! 原终点被占用时沿路径锁定的退让点。transformGlobalPlan 为 const，状态用 mutable。
+  //! 兼容保留：终点占用后不再锁定沿路径退让点。
   mutable bool goal_standoff_latched_{false};
   mutable int goal_standoff_plan_idx_{-1};
   mutable geometry_msgs::msg::PoseStamped goal_standoff_pose_plan_;
   mutable geometry_msgs::msg::PoseStamped goal_standoff_pose_global_;
   mutable bool goal_standoff_force_hold_{false};
   bool goal_standoff_hold_active_{false};
-  //! 本拍终点被占用且没有退让点。距离在路径系，由 transformGlobalPlan 写入。
+  //! 本拍终点被占用。由 transformGlobalPlan 写入，触发立即停车保持。
   mutable bool occupied_goal_no_standoff_{false};
   mutable double occupied_goal_dist_m_{std::numeric_limits<double>::infinity()};
   bool occupied_goal_near_hold_active_{false};

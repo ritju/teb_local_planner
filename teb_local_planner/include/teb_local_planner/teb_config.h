@@ -159,11 +159,11 @@ public:
     //!< transformGlobalPlan: 末端位姿微调时的平面网格步长 [m]，与 SMAC Hybrid 等价的 goal_search_resolution
     double transform_global_plan_goal_search_resolution; //!< 末端偏移搜索网格步长 [m]
     //!< 到达路径退让点后进入零速保持的距离容差 [m]
-    double goal_standoff_stop_distance;
+    double goal_standoff_stop_distance; //!< 兼容参数：终点占用时不再搜索退让点
     //!< 接近占用终点时按制动距离提前进入零速保持的额外缓冲 [m]
-    double occupied_goal_braking_margin;
+    double occupied_goal_braking_margin; //!< 兼容参数：终点占用检测后立即停车
     //!< 终点被占用且沿路径无退让点时，base 到终点小于该距离则发零速度 [m]；<=0 关闭
-    double last_occupied_goal_dist;
+    double last_occupied_goal_dist; //!< 兼容参数：不再作为终点占用停车触发距离
     //!< 上述零速度持续超过该时间则本次控制失败，交给上层恢复 [s]；<=0 不超时
     double last_occupied_goal_hold_timeout;
     //!< hasReverseSegmentInPlan: 参与倒车判定的路点段最小弦长 [m]；过短则向前扩窗至 i+2, i+3, ...

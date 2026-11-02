@@ -270,17 +270,10 @@ bool TebLocalPlannerROS::tryGoalStandoffHold(
 
   cmd_vel.header.stamp = clock_->now();
   cmd_vel.header.frame_id = costmap_ros_->getBaseFrameID();
-  const double dt = std::max(1e-3, control_duration_);
-  auto approach_zero = [dt](double speed, double acc) {
-    const double step = std::max(1e-6, acc) * dt;
-    if (std::abs(speed) <= step) {
-      return 0.0;
-    }
-    return speed - std::copysign(step, speed);
-  };
-  cmd_vel.twist.linear.x = approach_zero(velocity.linear.x, cfg_->robot.acc_lim_x);
-  cmd_vel.twist.linear.y = approach_zero(velocity.linear.y, cfg_->robot.acc_lim_y);
-  cmd_vel.twist.angular.z = approach_zero(velocity.angular.z, cfg_->robot.acc_lim_theta);
+  // 终点停车直接输出零速度，不经过加速度限制的减速曲线。
+  cmd_vel.twist.linear.x = 0.0;
+  cmd_vel.twist.linear.y = 0.0;
+  cmd_vel.twist.angular.z = 0.0;
   last_cmd_ = cmd_vel.twist;
   RCLCPP_INFO_THROTTLE(
     logger_, *clock_, 1000,
@@ -293,24 +286,10 @@ bool TebLocalPlannerROS::tryOccupiedGoalNearHold(
   const geometry_msgs::msg::Twist & velocity,
   geometry_msgs::msg::TwistStamped & cmd_vel)
 {
-  const double dist_limit = cfg_->trajectory.last_occupied_goal_dist;
-  if (dist_limit <= 0.0) {
-    occupied_goal_near_hold_active_ = false;
-    return false;
-  }
-
+  (void)velocity;
   constexpr double kReleaseDelaySec = 0.4;
   const rclcpp::Time now = clock_->now();
-  const double linear_speed = std::hypot(velocity.linear.x, velocity.linear.y);
-  const double linear_acc = std::max(1e-6, cfg_->robot.acc_lim_x);
-  const double braking_distance = (linear_speed * linear_speed) / (2.0 * linear_acc);
-  const double braking_margin = std::max(
-    0.0, cfg_->trajectory.occupied_goal_braking_margin);
-  const double effective_dist_limit = std::max(
-    dist_limit, braking_distance + braking_margin);
-  const bool within_dist = occupied_goal_no_standoff_ &&
-    occupied_goal_dist_m_ < effective_dist_limit;
-  if (within_dist) {
+  if (occupied_goal_no_standoff_) {
     occupied_goal_near_clear_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
     if (!occupied_goal_near_hold_active_) {
       occupied_goal_near_hold_active_ = true;
@@ -320,8 +299,8 @@ bool TebLocalPlannerROS::tryOccupiedGoalNearHold(
       }
       RCLCPP_INFO(
         logger_,
-        "终点占用且无退让点，base 距终点 %.3f m < %.3f m，零速度",
-        occupied_goal_dist_m_, effective_dist_limit);
+        "终点占用，取消退让点搜索，立即零速停车等待 (base 距终点 %.3f m)",
+        occupied_goal_dist_m_);
     }
   } else if (occupied_goal_near_hold_active_) {
     if (occupied_goal_near_clear_since_.nanoseconds() == 0) {
@@ -346,33 +325,23 @@ bool TebLocalPlannerROS::tryOccupiedGoalNearHold(
       occupied_goal_near_hold_active_ = false;
       occupied_goal_near_hold_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
       occupied_goal_near_clear_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
-      RCLCPP_ERROR(
-        logger_,
-        "终点占用且无退让点，近距零速度已持续 %.1f s，本次控制失败",
-        held);
+      RCLCPP_ERROR(logger_, "终点占用立即停车已持续 %.1f s，本次控制失败", held);
       throw nav2_core::PlannerException(
-        "终点被占用且无退让点，近距零速度超时");
+        "终点被占用，立即停车等待超时");
     }
   }
 
   cmd_vel.header.stamp = now;
   cmd_vel.header.frame_id = costmap_ros_->getBaseFrameID();
-  const double dt = std::max(1e-3, control_duration_);
-  auto approach_zero = [dt](double speed, double acc) {
-    const double step = std::max(1e-6, acc) * dt;
-    if (std::abs(speed) <= step) {
-      return 0.0;
-    }
-    return speed - std::copysign(step, speed);
-  };
-  cmd_vel.twist.linear.x = approach_zero(velocity.linear.x, cfg_->robot.acc_lim_x);
-  cmd_vel.twist.linear.y = approach_zero(velocity.linear.y, cfg_->robot.acc_lim_y);
-  cmd_vel.twist.angular.z = approach_zero(velocity.angular.z, cfg_->robot.acc_lim_theta);
+  // 终点占用时直接输出零速度，不经过加速度限制的减速曲线。
+  cmd_vel.twist.linear.x = 0.0;
+  cmd_vel.twist.linear.y = 0.0;
+  cmd_vel.twist.angular.z = 0.0;
   last_cmd_ = cmd_vel.twist;
   RCLCPP_INFO_THROTTLE(
     logger_, *clock_, 1000,
-    "终点占用近距停车: dist=%.3f m limit=%.3f m",
-    occupied_goal_dist_m_, effective_dist_limit);
+    "终点占用立即零速停车: dist=%.3f m",
+    occupied_goal_dist_m_);
   return true;
 }
 

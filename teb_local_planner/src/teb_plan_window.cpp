@@ -458,15 +458,6 @@ bool TebLocalPlannerROS::selectGoalStandoffAlongPlan(
     return globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
       pose, plan_to_global_transform);
   };
-  auto remember_standoff = [&](const int idx) {
-    goal_standoff_latched_ = true;
-    goal_standoff_plan_idx_ = idx;
-    goal_standoff_pose_plan_ = global_plan[static_cast<size_t>(idx)];
-    tf2::doTransform(
-      goal_standoff_pose_plan_, goal_standoff_pose_global_, plan_to_global_transform);
-    standoff_idx_out = idx;
-    effective_last_plan_pose = goal_standoff_pose_plan_;
-  };
 
   if (footprint_free(original_goal)) {
     if (goal_standoff_latched_) {
@@ -477,77 +468,13 @@ bool TebLocalPlannerROS::selectGoalStandoffAlongPlan(
     return true;
   }
 
-  const double inscribed = (cfg_->robot_model != nullptr)
-    ? cfg_->robot_model->getInscribedRadius()
-    : robot_inscribed_radius_;
-  const double min_clearance = std::max(
-    0.0, std::max(cfg_->obstacles.min_obstacle_dist, normal_min_obstacle_dist_)) +
-    std::max(0.0, inscribed);
-
-  const int plan_size = static_cast<int>(global_plan.size());
-  auto arc_from_goal = [&](const int idx) -> double {
-    double arc = 0.0;
-    for (int i = plan_size - 1; i > idx; --i) {
-      arc += std::hypot(
-        global_plan[static_cast<size_t>(i)].pose.position.x -
-          global_plan[static_cast<size_t>(i - 1)].pose.position.x,
-        global_plan[static_cast<size_t>(i)].pose.position.y -
-          global_plan[static_cast<size_t>(i - 1)].pose.position.y);
-    }
-    return arc;
-  };
-
-  if (goal_standoff_latched_) {
-    int matched_idx = -1;
-    double matched_dist = 0.05;
-    for (int idx = 0; idx < plan_size - 1; ++idx) {
-      const double dist = std::hypot(
-        global_plan[static_cast<size_t>(idx)].pose.position.x -
-          goal_standoff_pose_plan_.pose.position.x,
-        global_plan[static_cast<size_t>(idx)].pose.position.y -
-          goal_standoff_pose_plan_.pose.position.y);
-      if (dist <= matched_dist) {
-        matched_dist = dist;
-        matched_idx = idx;
-      }
-    }
-    if (matched_idx >= 0 &&
-        footprint_free(global_plan[static_cast<size_t>(matched_idx)]) &&
-        arc_from_goal(matched_idx) + 1e-9 >= min_clearance)
-    {
-      remember_standoff(matched_idx);
-      return true;
-    }
-    RCLCPP_INFO(logger_, "终点退让: 锁定点失效，重新沿路径后退");
-    goal_standoff_latched_ = false;
-    goal_standoff_plan_idx_ = -1;
-  }
-
-  double arc = 0.0;
-  for (int idx = plan_size - 2; idx >= 0; --idx) {
-    arc += std::hypot(
-      global_plan[static_cast<size_t>(idx + 1)].pose.position.x -
-        global_plan[static_cast<size_t>(idx)].pose.position.x,
-      global_plan[static_cast<size_t>(idx + 1)].pose.position.y -
-        global_plan[static_cast<size_t>(idx)].pose.position.y);
-    if (arc + 1e-9 < min_clearance) {
-      continue;
-    }
-    if (!footprint_free(global_plan[static_cast<size_t>(idx)])) {
-      continue;
-    }
-    remember_standoff(idx);
-    RCLCPP_INFO(
-      logger_,
-      "终点退让: 原终点被占用，锁定路径点 %d，沿路径后退 %.3f m (净空 %.3f m)",
-      idx, arc, min_clearance);
-    return true;
-  }
-
+  // 原终点被占用时不再沿全局路径搜索退让点；由
+  // tryOccupiedGoalNearHold() 在本周期直接进入减速/零速保持。
+  goal_standoff_latched_ = false;
+  goal_standoff_plan_idx_ = -1;
   RCLCPP_WARN_THROTTLE(
     logger_, *(clock_), 1000,
-    "终点退让: 原终点被占用，沿路径未找到净空 %.3f m 以上的空闲点",
-    min_clearance);
+    "终点占用: 取消沿路径退让点搜索，本周期立即停车等待");
   return false;
 }
 
@@ -666,7 +593,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
     const int global_goal_idx = n_plan - 1;
     geometry_msgs::msg::PoseStamped effective_last_plan_pose = global_plan.back();
     int standoff_idx = -1;
-    // 原终点被占用时沿路径锁定退让点；空闲则解除。不再把终点挪到周围最近空闲格。
+    // 仅检查原始终点占用状态；占用时由停车保持逻辑立即处理，不再沿路径搜索退让点。
     const bool standoff_selected = selectGoalStandoffAlongPlan(
       global_plan, plan_to_global_transform, standoff_idx, effective_last_plan_pose);
     if (standoff_idx >= 0 && i > standoff_idx) {
@@ -936,6 +863,14 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
       }
     }
 
+    // 原始终点被占用时，本周期立即停车等待，不提交当前行裁剪，
+    // 保留完整 global_plan_ 以便终点释放后继续执行原路径。
+    if (occupied_goal_no_standoff_) {
+      need_prune_remaining_row = false;
+      prune_include_start = false;
+      safe_distance_terminal_idx = -1;
+    }
+
     if (standoff_idx >= 0) {
       end_idx = std::min(end_idx, standoff_idx);
       if (prune_row_from_idx && prune_row_to_idx &&
@@ -1015,27 +950,10 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
     }
 
     geometry_msgs::msg::PoseStamped occupied_goal_stop_pose;
-    bool has_occupied_goal_stop = occupied_goal_no_standoff_ &&
-      cfg_->trajectory.last_occupied_goal_dist > 1e-9 && n_plan > 0;
+    const bool has_occupied_goal_stop = occupied_goal_no_standoff_ && n_plan > 0;
     if (has_occupied_goal_stop) {
-      double remaining = cfg_->trajectory.last_occupied_goal_dist;
-      occupied_goal_stop_pose = global_plan.back();
-      for (int j = n_plan - 1; j > 0; --j) {
-        const auto & p0 = global_plan[static_cast<size_t>(j - 1)].pose.position;
-        const auto & p1 = global_plan[static_cast<size_t>(j)].pose.position;
-        const double segment = distance_points2d(p0, p1);
-        if (segment <= 1e-9) {
-          continue;
-        }
-        if (remaining <= segment) {
-          const double ratio = remaining / segment;
-          occupied_goal_stop_pose.pose.position.x = p1.x + ratio * (p0.x - p1.x);
-          occupied_goal_stop_pose.pose.position.y = p1.y + ratio * (p0.y - p1.y);
-          break;
-        }
-        remaining -= segment;
-        occupied_goal_stop_pose = global_plan[static_cast<size_t>(j - 1)];
-      }
+      // 立即停车的可视化点就是当前机器人位置，不再计算终点前的预设停车点。
+      occupied_goal_stop_pose = robot_pose;
       geometry_msgs::msg::PoseStamped occupied_goal_stop_global;
       tf2::doTransform(
         occupied_goal_stop_pose, occupied_goal_stop_global, plan_to_global_transform);
@@ -1044,9 +962,9 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
         &occupied_goal_stop_global, 1.0F, 0.15F, 0.1F);
       RCLCPP_INFO_THROTTLE(
         logger_, *(clock_), 2000,
-        "占用终点停车点 marker: goal_dist=%.3f m stop_dist=%.3f m "
+        "终点占用立即停车 marker: goal_dist=%.3f m "
         "pose=(%.3f, %.3f) frame=%s",
-        occupied_goal_dist_m_, cfg_->trajectory.last_occupied_goal_dist,
+        occupied_goal_dist_m_,
         occupied_goal_stop_global.pose.position.x,
         occupied_goal_stop_global.pose.position.y,
         occupied_goal_stop_global.header.frame_id.c_str());
