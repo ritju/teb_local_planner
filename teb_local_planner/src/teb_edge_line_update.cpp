@@ -120,17 +120,21 @@ void TebLocalPlannerROS::updateWallLineVec(
        } else {
          in_exit_region = distance_points2d(robot_pose.pose.position, vehicle.pose.position) <
            cfg_->wall_line.close_vehicle_distance_threshold;
-         RCLCPP_INFO(logger_, "Edge following: 车辆距离机器人太近：%.2f m，小于阈值：%.2f m", 
-                     distance_points2d(robot_pose.pose.position, vehicle.pose.position), 
-                     cfg_->wall_line.close_vehicle_distance_threshold);
+        RCLCPP_DEBUG_THROTTLE(
+          logger_, *(clock_), 2000,
+          "贴边检查: 无有效墙线，车辆距离机器人 %.2f m（阈值 %.2f m）",
+          distance_points2d(robot_pose.pose.position, vehicle.pose.position),
+          cfg_->wall_line.close_vehicle_distance_threshold);
        }
        if (in_exit_region) {
          if (have_wall_segment) {
-           RCLCPP_INFO(logger_,
-             "Edge following: 车辆在贴边检查区域范围内，退出贴边模式");
+          RCLCPP_WARN_THROTTLE(
+            logger_, *(clock_), 2000,
+            "贴边检查: 车辆进入退出走廊，退出贴边模式");
          } else {
-           RCLCPP_INFO(logger_,
-             "Edge following: 车辆距离机器人太近：%.2f m，小于阈值：%.2f m，退出贴边模式",
+          RCLCPP_WARN_THROTTLE(
+            logger_, *(clock_), 2000,
+            "贴边检查: 车辆距离机器人 %.2f m，小于阈值 %.2f m，退出贴边模式",
              distance_points2d(robot_pose.pose.position, vehicle.pose.position),
              cfg_->wall_line.close_vehicle_distance_threshold);
          }
@@ -374,11 +378,13 @@ void TebLocalPlannerROS::updateWallLineVec(
        }
        if (in_exit_region) {
          if (have_wall_segment) {
-           RCLCPP_INFO(logger_,
-             "[updateCurbLineVec] Edge following: 车辆在贴边检查区域范围内，退出贴边模式");
+          RCLCPP_WARN_THROTTLE(
+            logger_, *(clock_), 2000,
+            "贴边检查: 车辆进入退出走廊，退出贴边模式");
          } else {
-           RCLCPP_INFO(logger_,
-             "[updateCurbLineVec] Edge following: 车辆距离机器人太近：%.2f m，小于阈值：%.2f m，退出贴边模式",
+          RCLCPP_WARN_THROTTLE(
+            logger_, *(clock_), 2000,
+            "贴边检查: 车辆距离机器人 %.2f m，小于阈值 %.2f m，退出贴边模式",
              distance_points2d(robot_pose.pose.position, vehicle.pose.position),
              cfg_->wall_line.close_vehicle_distance_threshold);
          }

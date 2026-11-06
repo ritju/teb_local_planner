@@ -785,12 +785,16 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
      }
      catch (const tf2::ExtrapolationException& ex)
      {
-       RCLCPP_WARN(logger_, "自定义障碍物 TF 查询失败 (ExtrapolationException): %s, 改用单位变换", ex.what());
+      RCLCPP_WARN_THROTTLE(
+        logger_, *clock_, 2000,
+        "自定义障碍物 TF 外推失败，改用单位变换: %s", ex.what());
        obstacle_to_map_eig.setIdentity();
      }
      catch (const tf2::TransformException& ex)
      {
-       RCLCPP_ERROR(logger_, "自定义障碍物 TF 查询失败 (TransformException): %s, 改用单位变换", ex.what());
+      RCLCPP_ERROR_THROTTLE(
+        logger_, *clock_, 2000,
+        "自定义障碍物 TF 查询失败，改用单位变换: %s", ex.what());
        obstacle_to_map_eig.setIdentity();
      }
      
@@ -823,7 +827,9 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
        }
        else if (custom_obstacle_msg_.obstacles.at(i).polygon.points.empty())
        {
-         RCLCPP_INFO(logger_, "收到无效自定义障碍物，多边形顶点为空，跳过");
+         RCLCPP_WARN_THROTTLE(
+           logger_, *clock_, 2000,
+           "收到无效自定义障碍物（多边形顶点为空），已跳过");
          continue;
        }
        else // polygon
@@ -889,8 +895,9 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
    RCLCPP_INFO_ONCE(logger_, "已收到自定义经由点 (via-points)，本条只打印一次");
    if (cfg_->trajectory.global_plan_viapoint_sep > 0)
    {
-     RCLCPP_INFO(logger_, "经由点已由全局路径生成 (global_plan_viapoint_sep>0)，"
-              "忽略自定义经由点");
+    RCLCPP_INFO_THROTTLE(
+      logger_, *clock_, 2000,
+      "经由点已由全局路径生成（global_plan_viapoint_sep>0），忽略自定义经由点");
      custom_via_points_active_ = false;
      return;
    }

@@ -721,7 +721,9 @@ void TebLocalPlannerROS::configure(
    geometry_msgs::msg::Pose pose_tolerance;
    geometry_msgs::msg::Twist vel_tolerance;
    if (!goal_checker->getTolerances(pose_tolerance, vel_tolerance)) {
-     RCLCPP_WARN(logger_, "无法获取目标检查器 (goal checker) 容差");
+    RCLCPP_WARN_THROTTLE(
+      logger_, *clock_, 2000,
+      "无法获取目标检查器容差，本周期沿用上次配置");
    } else {
      cfg_->goal_tolerance.xy_goal_tolerance = pose_tolerance.position.x;
    }
@@ -805,7 +807,10 @@ void TebLocalPlannerROS::configure(
           RCLCPP_WARN(logger_, "收到的速度限制大于安全线速度上限，已钳到安全上限: %.2f m/s", safe_linear_speed_limit_);
         }
       } else if (!std::isfinite(limit) || limit <= 0) {
-        RCLCPP_WARN(logger_, "速度限制无效 (非有限或 <=0)，当前速度上限: %.2f m/s", cfg_->robot.max_vel_x);
+        RCLCPP_WARN_THROTTLE(
+          logger_, *clock_, 2000,
+          "速度限制无效（非有限或 <=0），当前速度上限 %.2f m/s",
+          cfg_->robot.max_vel_x);
       }
     }
   }
@@ -885,17 +890,19 @@ void TebLocalPlannerROS::configure(
             tf2::TimePointZero);
           corner_pose_global.header.stamp = transform.header.stamp;
         } else {
-          RCLCPP_WARN(logger_, "TF 查询失败 (ExtrapolationException): %s, 尝试使用最新可用时间", ex.what());
+          RCLCPP_WARN_THROTTLE(
+            logger_, *clock_, 2000,
+            "角点 TF 查询发生外推异常，尝试使用最新时间: %s", ex.what());
           corner_found = false;
         }
       } catch (const tf2::TransformException& ex2) {
-        RCLCPP_ERROR(logger_, "TF 查询失败: %s", ex2.what());
+        RCLCPP_ERROR_THROTTLE(logger_, *clock_, 2000, "角点 TF 重试失败: %s", ex2.what());
         corner_found = false;
       }
     }
     catch (const tf2::TransformException &ex)
     {
-      RCLCPP_ERROR(logger_, "TF 查询失败: %s", ex.what());
+      RCLCPP_ERROR_THROTTLE(logger_, *clock_, 2000, "角点 TF 查询失败: %s", ex.what());
       corner_found = false;
     }
     if (corner_found &&
@@ -1067,10 +1074,10 @@ void TebLocalPlannerROS::configure(
     if (corner_has_obstacle)
     {
       if (corner_index + 1 >= global_plan_.size()) {
-        RCLCPP_INFO(
-          logger_,
-          "角点为路径终点(idx=%zu size=%zu)，跳过删除以免掏空路径",
-          corner_index, global_plan_.size());
+      RCLCPP_DEBUG_THROTTLE(
+        logger_, *clock_, 2000,
+        "角点为路径终点（idx=%zu，size=%zu），跳过裁剪以保留有效路径",
+        corner_index, global_plan_.size());
       } else {
       double robot_corner_distance = pow(corner_pose_robot.pose.position.x, 2) + pow(corner_pose_robot.pose.position.y, 2);
       if (corner_index > 0 &&
@@ -1083,7 +1090,10 @@ void TebLocalPlannerROS::configure(
         // Erase all points before the corner (keep the corner point itself)
         cut_path_before_corner = true;
         global_plan_.erase(global_plan_.begin(), global_plan_.begin() + corner_index + 1);
-        RCLCPP_INFO(logger_, "角点被障碍物占用，删除角点前的所有路径点，裁剪距离: %.2f m", robot_corner_distance);
+        RCLCPP_WARN_THROTTLE(
+          logger_, *clock_, 2000,
+          "角点被障碍物占用，删除角点前路径点，裁剪距离 %.2f m",
+          robot_corner_distance);
       }
       }
       goto jump_prune_transformed_plan;
@@ -1187,6 +1197,10 @@ void TebLocalPlannerROS::configure(
   // Return false if the transformed global plan is empty
   if (transformed_plan.empty())
   {
+    RCLCPP_ERROR_THROTTLE(
+      logger_, *clock_, 1000,
+      "全局路径变换后为空：global_plan=%zu，机器人坐标系=%s",
+      global_plan_.size(), robot_pose.header.frame_id.c_str());
     throw nav2_core::PlannerException(
       std::string("Transformed plan is empty. Cannot determine a local plan.")
     );
@@ -1551,6 +1565,10 @@ void TebLocalPlannerROS::configure(
      time_last_infeasible_plan_ = clock_->now();
      last_cmd_ = cmd_vel.twist;
      dual_arc_reverse_forward_count_ = 0;
+     RCLCPP_ERROR_THROTTLE(
+       logger_, *clock_, 1000,
+       "局部轨迹不可行：连续失败次数=%zu，路径点=%zu，障碍物=%zu，已清空规划器",
+       no_infeasible_plans_, transformed_plan.size(), obstacles_.size());
      throw nav2_core::PlannerException(
        std::string("TebLocalPlannerROS: trajectory is not feasible. Resetting planner...")
      );
@@ -1565,6 +1583,10 @@ void TebLocalPlannerROS::configure(
      last_cmd_ = cmd_vel.twist;
      
      dual_arc_reverse_forward_count_ = 0;
+     RCLCPP_ERROR_THROTTLE(
+       logger_, *clock_, 1000,
+       "TEB 未生成有效速度指令：轨迹点数=%zu，连续失败次数=%zu",
+       transformed_plan.size(), no_infeasible_plans_);
      throw nav2_core::PlannerException(
        std::string("TebLocalPlannerROS: velocity command invalid. Resetting planner...")
      );
@@ -1589,6 +1611,10 @@ void TebLocalPlannerROS::configure(
        ++no_infeasible_plans_; // increase number of infeasible solutions in a row
        time_last_infeasible_plan_ = clock_->now();
        dual_arc_reverse_forward_count_ = 0;
+       RCLCPP_ERROR_THROTTLE(
+         logger_, *clock_, 1000,
+         "转向角计算结果非有限：vx=%.3f omega=%.3f wheelbase=%.3f",
+         cmd_vel.twist.linear.x, cmd_vel.twist.angular.z, cfg_->robot.wheelbase);
        throw nav2_core::PlannerException(
          std::string("TebLocalPlannerROS: Resulting steering angle is not finite. Resetting planner...")
        );
