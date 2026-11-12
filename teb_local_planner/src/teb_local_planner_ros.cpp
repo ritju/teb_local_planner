@@ -2020,6 +2020,11 @@ void TebLocalPlannerROS::configure(
      );
    }
  
+   // TEB steering edges are soft constraints. A finite optimized trajectory may
+   // slightly exceed the angle bound or rotate while below steering_min_speed.
+   // Validate the emitted command after projection instead of rejecting that
+   // trajectory here; projection enforces the physical limits and rejects a
+   // command whose yaw-rate correction exceeds max_projection_omega_error.
    if (front_steer_interface_mode_ == "front_steer_cmd") {
      auto optimal = std::dynamic_pointer_cast<TebOptimalPlanner>(planner_);
      if (!optimal) {
@@ -2027,27 +2032,57 @@ void TebLocalPlannerROS::configure(
        if (homotopy) {optimal = homotopy->bestTeb();}
      }
      bool kinematics_ok = optimal && optimal->teb().sizeTimeDiffs() > 0;
-     std::string kinematics_detail = "no valid optimized trajectory";
+     std::string kinematics_detail = !optimal ?
+       "原因=未找到优化轨迹（包含多路径规划的最优轨迹）" :
+       "原因=优化轨迹没有有效的时间段，时间段数=0";
      if (kinematics_ok) {
        const auto & teb = optimal->teb();
        const int segments = std::min(teb.sizeTimeDiffs(),
          std::max(1, cfg_->trajectory.control_look_ahead_poses));
+       bool soft_violation_logged = false;
        for (int i = 0; i < segments && kinematics_ok; ++i) {
          SegmentKinematics segment;
          const bool valid_segment = computeSteeringSegment(teb.Pose(i), teb.Pose(i + 1),
            teb.TimeDiff(i), cfg_->robot.wheelbase, cfg_->robot.steering_min_speed,
            cfg_->robot.steering_omega_epsilon, segment);
-         kinematics_ok = valid_segment && !segment.inplace_rotation &&
-           std::abs(segment.steering_angle) <= cfg_->robot.max_steering_angle + 1e-6;
+         kinematics_ok = valid_segment;
          if (!kinematics_ok) {
-           kinematics_detail = "segment=" + std::to_string(i) +
-             " valid=" + std::to_string(valid_segment) +
-             " inplace=" + std::to_string(segment.inplace_rotation) +
-             " v=" + std::to_string(segment.velocity) +
-             " omega=" + std::to_string(segment.omega) +
-             " delta=" + std::to_string(segment.steering_angle) +
-             " max_delta=" + std::to_string(cfg_->robot.max_steering_angle) +
-             " dt=" + std::to_string(segment.dt);
+           const char * reason = isTimeDiffDegenerate(segment.dt) ?
+             "时间间隔非有限或小于最小值" :
+             (!(cfg_->robot.wheelbase > 0.0) || !std::isfinite(cfg_->robot.wheelbase)) ?
+             "轴距无效" : "轨迹段计算结果含非有限值";
+           kinematics_detail = "原因=" + std::string(reason) +
+             "，段序号=" + std::to_string(i) +
+             "，起点=(" + std::to_string(teb.Pose(i).x()) + "," +
+               std::to_string(teb.Pose(i).y()) + "," +
+               std::to_string(teb.Pose(i).theta()) + ")" +
+             "，终点=(" + std::to_string(teb.Pose(i + 1).x()) + "," +
+               std::to_string(teb.Pose(i + 1).y()) + "," +
+               std::to_string(teb.Pose(i + 1).theta()) + ")" +
+             "，时间间隔=" + std::to_string(segment.dt) + "秒" +
+             "，轴距=" + std::to_string(cfg_->robot.wheelbase) + "米" +
+             "，纵向速度=" + std::to_string(segment.velocity) + "米/秒" +
+             "，角速度=" + std::to_string(segment.omega) + "弧度/秒" +
+             "，计算转角=" + std::to_string(segment.steering_angle) + "弧度";
+         } else if (!soft_violation_logged &&
+                    (segment.inplace_rotation ||
+                     std::abs(segment.steering_angle) > cfg_->robot.max_steering_angle + 1e-6)) {
+           // These are optimizer soft-constraint residuals, not command faults.
+           // Keep the first offending segment per cycle for a useful diagnosis.
+           soft_violation_logged = true;
+           RCLCPP_WARN_THROTTLE(logger_, *clock_, 2000,
+             "前轮转向轨迹软约束越界（不直接拒绝轨迹，最终指令仍需安全校验）："
+             "段序号=%d，原因=%s，纵向速度=%.6f米/秒（低速阈值=%.6f），"
+             "角速度=%.6f弧度/秒（静止角速度阈值=%.6f），"
+             "纵向位移=%.6f米，航向变化=%.6f弧度，"
+             "计算转角=%.6f弧度（%s），转角上限=%.6f弧度，时间间隔=%.6f秒",
+             i, segment.inplace_rotation ? "低速时仍有转向" : "计算转角超过上限",
+             segment.velocity, cfg_->robot.steering_min_speed,
+             segment.omega, cfg_->robot.steering_omega_epsilon,
+             segment.longitudinal_displacement, segment.delta_theta,
+             segment.steering_angle,
+             segment.stopped ? "低速时不反算转角" : "根据角速度和纵向速度反算",
+             cfg_->robot.max_steering_angle, segment.dt);
          }
        }
      }
@@ -2055,7 +2090,7 @@ void TebLocalPlannerROS::configure(
        planner_->clearPlanner();
        ++no_infeasible_plans_;
        time_last_infeasible_plan_ = clock_->now();
-       throw nav2_core::PlannerException("Front-steer trajectory kinematics invalid: " + kinematics_detail);
+       throw nav2_core::PlannerException("前轮转向优化轨迹数值无效：" + kinematics_detail);
      }
    }
 
