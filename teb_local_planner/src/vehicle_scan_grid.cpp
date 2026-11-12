@@ -524,7 +524,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
     const double dist_sq = dx * dx + dy * dy;
 
     if (dist_sq <= new_vehicle_distance_threshold_sq) {
-      RCLCPP_INFO_THROTTLE(
+      RCLCPP_DEBUG_THROTTLE(
         logger_, *(clock_), 2000,
         "车辆位姿回调: 发现附近车辆 (%.2f, %.2f)，距机器人: %.2f m",
         vehicle_pose.pose.position.x, vehicle_pose.pose.position.y, std::sqrt(dist_sq));
@@ -547,7 +547,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
       const double dist_sq = dx * dx + dy * dy;
 
       if (dist_sq > erase_vehicle_distance_threshold_sq) {
-        RCLCPP_INFO_THROTTLE(
+        RCLCPP_DEBUG_THROTTLE(
           logger_, *(clock_), 2000,
           "车辆位姿回调: 从全局列表移除车辆 (%.2f, %.2f)，距机器人: %.2f m",
           it->pose.position.x, it->pose.position.y, std::sqrt(dist_sq));
@@ -565,7 +565,7 @@ void TebLocalPlannerROS::vehiclePosesCallback(const geometry_msgs::msg::PoseArra
         const double dy = existing.pose.position.y - candidate.pose.position.y;
         const double dist_sq = dx * dx + dy * dy;
         if (dist_sq <= same_vehicle_threshold_sq_) {
-          RCLCPP_INFO_THROTTLE(
+          RCLCPP_DEBUG_THROTTLE(
             logger_, *(clock_), 2000,
             "车辆位姿回调: 候选车辆 (%.2f, %.2f) 与已有车辆 (%.2f, %.2f) 过近 (%.2f m)，不加入全局列表",
             candidate.pose.position.x, candidate.pose.position.y,

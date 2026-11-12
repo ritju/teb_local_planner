@@ -173,10 +173,12 @@
 
         # Trajectory
         teb_autosize: 1.0
-        dt_ref: 0.2
-        dt_hysteresis: 0.02
-        max_samples: 100
-        min_samples: 3
+        dt_ref: 0.3
+        dt_hysteresis: 0.05
+        max_samples: 60
+        min_samples: 5
+        global_plan_init_min_spacing: 0.10 # m; initialization seed only, 0 disables
+        global_plan_init_max_angle: 0.10 # rad; preserve turns/cusps
         global_plan_overwrite_orientation: false
         allow_init_with_backwards_motion: false
         max_global_plan_lookahead_dist: 5.0 # 3.0
@@ -204,7 +206,7 @@
         feasibility_check_lookahead_distance: 10.0
         publish_feedback: false
         wheel_base: 0.422
-        control_look_ahead_poses: 4
+        control_look_ahead_poses: 3 # about 0.9 s at dt_ref=0.3
         is_footprint_dynamic: true
         map_to_base_transform_max_age: 1.0
 
@@ -229,10 +231,38 @@
         # Robot
         max_vel_x: 0.5
         max_vel_theta: 0.4
-        acc_lim_x: 0.3
+        acc_lim_x: 0.3 # m/s^2; also limits normal front_steer_cmd speed slew
         acc_lim_theta: 0.6
         max_vel_x_backwards: 0.5
         safe_linear_speed_limit: 2.0
+        wheelbase: 0.854
+        rear_track: 0.84
+        front_steering_rear_drive: true
+        cmd_angle_instead_rotvel: false
+        max_steering_angle: 1.04719755
+        max_steering_rate: 0.5
+        max_steering_acceleration: 1.0
+        steering_min_speed: 0.03
+        no_inplace_rotation: true
+
+        # Front-steer/rear-drive controller interface.  The direct mode
+        # publishes the final command and requires fresh chassis feedback.
+        front_steer_drive_interface:
+          mode: front_steer_cmd
+          publish_twist: false # Suppress Controller Server Twist output in direct mode
+          steering_lag_speed_scaling: true # Slow continuously within yaw-error budget instead of repeated stops
+          # Documentation only: remap controller_server cmd_vel to this topic.
+          # Direct mode: chassis must not consume the controller_server cmd_vel.
+          legacy_command_topic: /cmd_vel
+          command_topic: /front_steer_cmd
+          state_topic: /front_steer_stu
+          state_timeout: 0.5
+          odom_to_state:
+            enabled: false # Simulation only; restart/reconfigure to change
+            topic: /odom   # Twist must be at rear axle center, in vehicle axes
+            wheel_radius: 0.0 # m; 0 = unavailable, publish diagnostic RPM as 0
+            angular_deadband: 0.01 # rad/s; standstill noise, linear deadband uses steering_min_speed
+          max_projection_omega_error: 0.2 # rad/s; reject static mismatch, align steering at zero speed for dynamic lag
 
         footprint_model: # types: "point", "circular", "two_circles", "line", "polygon"
           type: "polygon"
@@ -301,8 +331,8 @@
         costmap_converter_spin_thread: true
 
         # Optimization
-        no_inner_iterations: 5
-        no_outer_iterations: 4
+        no_inner_iterations: 4
+        no_outer_iterations: 3
         optimization_activate: true
         optimization_verbose: false
         penalty_epsilon: 0.05

@@ -26,6 +26,7 @@
   <depend>costmap_converter_msgs</depend> -->
 
   <depend>geometry_msgs</depend>
+  <depend>capella_ros_msg</depend>
   <depend>sensor_msgs</depend>
   <depend>tf2_sensor_msgs</depend>
   <depend>costmap_converter_msgs</depend>

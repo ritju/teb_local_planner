@@ -139,7 +139,7 @@ void TimedElasticBand::addPoseAndTimeDiff(double x, double y, double angle, doub
     addTimeDiff(dt,false);
   }
   else {
-    RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"),
+    RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleErrorMs,
                  "Method addPoseAndTimeDiff: Add one single Pose first. Timediff describes the time difference between last conf and given conf");
   }
   return;
@@ -154,7 +154,8 @@ void TimedElasticBand::addPoseAndTimeDiff(const PoseSE2& pose, double dt)
     addPose(pose,false);
     addTimeDiff(dt,false);
   } else {
-    RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"), "Method addPoseAndTimeDiff: Add one single Pose first. Timediff describes the time difference between last conf and given conf");
+    RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleErrorMs,
+                 "Method addPoseAndTimeDiff: Add one single Pose first. Timediff describes the time difference between last conf and given conf");
   }
   return;
 }
@@ -401,9 +402,9 @@ bool TimedElasticBand::initTrajectoryToGoal(const PoseSE2& start, const PoseSE2&
   }
   else // size!=0
   {
-    RCLCPP_WARN(rclcpp::get_logger("teb_local_planner"),
+    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleMs,
                  "Cannot init TEB between given configuration and goal, because TEB vectors are not empty or TEB is already initialized (call this function before adding states yourself)!");
-    RCLCPP_WARN(rclcpp::get_logger("teb_local_planner"),
+    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleMs,
                  "Number of TEB configurations: %d, Number of TEB timediffs: %d",(unsigned int) sizePoses(),(unsigned int) sizeTimeDiffs());
     return false;
   }
@@ -469,9 +470,9 @@ bool TimedElasticBand::initTrajectoryToGoal(const std::vector<geometry_msgs::msg
   }
   else // size!=0
   {
-    RCLCPP_WARN(rclcpp::get_logger("teb_local_planner"),
+    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleMs,
                  "Cannot init TEB between given configuration and goal, because TEB vectors are not empty or TEB is already initialized (call this function before adding states yourself)!");
-    RCLCPP_WARN(rclcpp::get_logger("teb_local_planner"),
+    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleMs,
                  "Number of TEB configurations: %d, Number of TEB timediffs: %d", sizePoses(), sizeTimeDiffs());
     return false;
   }
@@ -641,14 +642,16 @@ bool TimedElasticBand::isTrajectoryInsideRegion(double radius, double max_dist_b
 
         if (dist_sq > radius_sq)
         {
-            RCLCPP_INFO(rclcpp::get_logger("teb_local_planner"), "outside robot");
+            RCLCPP_DEBUG_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleMs,
+                                  "outside robot");
             return false;
         }
 
         // check behind the robot with a different distance, if specified (or >=0)
         if (max_dist_behind_robot >= 0 && dist_vec.dot(robot_orient) < 0 && dist_sq > max_dist_behind_robot_sq)
         {
-            RCLCPP_INFO(rclcpp::get_logger("teb_local_planner"), "outside robot behind");
+            RCLCPP_DEBUG_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleMs,
+                                  "outside robot behind");
             return false;
         }
 

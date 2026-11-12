@@ -204,8 +204,8 @@ bool TebLocalPlannerROS::pruneArrivedLockedCorner(
     arrived = true;
   }
 
-  RCLCPP_INFO_THROTTLE(
-    logger_, *clock_, 2000,
+  RCLCPP_DEBUG_THROTTLE(
+    logger_, *clock_, kTebLogThrottleMs,
     "[lock_corner] 锁定角点 closest_raw=%d closest=%d C=%d 角度=%.2f 弧长到角点=%.3f "
     "到达阈值=%.3f 已到达=%d 原因=%s",
     closest_raw, closest_idx, corner_idx, angle_deg, arc_to_c, arrive_dist,
@@ -218,8 +218,8 @@ bool TebLocalPlannerROS::pruneArrivedLockedCorner(
   global_plan_.erase(
     global_plan_.begin(),
     global_plan_.begin() + corner_idx + 1);
-  RCLCPP_INFO(
-    logger_,
+  RCLCPP_INFO_THROTTLE(
+    logger_, *clock_, kTebLogThrottleMs,
     "到达角点裁剪: 角点 idx=%d，删除 [0,%d]，剩余 %zu 点，弧长到角点=%.3f m",
     corner_idx, corner_idx, global_plan_.size(), arc_to_c);
   return true;
@@ -248,12 +248,14 @@ bool TebLocalPlannerROS::pruneArrivedLockedCorner(
        // Apply transform manually to avoid using global_pose.header.stamp
        tf2::doTransform(global_pose, robot, global_to_plan_transform);
      } catch (const tf2::ExtrapolationException& ex) {
-       RCLCPP_WARN(logger_, "路径裁剪 TF 查询失败 (ExtrapolationException): %s, 本周期跳过裁剪", ex.what());
+       RCLCPP_WARN_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+         "路径裁剪 TF 查询失败 (ExtrapolationException): %s, 本周期跳过裁剪", ex.what());
        // If TimePointZero fails with extrapolation, skip pruning this cycle rather than using future time
        // This prevents further extrapolation errors
        return true;
      } catch (const tf2::TransformException& ex) {
-       RCLCPP_WARN(logger_, "路径裁剪 TF 查询失败 (TransformException): %s, 本周期跳过裁剪", ex.what());
+       RCLCPP_WARN_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+         "路径裁剪 TF 查询失败 (TransformException): %s, 本周期跳过裁剪", ex.what());
        return true;
      }
      
@@ -470,7 +472,7 @@ bool TebLocalPlannerROS::selectGoalStandoffAlongPlan(
 
   if (footprint_free(original_goal)) {
     if (goal_standoff_latched_) {
-      RCLCPP_INFO(logger_, "终点退让: 原终点已空闲，解除锁定");
+      RCLCPP_INFO_THROTTLE(logger_, *clock_, kTebLogThrottleMs, "终点退让: 原终点已空闲，解除锁定");
     }
     goal_standoff_latched_ = false;
     goal_standoff_plan_idx_ = -1;
@@ -518,7 +520,7 @@ bool TebLocalPlannerROS::selectGoalStandoffAlongPlan(
       remember_standoff(matched_idx);
       return true;
     }
-    RCLCPP_INFO(logger_, "终点退让: 锁定点失效，重新沿路径后退");
+    RCLCPP_INFO_THROTTLE(logger_, *clock_, kTebLogThrottleMs, "终点退让: 锁定点失效，重新沿路径后退");
     goal_standoff_latched_ = false;
     goal_standoff_plan_idx_ = -1;
   }
@@ -537,15 +539,15 @@ bool TebLocalPlannerROS::selectGoalStandoffAlongPlan(
       continue;
     }
     remember_standoff(idx);
-    RCLCPP_INFO(
-      logger_,
+    RCLCPP_INFO_THROTTLE(
+      logger_, *clock_, kTebLogThrottleMs,
       "终点退让: 原终点被占用，锁定路径点 %d，沿路径后退 %.3f m (净空 %.3f m)",
       idx, arc, min_clearance);
     return true;
   }
 
   RCLCPP_WARN_THROTTLE(
-    logger_, *(clock_), 1000,
+    logger_, *(clock_), kTebLogThrottleMs,
     "终点退让: 原终点被占用，沿路径未找到净空 %.3f m 以上的空闲点",
     min_clearance);
   return false;
@@ -576,7 +578,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
    {
      if (global_plan.empty())
      {
-       RCLCPP_ERROR(logger_, "收到的路径长度为 0");
+       RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs, "收到的路径长度为 0");
        *current_goal_idx = 0;
        return false;
      }
@@ -589,8 +591,10 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
                    tf2::TimePointZero,
                    tf2::durationFromSec(0.5));
      } catch (const tf2::ExtrapolationException& ex) {
-       RCLCPP_WARN(logger_, "transformGlobalPlan: TF 查询失败 (ExtrapolationException): %s", ex.what());
-       RCLCPP_WARN(logger_, "transformGlobalPlan: 请求 %s → %s (TimePointZero) 失败，尝试使用最新可用时间", 
+       RCLCPP_WARN_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+         "transformGlobalPlan: TF 查询失败 (ExtrapolationException): %s", ex.what());
+       RCLCPP_WARN_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+         "transformGlobalPlan: 请求 %s → %s (TimePointZero) 失败，尝试使用最新可用时间",
                     plan_pose.header.frame_id.c_str(), global_frame.c_str());
        // Retry with TimePointZero but without specifying source time (uses latest available)
        try {
@@ -599,13 +603,15 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
                      plan_pose.header.frame_id,
                      tf2::TimePointZero);
        } catch (const tf2::TransformException& ex2) {
-         RCLCPP_ERROR(logger_, "transformGlobalPlan: 重试后仍无法获取坐标变换: %s", ex2.what());
+         RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs,
+           "transformGlobalPlan: 重试后仍无法获取坐标变换: %s", ex2.what());
          throw nav2_core::PlannerException(
            std::string("Could not transform the global plan to the frame of the controller: ") + ex2.what()
          );
        }
      } catch (const tf2::TransformException& ex) {
-       RCLCPP_ERROR(logger_, "transformGlobalPlan: TF 查询失败 (TransformException): %s", ex.what());
+       RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs,
+         "transformGlobalPlan: TF 查询失败 (TransformException): %s", ex.what());
        throw nav2_core::PlannerException(
          std::string("Could not transform the global plan to the frame of the controller: ") + ex.what()
        );
@@ -623,7 +629,8 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
        // Apply transform manually to avoid using global_pose.header.stamp
        tf2::doTransform(global_pose, robot_pose, global_to_plan_transform);
      } catch (const tf2::ExtrapolationException& ex) {
-       RCLCPP_WARN(logger_, "transformGlobalPlan: 变换机器人位姿失败 (ExtrapolationException): %s, 正在重试", ex.what());
+       RCLCPP_WARN_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+         "transformGlobalPlan: 变换机器人位姿失败 (ExtrapolationException): %s, 正在重试", ex.what());
        // Retry with TimePointZero but without specifying source time
        try {
          geometry_msgs::msg::TransformStamped global_to_plan_transform = tf_->lookupTransform(
@@ -632,13 +639,15 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
                      tf2::TimePointZero);
          tf2::doTransform(global_pose, robot_pose, global_to_plan_transform);
        } catch (const tf2::TransformException& ex2) {
-         RCLCPP_ERROR(logger_, "transformGlobalPlan: 重试后仍无法变换机器人位姿: %s", ex2.what());
+         RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs,
+           "transformGlobalPlan: 重试后仍无法变换机器人位姿: %s", ex2.what());
          throw nav2_core::PlannerException(
            std::string("Could not transform the global plan to the frame of the controller: ") + ex2.what()
          );
        }
      } catch (const tf2::TransformException& ex) {
-       RCLCPP_ERROR(logger_, "transformGlobalPlan: 变换机器人位姿失败 (TransformException): %s", ex.what());
+       RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs,
+         "transformGlobalPlan: 变换机器人位姿失败 (TransformException): %s", ex.what());
        throw nav2_core::PlannerException(
          std::string("Could not transform the global plan to the frame of the controller: ") + ex.what()
        );
@@ -1001,8 +1010,8 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
           back_clear = std::min(back_clear, safe_arc - occ_arc);
         }
       }
-      RCLCPP_INFO_THROTTLE(
-        logger_, *(clock_), 2000,
+      RCLCPP_DEBUG_THROTTLE(
+        logger_, *(clock_), kTebLogThrottleMs,
         "安全终点 marker: idx=%d pose=(%.3f, %.3f) front_clear=%.3f/%.3f "
         "back_clear=%.3f/%.3f frame=%s",
         safe_distance_terminal_idx, safe_terminal_pose.pose.position.x,
@@ -1042,8 +1051,8 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
       publish_decision_marker(
         occupied_goal_stop_marker_pub_, "last_occupied_goal_stop",
         &occupied_goal_stop_global, 1.0F, 0.15F, 0.1F);
-      RCLCPP_INFO_THROTTLE(
-        logger_, *(clock_), 2000,
+      RCLCPP_DEBUG_THROTTLE(
+        logger_, *(clock_), kTebLogThrottleMs,
         "占用终点停车点 marker: goal_dist=%.3f m stop_dist=%.3f m "
         "pose=(%.3f, %.3f) frame=%s",
         occupied_goal_dist_m_, cfg_->trajectory.last_occupied_goal_dist,
@@ -1082,8 +1091,8 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
     }
 
     i = end_idx + 1;
-    RCLCPP_INFO_THROTTLE(
-      logger_, *(clock_), 2000,
+    RCLCPP_DEBUG_THROTTLE(
+      logger_, *(clock_), kTebLogThrottleMs,
       "[transformGlobalPlan]: 前视=%.3f 跨度上限=%.3f 裁剪长度=%.3f 角点=%d "
       "在视界内=%d 锁定=%d 行终点=%d 最后占用=%d 窗口终点=%d 裁剪剩余行=%d "
       "裁剪从=%d 裁剪到=%d",
@@ -1151,19 +1160,23 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
    }
    catch(tf2::LookupException& ex)
    {
-     RCLCPP_ERROR(logger_, "无可用坐标变换 (LookupException): %s\n", ex.what());
+     RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs,
+       "无可用坐标变换 (LookupException): %s\n", ex.what());
      return false;
    }
    catch(tf2::ConnectivityException& ex)
    {
-     RCLCPP_ERROR(logger_, "TF 连通性错误 (ConnectivityException): %s\n", ex.what());
+     RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs,
+       "TF 连通性错误 (ConnectivityException): %s\n", ex.what());
      return false;
    }
    catch(tf2::ExtrapolationException& ex)
    {
-     RCLCPP_ERROR(logger_, "TF 外推错误 (ExtrapolationException): %s\n", ex.what());
+     RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs,
+       "TF 外推错误 (ExtrapolationException): %s\n", ex.what());
      if (global_plan.size() > 0)
-       RCLCPP_ERROR(logger_, "全局坐标系: %s，路径坐标系点数 %d: %s\n", global_frame.c_str(), (unsigned int)global_plan.size(), global_plan[0].header.frame_id.c_str());
+       RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs,
+         "全局坐标系: %s，路径坐标系点数 %d: %s\n", global_frame.c_str(), (unsigned int)global_plan.size(), global_plan[0].header.frame_id.c_str());
  
      return false;
    }

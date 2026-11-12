@@ -37,7 +37,7 @@
  *********************************************************************/
 
 #include "teb_local_planner/obstacles.h"
-// #include "teb_local_planner/misc.h"
+#include "teb_local_planner/misc.h"
 #include <rclcpp/logging.hpp>
 #include <rclcpp/logger.hpp>
 
@@ -59,7 +59,7 @@ void PolygonObstacle::calcCentroid()
   if (vertices_.empty())
   {
     centroid_.setConstant(NAN);
-    RCLCPP_WARN(rclcpp::get_logger("teb_local_planner"),
+    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleMs,
                 "PolygonObstacle::calcCentroid(): number of vertices is empty. the resulting centroid is a vector of NANs.");
     return;
   }
@@ -171,7 +171,7 @@ Eigen::Vector2d PolygonObstacle::getClosestPoint(const Eigen::Vector2d& position
     }
   }
 
-  RCLCPP_WARN(rclcpp::get_logger("teb_local_planner"),
+  RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleMs,
               "PolygonObstacle::getClosestPoint() cannot find any closest point. Polygon ill-defined?");
   return Eigen::Vector2d::Zero(); // todo: maybe boost::optional?
 }

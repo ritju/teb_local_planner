@@ -57,6 +57,8 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "dt_hysteresis", rclcpp::ParameterValue(trajectory.dt_hysteresis));
   declare_parameter_if_not_declared(nh, name + "." + "min_samples", rclcpp::ParameterValue(trajectory.min_samples));
   declare_parameter_if_not_declared(nh, name + "." + "max_samples", rclcpp::ParameterValue(trajectory.max_samples));
+  declare_parameter_if_not_declared(nh, name + ".global_plan_init_min_spacing", rclcpp::ParameterValue(trajectory.global_plan_init_min_spacing));
+  declare_parameter_if_not_declared(nh, name + ".global_plan_init_max_angle", rclcpp::ParameterValue(trajectory.global_plan_init_max_angle));
   declare_parameter_if_not_declared(nh, name + "." + "global_plan_overwrite_orientation", rclcpp::ParameterValue(trajectory.global_plan_overwrite_orientation));
   declare_parameter_if_not_declared(nh, name + "." + "allow_init_with_backwards_motion", rclcpp::ParameterValue(trajectory.allow_init_with_backwards_motion));
   declare_parameter_if_not_declared(nh, name + "." + "global_plan_viapoint_sep", rclcpp::ParameterValue(trajectory.global_plan_viapoint_sep));
@@ -478,6 +480,8 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "dt_hysteresis", trajectory.dt_hysteresis, trajectory.dt_hysteresis);
   nh->get_parameter_or(name + "." + "min_samples", trajectory.min_samples, trajectory.min_samples);
   nh->get_parameter_or(name + "." + "max_samples", trajectory.max_samples, trajectory.max_samples);
+  nh->get_parameter_or(name + ".global_plan_init_min_spacing", trajectory.global_plan_init_min_spacing, trajectory.global_plan_init_min_spacing);
+  nh->get_parameter_or(name + ".global_plan_init_max_angle", trajectory.global_plan_init_max_angle, trajectory.global_plan_init_max_angle);
   nh->get_parameter_or(name + "." + "global_plan_overwrite_orientation", trajectory.global_plan_overwrite_orientation, trajectory.global_plan_overwrite_orientation);
   nh->get_parameter_or(name + "." + "allow_init_with_backwards_motion", trajectory.allow_init_with_backwards_motion, trajectory.allow_init_with_backwards_motion);
   nh->get_parameter_or(name + "." + "global_plan_viapoint_sep", trajectory.global_plan_viapoint_sep, trajectory.global_plan_viapoint_sep);
@@ -1085,6 +1089,10 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.teb_autosize = parameter.as_double();
       } else if (name == node_name + ".dt_ref") {
         trajectory.dt_ref = parameter.as_double();
+      } else if (name == node_name + ".global_plan_init_min_spacing") {
+        trajectory.global_plan_init_min_spacing = parameter.as_double();
+      } else if (name == node_name + ".global_plan_init_max_angle") {
+        trajectory.global_plan_init_max_angle = parameter.as_double();
       } else if (name == node_name + ".dt_hysteresis") {
         trajectory.dt_hysteresis = parameter.as_double();
       } else if (name == node_name + ".global_plan_viapoint_sep") {

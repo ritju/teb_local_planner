@@ -44,13 +44,6 @@ namespace teb_local_planner
 using detail::normalizeEdgeModeEnv;
 
 namespace {
-rclcpp::Clock & edgeFollowingLogClock()
-{
-  
-  static rclcpp::Clock clock(RCL_STEADY_TIME);
-  return clock;
-}
-
 double pointToSegmentDistance2d(
   const Eigen::Vector2d& query_point,
   const Eigen::Vector2d& segment_start,
@@ -295,7 +288,7 @@ bool segmentsCloseForFusion(
   const double primary_segment_length = primary_direction.norm();
   const double reference_segment_length = reference_direction.norm();
   if (primary_segment_length < 1e-6 || reference_segment_length < 1e-6) {
-    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teb_local_planner"), edgeFollowingLogClock(), 2000,
+    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), 2000,
                          "[segmentsCloseForFusion] Edge following:" 
                          "贴边参考线和墙线或路沿特征长度太短, 墙线或路沿特征长度: %.2f, 贴边参考线长度: %.2f", 
                          primary_segment_length, reference_segment_length);
@@ -306,7 +299,7 @@ bool segmentsCloseForFusion(
   const double angle_degrees =
     std::acos(std::min(1.0, cosine_alignment)) * 180.0 / M_PI;
   if (angle_degrees > maximum_angle_degrees) {
-    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teb_local_planner"), edgeFollowingLogClock(), 2000,
+    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), 2000,
                          "[segmentsCloseForFusion] Edge following:"
                          "贴边参考线和墙线或路沿特征角度太大: %.2f, 最大允许角度: %.2f", 
                          angle_degrees, maximum_angle_degrees);
@@ -317,13 +310,13 @@ bool segmentsCloseForFusion(
     fusion_primary_segment_end,
     reference_segment_start,
     reference_segment_end);
-  RCLCPP_INFO_THROTTLE(rclcpp::get_logger("teb_local_planner"), edgeFollowingLogClock(), 2000,
+  RCLCPP_DEBUG_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), 2000,
                        "[segmentsCloseForFusion] Edge following:"
                        "贴边参考线与墙线或路沿特征距离: %.2f, 最大允许距离: %.2f",
                        segment_separation_meters,
                        maximum_segment_separation_meters);
   if (segment_separation_meters > maximum_segment_separation_meters) {
-    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teb_local_planner"), edgeFollowingLogClock(), 2000,
+    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), 2000,
                          "[segmentsCloseForFusion] Edge following:"
                          "贴边参考线和墙线或路沿特征距离太大: %.2f, 最大允许距离: %.2f",
                          segment_separation_meters, maximum_segment_separation_meters);
@@ -341,7 +334,7 @@ void TebLocalPlannerROS::clearActiveReferencePair()
   has_active_reference_pair_ = false;
   active_mission_segment_ = nav_msgs::msg::Path();
   active_reference_path_ = nav_msgs::msg::Path();
-  RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000, "未找到匹配的贴边参考路径，清空贴边参考路径");
+  RCLCPP_DEBUG_THROTTLE(logger_, *clock_, 2000, "未找到匹配的贴边参考路径，清空贴边参考路径");
 }
 
 void TebLocalPlannerROS::refreshActiveReferencePair()
@@ -350,7 +343,7 @@ void TebLocalPlannerROS::refreshActiveReferencePair()
   if (paired_mission_and_reference_path_cache_.paths.size() < 2 ||
     removed_plan_cache_.poses.empty())
   {
-    RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000, "贴边参考路径缓存或多点路径为空，清空贴边参考路径");
+    RCLCPP_DEBUG_THROTTLE(logger_, *clock_, 2000, "贴边参考路径缓存或多点路径为空，清空贴边参考路径");
     clearActiveReferencePair();
     return;
   }
@@ -533,7 +526,7 @@ bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
     if (paths_near_edge_miss_count_ >= cfg_->wall_line.paths_near_edge_exit_miss_count) {
       paths_near_edge_active_ = false;
     }
-    RCLCPP_INFO_THROTTLE(
+    RCLCPP_DEBUG_THROTTLE(
       logger_, *clock_, 2000,
       "Edge following: removed_plan front_pose 未匹配到 mission 段, miss=%d",
       paths_near_edge_miss_count_);
@@ -547,7 +540,7 @@ bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
     if (paths_near_edge_miss_count_ >= cfg_->wall_line.paths_near_edge_exit_miss_count) {
       paths_near_edge_active_ = false;
     }
-    RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000, "Edge following: 激活 mission 段长度太短");
+    RCLCPP_DEBUG_THROTTLE(logger_, *clock_, 2000, "Edge following: 激活 mission 段长度太短");
     return paths_near_edge_active_;
   }
 
@@ -569,7 +562,7 @@ bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
     max_distance_to_mission,
     mean_distance_to_mission,
     overlap_arc_length_to_mission);
-  RCLCPP_INFO_THROTTLE(
+  RCLCPP_DEBUG_THROTTLE(
     logger_, *clock_, 2000,
     "Edge following: transformed_plan 到 mission 折线 max=%.2f mean=%.2f overlap=%.2f "
     "(距阈 %.2f 重叠阈 %.2f)",
@@ -592,7 +585,7 @@ bool TebLocalPlannerROS::shouldRunEdgeFollowingForTransformedPlan(
       paths_near_edge_active_ = false;
     }
   }
-  RCLCPP_INFO_THROTTLE(
+  RCLCPP_DEBUG_THROTTLE(
     logger_, *clock_, 2000,
     "Edge following: mission 距离门控 hit=%d miss=%d active=%s",
     paths_near_edge_hit_count_,
@@ -768,7 +761,7 @@ bool TebLocalPlannerROS::trySelectWallSegmentFromCandidates(
     }
   }
   if (!found_valid_wall_segment) {
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[trySelectWallSegmentFromCandidates] Edge following:"
+    RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "[trySelectWallSegmentFromCandidates] Edge following:"
                          "没有找到合适的墙线");
     return false;
   }
@@ -778,7 +771,7 @@ bool TebLocalPlannerROS::trySelectWallSegmentFromCandidates(
     best_candidate_wall_end_position.x, best_candidate_wall_end_position.y);
   minimum_average_distance_to_plan = best_minimum_average_distance;
   robot_perpendicular_distance_to_edge_line = best_robot_perpendicular_distance_to_wall;
-  RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[trySelectWallSegmentFromCandidates] Edge following:"
+  RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "[trySelectWallSegmentFromCandidates] Edge following:"
                       "选择的墙线起点: (%.2f, %.2f), 终点: (%.2f, %.2f), 平均距离: %.2f, 机器人到墙线距离: %.2f", 
                        selected_edge_segment_start.x(), selected_edge_segment_start.y(), 
                        selected_edge_segment_end.x(), selected_edge_segment_end.y(), 
@@ -981,7 +974,7 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
             mean_distance_to_reference,
             overlap_arc_length_to_reference))
       {
-        RCLCPP_INFO_THROTTLE(
+        RCLCPP_DEBUG_THROTTLE(
           logger_, *(clock_), 2000,
           "[trySelectBestReferencePathFromList] Edge following: "
           "路径到参考折线 max=%.2f mean=%.2f overlap=%.2f (距阈 %.2f 重叠阈 %.2f)",
@@ -1022,7 +1015,7 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
         continue;
       }
 
-      RCLCPP_INFO_THROTTLE(
+      RCLCPP_DEBUG_THROTTLE(
         logger_, *(clock_), 2000,
         "[trySelectBestReferencePathFromList] Edge following: 局部贴边段 "
         "(%.2f, %.2f)->(%.2f, %.2f), path->ref max=%.2f mean=%.2f overlap=%.2f",
@@ -1039,7 +1032,7 @@ bool TebLocalPlannerROS::trySelectBestReferencePathFromList(
         found_any_matching_reference_segment = true;
       }
     } catch (const tf2::TransformException& transform_exception) {
-      RCLCPP_INFO_THROTTLE(
+      RCLCPP_DEBUG_THROTTLE(
         logger_, *(clock_), 2000, "[trySelectBestReferencePathFromList] Edge following: 贴边参考线TF跳过: %s", 
         transform_exception.what());
       continue;
@@ -1130,7 +1123,7 @@ void TebLocalPlannerROS::applyWallLineSegmentAndVisual(
   wall_line_points_.push_back(wall_line_segment_start);
   wall_line_points_.push_back(wall_line_segment_end);
   updateScheduledWallDistWeights(robot_perpendicular_distance_to_edge_line);
-  RCLCPP_INFO_THROTTLE(
+  RCLCPP_DEBUG_THROTTLE(
     logger_, *(clock_), 2000,
     "[applyWallLineSegmentAndVisual] Edge following: 机器人到贴边线距离 %.3f m, 贴边权重: %.2f, 侧隙Pull: %.2f",
     robot_perpendicular_distance_to_edge_line, cfg_->optim.weight_wall_line_dist,
@@ -1208,7 +1201,7 @@ void TebLocalPlannerROS::mergeFusionPrimaryWithReference(
     fusion_primary_lock_until_ =
       current_clock_time +
       rclcpp::Duration::from_seconds(fusion_lock_duration_s);
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, 
+    RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, 
                          "[mergeFusionPrimaryWithReference] Edge following:"
                          "贴边参考线和墙线或路沿特征接近");
   }
@@ -1228,7 +1221,7 @@ void TebLocalPlannerROS::mergeFusionPrimaryWithReference(
   }
 
   if (use_primary_segment) {
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, 
+    RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, 
                          "[mergeFusionPrimaryWithReference] Edge following:"
                          "使用提取的墙线或是路沿作为贴边路径");
     applyWallLineSegmentAndVisual(
@@ -1248,7 +1241,7 @@ void TebLocalPlannerROS::mergeFusionPrimaryWithReference(
 
   // 4) 主来源不可用时，回退到参考线。
   if (reference_segment_valid) {
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, 
+    RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, 
                          "[mergeFusionPrimaryWithReference] Edge following:"
                          "使用贴边参考线作为贴边路径");
     applyWallLineSegmentAndVisual(
@@ -1273,7 +1266,7 @@ void TebLocalPlannerROS::mergeFusionPrimaryWithReference(
       reference_line_last_success_time_.nanoseconds() != 0u &&
       (current_clock_time - reference_line_last_success_time_).seconds() <
         reference_no_valid_path_timeout_seconds) {
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, 
+    RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, 
                          "[mergeFusionPrimaryWithReference] Edge following:"
                          "使用缓存的贴边参考线作为贴边路径");
     applyWallLineSegmentAndVisual(
@@ -1305,7 +1298,7 @@ void TebLocalPlannerROS::exitEdgeFollowingMode(
     costmap_ros_->getGlobalFrameID() : cfg_->map_frame;
   clearEdgeMonitorCorridors(map_frame);
   switchParameterMode(false);
-  RCLCPP_INFO_THROTTLE(
+  RCLCPP_DEBUG_THROTTLE(
     logger_,
     *(clock_),
     2000,
@@ -1358,7 +1351,7 @@ void TebLocalPlannerROS::applyReferenceLineHoldFallbackOrExit(
       reference_line_last_success_time_.nanoseconds() != 0u &&
       (current_clock_time - reference_line_last_success_time_).seconds() <
         reference_no_valid_path_timeout_s) {
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+    RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000,
       "[applyReferenceLineHoldFallbackOrExit] Edge following: 使用缓存的参考路径作为贴边路径"
       "参考路径起点: (%.2f, %.2f), 参考路径终点: (%.2f, %.2f), 参考路径最小平均距离: %.2f, 参考路径与机器人垂直距离: %.2f",
       reference_line_hold_[0].x(), reference_line_hold_[0].y(),
@@ -1409,7 +1402,7 @@ void TebLocalPlannerROS::updateReferenceLineVec(
     selected_robot_dist_to_edge);
   const rclcpp::Time current_clock_time = clock_->now();
   if (selected_reference_ok) {
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[updateReferenceLineVec] Edge following: 选择参考路径起点: (%.2f, %.2f),"
+    RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "[updateReferenceLineVec] Edge following: 选择参考路径起点: (%.2f, %.2f),"
                         "参考路径终点: (%.2f, %.2f), 参考路径最小平均距离: %.2f, 参考路径与机器人垂直距离: %.2f",
                         selected_reference_segment_start.x(), selected_reference_segment_start.y(), 
                         selected_reference_segment_end.x(), selected_reference_segment_end.y(), 
@@ -1470,7 +1463,7 @@ void TebLocalPlannerROS::runEdgeFollowingPathUpdate(
     if (remaining_global_arc_m < remaining_exit_length) {
       paths_near_edge_hit_count_ = 0;
       paths_near_edge_active_ = false;
-      RCLCPP_INFO_THROTTLE(
+      RCLCPP_DEBUG_THROTTLE(
         logger_, *clock_, 2000,
         "Edge following: 全局路径剩余弧长 %.2f < max_global_plan_lookahead_dist %.2f, 退出贴边模式",
         remaining_global_arc_m,

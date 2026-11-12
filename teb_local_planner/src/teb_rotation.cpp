@@ -98,8 +98,8 @@ bool TebLocalPlannerROS::checkMajorArcStagnationUnlock(double yaw_goal)
     return false;
   }
 
-  RCLCPP_WARN(
-    logger_,
+  RCLCPP_WARN_THROTTLE(
+    logger_, *clock_, kTebLogThrottleMs,
     "优弧停滞解锁 rem=%.3f rad drop=%.3f rad dist=%.3f m dt=%.2f s rotdir=%s",
     rem, rem_drop, dist, elapsed,
     (major_arc_rotdir_ == RotType::left) ? "left" : "right");
@@ -264,7 +264,7 @@ std::vector<geometry_msgs::msg::PoseStamped> TebLocalPlannerROS::buildMajorArcOr
       if (robot_dist <= rotation_limit_distance)
       {
         RCLCPP_INFO_THROTTLE(
-          logger_, *clock_, 500,
+          logger_, *clock_, kTebLogThrottleMs,
           "原地转: shouldRotateInPlace=false，rotation_limit 生效 "
           "(dt=%.2f <= %.2f, robot_dist=%.3f <= %.3f)",
           elapsed, rotation_limit_duration, robot_dist, rotation_limit_distance);
@@ -312,7 +312,7 @@ std::vector<geometry_msgs::msg::PoseStamped> TebLocalPlannerROS::buildMajorArcOr
       }
       was_inplace_rotation_active_ = false;
       RCLCPP_INFO_THROTTLE(
-        logger_, *clock_, 500,
+        logger_, *clock_, kTebLogThrottleMs,
         "原地转: shouldRotateInPlace=false，横向距离否决 (lateral=%.3f > %.3f m)",
         min_lateral, max_lateral);
       return false;
@@ -346,7 +346,7 @@ std::vector<geometry_msgs::msg::PoseStamped> TebLocalPlannerROS::buildMajorArcOr
     stampRotationAnchor();
     was_inplace_rotation_active_ = false;
     RCLCPP_INFO_THROTTLE(
-      logger_, *clock_, 500,
+      logger_, *clock_, kTebLogThrottleMs,
       "原地转: shouldRotateInPlace=false，碰障预检未通过 |dtheta|=%.3f rad、w_odom=%.3f、v_xy=%.3f "
       "(原地扫掠=%s、路径采样=%s)",
       std::abs(angular_distance), velocity.angular.z, std::abs(velocity.linear.x),
@@ -358,7 +358,7 @@ std::vector<geometry_msgs::msg::PoseStamped> TebLocalPlannerROS::buildMajorArcOr
     }
     was_inplace_rotation_active_ = true;
     RCLCPP_INFO_THROTTLE(
-      logger_, *clock_, 500,
+      logger_, *clock_, kTebLogThrottleMs,
       "原地转: shouldRotateInPlace=true，碰障预检通过 |dtheta|=%.3f rad、v_xy=%.3f、w_odom=%.3f、forward_lookahead=%.2f m",
       std::abs(angular_distance), std::abs(velocity.linear.x), velocity.angular.z,
       cfg_->rotation.forward_lookahead_distance);
@@ -637,7 +637,7 @@ bool TebLocalPlannerROS::computeRotateToHeadingCommand(
   }
 
   RCLCPP_INFO_THROTTLE(
-    logger_, *clock_, 500,
+    logger_, *clock_, kTebLogThrottleMs,
     "原地转: 两旋转方向碰障预检均失败（computeRotateToHeadingCommand），|dtheta|=%.3f rad，use_clockwise=%d，w_odom=%.3f",
     abs_angular_distance,
     use_clockwise ? 1 : 0,

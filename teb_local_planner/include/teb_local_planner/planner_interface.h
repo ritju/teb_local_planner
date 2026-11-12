@@ -61,6 +61,7 @@
 #include <geometry_msgs/msg/twist_stamped.hpp>
 
 // this package
+#include "teb_local_planner/misc.h"
 #include "teb_local_planner/pose_se2.h"
 #include "teb_local_planner/visualization.h"
 
@@ -171,7 +172,7 @@ public:
    * @param dir This parameter might be RotType::left (prefer left), RotType::right (prefer right) or RotType::none (prefer none)
    */
   virtual void setPreferredTurningDir(RotType dir) {
-      RCLCPP_WARN(rclcpp::get_logger("teb_local_planner"),
+      RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleMs,
                   "setPreferredTurningDir() not implemented for this planner.");}
     
   /**

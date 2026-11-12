@@ -92,6 +92,8 @@
 #include "capella_ros_msg/msg/lane_center_paths.hpp"
 #include "geometry_msgs/msg/pose_array.hpp"
 #include "garage_utils_msgs/msg/polygons.hpp"
+#include "capella_ros_msg/msg/front_steer_drive_cmd.hpp"
+#include "capella_ros_msg/msg/front_steer_drive_stu.hpp"
 #include <limits>
 #include <atomic>
 #include <chrono>
@@ -657,6 +659,18 @@
     */
    void applyFrontSteeringCommandLimits(double& vx, double& vy, double& omega);
 
+   /** Publish the final front-steer command (a no-op in legacy cmd_vel mode). */
+   bool publishFrontSteerCommand(double linear_x, double steering_angle, double omega = 0.0);
+   /** Cache and validate the chassis feedback received from /front_steer_stu. */
+   void frontSteerDriveStuCallback(
+     const capella_ros_msg::msg::FrontSteerDriveStu::ConstSharedPtr msg);
+   void frontSteerOdomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr msg);
+   /** Return the fresh chassis velocity converted to TEB's v/omega representation. */
+   bool getFreshFrontSteerVelocity(geometry_msgs::msg::Twist & velocity);
+   void selectFrontSteerVelocity(const geometry_msgs::msg::Twist & nav2_velocity);
+   /** Validate the configured interface mode and create its ROS entities. */
+   void initializeFrontSteerDriveInterface(nav2_util::LifecycleNode::SharedPtr node);
+
    void publishFrontSteeringTopics();
    void refreshOptimizedFrontSteeringCache();
  
@@ -852,6 +866,48 @@
    double front_steering_delta_rate_{0.0};
    double front_steering_rear_left_{0.0};
    double front_steering_rear_right_{0.0};
+
+   // Front-steer drive interface.  The planner continues to expose Nav2's
+   // TwistStamped API; these entities are only used by the direct interface.
+   std::string front_steer_interface_mode_{"front_steer_cmd"};
+   std::string front_steer_command_topic_{"/front_steer_cmd"};
+   std::string front_steer_state_topic_{"/front_steer_stu"};
+   std::string legacy_command_topic_{"/cmd_vel"};
+   double front_steer_state_timeout_{0.5};
+   bool front_steer_odom_enabled_{false};
+   std::string front_steer_odom_topic_{"/odom"};
+   double front_steer_odom_wheel_radius_{0.0};
+   double front_steer_odom_angular_deadband_{0.01};
+   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr front_steer_odom_sub_;
+   rclcpp::Publisher<capella_ros_msg::msg::FrontSteerDriveStu>::SharedPtr
+     front_steer_sim_state_pub_;
+   rclcpp::Publisher<capella_ros_msg::msg::FrontSteerDriveCmd>::SharedPtr
+     front_steer_cmd_pub_;
+   rclcpp::Subscription<capella_ros_msg::msg::FrontSteerDriveStu>::SharedPtr
+     front_steer_stu_sub_;
+   // Standard ROS messages for rqt; topic names are derived from the configured interfaces.
+   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr front_steer_cmd_linear_debug_pub_;
+   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr front_steer_cmd_angle_debug_pub_;
+   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr front_steer_cmd_twist_debug_pub_;
+   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr front_steer_stu_linear_debug_pub_;
+   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr front_steer_stu_angle_debug_pub_;
+   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr front_steer_stu_wheel_debug_pub_;
+   capella_ros_msg::msg::FrontSteerDriveStu front_steer_stu_;
+   std::chrono::steady_clock::time_point front_steer_stu_receive_time_;
+   std::chrono::steady_clock::time_point front_steer_last_publish_time_;
+   bool front_steer_publish_valid_{false};
+   double front_steer_published_linear_{0.0};
+   double front_steer_published_angle_{0.0};
+   double front_steer_published_rate_{0.0};
+   double front_steer_control_dt_{0.0};
+   bool front_steer_control_dt_prepared_{false};
+   bool front_steer_aligning_{false};
+   bool front_steer_lag_speed_scaling_{false};
+   double front_steer_lag_speed_limit_{std::numeric_limits<double>::infinity()};
+   double front_steer_projection_tolerance_{0.2};
+   bool front_steer_stu_valid_{false};
+   std::mutex front_steer_stu_mutex_;
+   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr front_steer_params_handler_;
    
    std::vector<geometry_msgs::msg::Point> footprint_spec_; //!< Store the footprint of the robot 
    double robot_inscribed_radius_; //!< The radius of the inscribed circle of the robot (collision possible)
@@ -1238,6 +1294,7 @@
    rclcpp::Time backward_exit_window_start_{0, 0, RCL_ROS_TIME};
 
    friend struct TebSplitModuleTestAccess;
+   friend struct FrontSteerInterfaceTestAccess;
 
  protected:
    // Dynamic parameters handler

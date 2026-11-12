@@ -40,6 +40,7 @@
 #include <tf2_ros/buffer_interface.h>
 
 #include "teb_local_planner/optimal_planner.h"
+#include "teb_local_planner/plan_initialization.hpp"
 
 #include <map>
 // g2o custom edges and vertices for the TEB planner
@@ -287,10 +288,23 @@ void TebOptimalPlanner::setVelocityGoal(const geometry_msgs::msg::Twist& vel_goa
 bool TebOptimalPlanner::plan(const std::vector<geometry_msgs::msg::PoseStamped>& initial_plan, const geometry_msgs::msg::Twist* start_vel, bool free_goal_vel)
 {    
   TEB_ASSERT_MSG(initialized_, "Call initialize() first.");
+  const auto initialize_band = [&]() {
+      if (cfg_->robot.front_steering_rear_drive && cfg_->trajectory.global_plan_init_min_spacing > 0.0) {
+        const auto sampled = sampleInitializationPlan(initial_plan,
+          cfg_->trajectory.global_plan_init_min_spacing, cfg_->trajectory.global_plan_init_max_angle);
+        RCLCPP_DEBUG(node_->get_logger(), "TEB initialization seed: %zu -> %zu poses",
+          initial_plan.size(), sampled.size());
+        return teb_.initTrajectoryToGoal(sampled, cfg_->robot.max_vel_x, cfg_->robot.max_vel_theta,
+          cfg_->trajectory.global_plan_overwrite_orientation, cfg_->trajectory.min_samples,
+          cfg_->trajectory.allow_init_with_backwards_motion);
+      }
+      return teb_.initTrajectoryToGoal(initial_plan, cfg_->robot.max_vel_x, cfg_->robot.max_vel_theta,
+        cfg_->trajectory.global_plan_overwrite_orientation, cfg_->trajectory.min_samples,
+        cfg_->trajectory.allow_init_with_backwards_motion);
+    };
   if (!teb_.isInit())
   {
-    teb_.initTrajectoryToGoal(initial_plan, cfg_->robot.max_vel_x, cfg_->robot.max_vel_theta, cfg_->trajectory.global_plan_overwrite_orientation,
-      cfg_->trajectory.min_samples, cfg_->trajectory.allow_init_with_backwards_motion);
+    initialize_band();
   }
   else // warm start
   {
@@ -304,8 +318,7 @@ bool TebOptimalPlanner::plan(const std::vector<geometry_msgs::msg::PoseStamped>&
     {
       RCLCPP_DEBUG(node_->get_logger(), "New goal: distance to existing goal is higher than the specified threshold. Reinitalizing trajectories.");
       teb_.clearTimedElasticBand();
-      teb_.initTrajectoryToGoal(initial_plan, cfg_->robot.max_vel_x, cfg_->robot.max_vel_theta, cfg_->trajectory.global_plan_overwrite_orientation,
-        cfg_->trajectory.min_samples, cfg_->trajectory.allow_init_with_backwards_motion);
+      initialize_band();
     }
   }
   if (start_vel)
@@ -364,7 +377,8 @@ bool TebOptimalPlanner::buildGraph(double weight_multiplier)
 {
   if (!optimizer_->edges().empty() || !optimizer_->vertices().empty())
   {
-    RCLCPP_WARN(node_->get_logger(), "Cannot build graph, because it is not empty. Call graphClear()!");
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), kTebLogThrottleMs,
+                         "Cannot build graph, because it is not empty. Call graphClear()!");
     return false;
   }
 
@@ -438,14 +452,16 @@ bool TebOptimalPlanner::optimizeGraph(int no_iterations,bool clear_after)
 {
   if (cfg_->robot.max_vel_x<0.01)
   {
-    RCLCPP_WARN(node_->get_logger(), "optimizeGraph(): Robot Max Velocity is smaller than 0.01m/s. Optimizing aborted...");
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), kTebLogThrottleMs,
+                         "optimizeGraph(): Robot Max Velocity is smaller than 0.01m/s. Optimizing aborted...");
     if (clear_after) clearGraph();
     return false;	
   }
   
   if (!teb_.isInit() || teb_.sizePoses() < cfg_->trajectory.min_samples)
   {
-    RCLCPP_WARN(node_->get_logger(), "optimizeGraph(): TEB is empty or has too less elements. Skipping optimization.");
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), kTebLogThrottleMs,
+                         "optimizeGraph(): TEB is empty or has too less elements. Skipping optimization.");
     if (clear_after) clearGraph();
     return false;	
   }
@@ -461,7 +477,8 @@ bool TebOptimalPlanner::optimizeGraph(int no_iterations,bool clear_after)
 
   if(!iter)
   {
-    RCLCPP_ERROR(node_->get_logger(), "optimizeGraph(): Optimization failed! iter=%i", iter);
+    RCLCPP_ERROR_THROTTLE(node_->get_logger(), *node_->get_clock(), kTebLogThrottleErrorMs,
+                          "optimizeGraph(): Optimization failed! iter=%i", iter);
 	return false;
   }
 
@@ -775,8 +792,8 @@ void TebOptimalPlanner::AddEdgesNearHorizonOmegaHold()
 
   if (node_)
   {
-    RCLCPP_INFO_THROTTLE(
-        node_->get_logger(), *node_->get_clock(), 2000,
+    RCLCPP_DEBUG_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), kTebLogThrottleMs,
         "[NearHorizon] AddEdgesNearHorizonOmegaHold: edges=%d omega_ref=%.3f delta_allow=%.3f T_near=%.2f",
         edges_added, omega_ref, delta_allow, T_near);
   }
@@ -1308,7 +1325,8 @@ void TebOptimalPlanner::AddEdgesPreferRotDir()
 
   if (prefer_rotdir_ != RotType::right && prefer_rotdir_ != RotType::left)
   {
-    RCLCPP_WARN(node_->get_logger(), "TebOptimalPlanner::AddEdgesPreferRotDir(): unsupported RotType selected. Skipping edge creation.");
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), kTebLogThrottleMs,
+                         "TebOptimalPlanner::AddEdgesPreferRotDir(): unsupported RotType selected. Skipping edge creation.");
     return;
   }
 
@@ -1403,8 +1421,10 @@ void TebOptimalPlanner::logTebNumericFailure(const char* where, const std::excep
   }
 
   auto logger = node_ ? node_->get_logger() : rclcpp::get_logger("teb_local_planner");
-  RCLCPP_ERROR(
+  RCLCPP_ERROR_THROTTLE(
       logger,
+      tebLogClock(),
+      kTebLogThrottleErrorMs,
       "TEB numeric failure at %s: %s poses=%d timediffs=%d min_dt=%.6g at i=%d "
       "seg_dist=%.4f yaw=(%.3f,%.3f)",
       where,
@@ -1517,7 +1537,7 @@ void TebOptimalPlanner::logWallAndObstacleCostsIfDue()
       wall_size = wall_line_->size();
       wall_state = (wall_size >= 2u) ? "ok" : "empty";
     }
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
         node_->get_logger(),
         "[TEB cost dbg] no side-clearance samples (n_wall_side=%d n_legacy=%d wall_line=%s size=%zu) "
         "obst_total=%.3f (hard=%.3f infl=%.3f n_pt=%d n_inf=%d | dyn=%.3f n=%d) "
@@ -1662,7 +1682,8 @@ bool TebOptimalPlanner::getVelocityCommand(double& vx, double& vy, double& omega
 {
   if (teb_.sizePoses()<2)
   {
-    RCLCPP_ERROR(node_->get_logger(), "TebOptimalPlanner::getVelocityCommand(): The trajectory contains less than 2 poses. Make sure to init and optimize/plan the trajectory fist.");
+    RCLCPP_ERROR_THROTTLE(node_->get_logger(), *node_->get_clock(), kTebLogThrottleErrorMs,
+                          "TebOptimalPlanner::getVelocityCommand(): The trajectory contains less than 2 poses. Make sure to init and optimize/plan the trajectory fist.");
     vx = 0;
     vy = 0;
     omega = 0;
@@ -1681,7 +1702,8 @@ bool TebOptimalPlanner::getVelocityCommand(double& vx, double& vy, double& omega
   }
   if (dt<=0)
   {	
-    RCLCPP_ERROR(node_->get_logger(), "TebOptimalPlanner::getVelocityCommand() - timediff<=0 is invalid!");
+    RCLCPP_ERROR_THROTTLE(node_->get_logger(), *node_->get_clock(), kTebLogThrottleErrorMs,
+                          "TebOptimalPlanner::getVelocityCommand() - timediff<=0 is invalid!");
     vx = 0;
     vy = 0;
     omega = 0;
@@ -1926,7 +1948,7 @@ bool TebOptimalPlanner::isTrajectoryContourFeasible(double inscribed_radius)
           if (node_)
           {
             RCLCPP_WARN_THROTTLE(
-                node_->get_logger(), *node_->get_clock(), 1000,
+                node_->get_logger(), *node_->get_clock(), kTebLogThrottleMs,
                 "[FeasContour] current-contour collision at pose %d (dynamic=%d)",
                 i, obst->isDynamic() ? 1 : 0);
           }
@@ -2050,7 +2072,7 @@ bool TebOptimalPlanner::isTrajectoryContourFeasible(double inscribed_radius)
         if (node_)
         {
           RCLCPP_WARN_THROTTLE(
-              node_->get_logger(), *node_->get_clock(), 1000,
+              node_->get_logger(), *node_->get_clock(), kTebLogThrottleMs,
               "[FeasContour] predicted-dynamic collision pose=%d t=%.2f gate=%s "
               "|w|=%.3f |w-wref|=%.3f (thr abs=%.3f rel=%.3f)",
               i, t_acc, gate_reason, max_abs_omega, max_rel_omega, delta_abs, delta_rel);

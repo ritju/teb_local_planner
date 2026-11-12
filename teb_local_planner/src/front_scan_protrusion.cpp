@@ -510,8 +510,8 @@ void TebLocalPlannerROS::recordProtrusionDetection(
     if ((existing.position - best_point).norm() < 0.5) {
       existing.detection_time = now;
       existing.influence_radius = std::max(existing.influence_radius, best_pen);
-      RCLCPP_INFO(
-        logger_,
+      RCLCPP_DEBUG_THROTTLE(
+        logger_, *clock_, kTebLogThrottleMs,
         "[%s] Protruding obstacle already exists at (%.2f, %.2f), updating timestamp.",
         log_context, existing.position.x(), existing.position.y());
       const std::string frame_id = costmap_ros_ ?
@@ -532,8 +532,8 @@ void TebLocalPlannerROS::recordProtrusionDetection(
   protruding_obst.influence_radius = best_pen;
   protruding_obst.detection_time = now;
   protruding_obstacles_.push_back(protruding_obst);
-  RCLCPP_INFO(
-    logger_,
+  RCLCPP_INFO_THROTTLE(
+    logger_, *clock_, kTebLogThrottleMs,
     "[%s] Protruding obstacle recorded at (%.2f, %.2f), penetration=%.2f.",
     log_context, best_point.x(), best_point.y(), best_pen);
   const std::string frame_id = costmap_ros_ ?

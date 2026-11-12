@@ -228,7 +228,8 @@ bool HomotopyClassPlanner::addEquivalenceClassIfNew(const EquivalenceClassPtr& e
 
   if (!eq_class->isValid())
   {
-    RCLCPP_WARN(rclcpp::get_logger("teb_local_planner"), "HomotopyClassPlanner: Ignoring invalid H-signature");
+    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleMs,
+                         "HomotopyClassPlanner: Ignoring invalid H-signature");
     return false;
   }
 
@@ -343,7 +344,8 @@ void HomotopyClassPlanner::updateReferenceTrajectoryViaPoints(bool all_trajector
 
   if(equivalence_classes_.size() < tebs_.size())
   {
-    RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"), "HomotopyClassPlanner::updateReferenceTrajectoryWithViaPoints(): Number of h-signatures does not match number of trajectories.");
+    RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleErrorMs,
+                          "HomotopyClassPlanner::updateReferenceTrajectoryWithViaPoints(): Number of h-signatures does not match number of trajectories.");
     return;
   }
 
@@ -385,7 +387,7 @@ void HomotopyClassPlanner::updateReferenceTrajectoryWallLinePoints(bool all_traj
     return;
   if (equivalence_classes_.size() < tebs_.size())
   {
-    RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"),
+    RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleErrorMs,
                  "HomotopyClassPlanner::updateReferenceTrajectoryWallLinePoints(): "
                  "Number of h-signatures does not match number of trajectories.");
     return;
@@ -557,7 +559,7 @@ void HomotopyClassPlanner::optimizeAllTEBs(int iter_innerloop, int iter_outerloo
             }
             catch (const TebAssertionFailureException& ex)
             {
-              RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"),
+              RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleErrorMs,
                            "HCP TEB numeric failure: %s", ex.what());
               it_teb->get()->clearPlanner();
             }
@@ -583,7 +585,7 @@ void HomotopyClassPlanner::optimizeAllTEBs(int iter_innerloop, int iter_outerloo
       }
       catch (const TebAssertionFailureException& ex)
       {
-        RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"),
+        RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleErrorMs,
                      "HCP TEB numeric failure: %s", ex.what());
         it_teb->get()->clearPlanner();
       }
@@ -627,7 +629,7 @@ TebOptimalPlannerPtr HomotopyClassPlanner::getInitialPlanTEB()
             }
          }
          else
-             RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"),
+             RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleErrorMs,
                           "HomotopyClassPlanner::getInitialPlanTEB(): number of equivalence classes (%lu) and number of trajectories (%lu) does not match.", equivalence_classes_.size(), tebs_.size());
     }
     else
@@ -793,7 +795,8 @@ bool HomotopyClassPlanner::isTrajectoryFeasible(dwb_critics::ObstacleFootprintCr
     TebOptimalPlannerPtr best = findBestTeb();
     if (!best)
     {
-      RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"), "Couldn't retrieve the best plan");
+      RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleErrorMs,
+                           "Couldn't retrieve the best plan");
       return false;
     }
     feasible = best->isTrajectoryFeasible(costmap_model, footprint_spec, inscribed_radius, circumscribed_radius, look_ahead_idx, feasibility_check_lookahead_distance);
@@ -821,7 +824,8 @@ TebOptPlannerContainer::iterator HomotopyClassPlanner::removeTeb(TebOptimalPlann
   TebOptPlannerContainer::iterator return_iterator = tebs_.end();
   if(equivalence_classes_.size() != tebs_.size())
   {
-      RCLCPP_ERROR(rclcpp::get_logger("teb_local_planner"), "removeTeb: size of eq classes != size of tebs");
+      RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleErrorMs,
+                           "removeTeb: size of eq classes != size of tebs");
       return return_iterator;
   }
   auto it_eq_classes = equivalence_classes_.begin();

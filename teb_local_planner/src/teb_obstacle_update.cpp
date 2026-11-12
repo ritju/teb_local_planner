@@ -591,7 +591,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
             }
             locked_wall_start_ = locked_origin + t0 * locked_dir;
             locked_wall_end_ = locked_origin + t1 * locked_dir;
-            RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+            RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), kTebLogThrottleMs,
               "墙线锁沿墙滑动: t=[%.2f, %.2f] 长度=%.2f m",
               t0, t1, t1 - t0);
           }
@@ -785,12 +785,14 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
      }
      catch (const tf2::ExtrapolationException& ex)
      {
-       RCLCPP_WARN(logger_, "自定义障碍物 TF 查询失败 (ExtrapolationException): %s, 改用单位变换", ex.what());
+       RCLCPP_WARN_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+         "自定义障碍物 TF 查询失败 (ExtrapolationException): %s, 改用单位变换", ex.what());
        obstacle_to_map_eig.setIdentity();
      }
      catch (const tf2::TransformException& ex)
      {
-       RCLCPP_ERROR(logger_, "自定义障碍物 TF 查询失败 (TransformException): %s, 改用单位变换", ex.what());
+       RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs,
+         "自定义障碍物 TF 查询失败 (TransformException): %s, 改用单位变换", ex.what());
        obstacle_to_map_eig.setIdentity();
      }
      
@@ -823,7 +825,8 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
        }
        else if (custom_obstacle_msg_.obstacles.at(i).polygon.points.empty())
        {
-         RCLCPP_INFO(logger_, "收到无效自定义障碍物，多边形顶点为空，跳过");
+         RCLCPP_WARN_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+           "收到无效自定义障碍物，多边形顶点为空，跳过");
          continue;
        }
        else // polygon

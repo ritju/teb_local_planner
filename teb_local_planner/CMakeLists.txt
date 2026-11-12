@@ -251,6 +251,7 @@ if(BUILD_TESTING)
     teb_corner_collision_debug_test
     teb_main_flow_test
     teb_front_steering_test
+    teb_front_steer_interface_test
     teb_plan_curvature_test
   )
   foreach(_split_test ${_split_module_tests})

@@ -98,12 +98,12 @@ void TebLocalPlannerROS::narrowPassagesCallback(
     narrow_polygons_ = msg->polygons;
     if (narrow_polygons_.empty()) {
       latched_narrow_passage_ = false;
-      RCLCPP_WARN(
-        logger_,
+      RCLCPP_WARN_THROTTLE(
+        logger_, *clock_, kTebLogThrottleMs,
         "狭窄通道: TEB 收到空的 /narrow_passages，切换为非窄通道模式");
     } else {
-      RCLCPP_INFO(
-        logger_,
+      RCLCPP_INFO_THROTTLE(
+        logger_, *clock_, kTebLogThrottleMs,
         "狭窄通道: TEB 更新 /narrow_passages，多边形数量=%zu",
         narrow_polygons_.size());
     }

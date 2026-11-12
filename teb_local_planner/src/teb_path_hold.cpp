@@ -166,8 +166,8 @@ bool TebLocalPlannerROS::tryPathWaitHold(
     path_wait_debug_marker_pub_->publish(ma);
   }
 
-  RCLCPP_INFO_THROTTLE(
-    logger_, *clock_, 1000,
+  RCLCPP_DEBUG_THROTTLE(
+    logger_, *clock_, kTebLogThrottleMs,
     "[PathWait] mode=%s reason=%s hw=%.3f n_dyn=%zu blocking=%s waiting=%s "
     "latched=%s wait=%.2fs rem=%.2fs msg_valid=%d",
     pathWaitModeName(result.mode),
@@ -283,7 +283,7 @@ bool TebLocalPlannerROS::tryGoalStandoffHold(
   cmd_vel.twist.angular.z = approach_zero(velocity.angular.z, cfg_->robot.acc_lim_theta);
   last_cmd_ = cmd_vel.twist;
   RCLCPP_INFO_THROTTLE(
-    logger_, *clock_, 1000,
+    logger_, *clock_, kTebLogThrottleMs,
     "终点退让: 零速度保持 (force=%s)",
     goal_standoff_force_hold_ ? "是" : "否");
   return true;
@@ -370,7 +370,7 @@ bool TebLocalPlannerROS::tryOccupiedGoalNearHold(
   cmd_vel.twist.angular.z = approach_zero(velocity.angular.z, cfg_->robot.acc_lim_theta);
   last_cmd_ = cmd_vel.twist;
   RCLCPP_INFO_THROTTLE(
-    logger_, *clock_, 1000,
+    logger_, *clock_, kTebLogThrottleMs,
     "终点占用近距停车: dist=%.3f m limit=%.3f m",
     occupied_goal_dist_m_, effective_dist_limit);
   return true;

@@ -105,13 +105,13 @@ void TebLocalPlannerROS::updateWallLineVec(
    bool has_near_vehicles = false;
    {
      std::lock_guard<std::mutex> veh_lock(global_vehicle_poses_mutex_);
-     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 机器人附近车辆数量: %ld", global_vehicle_poses_.size());
+     RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "Edge following: 机器人附近车辆数量: %ld", global_vehicle_poses_.size());
      const bool have_wall_segment = (wall_line_points_.size() >= 2);
      Eigen::Vector2d w0, w1;
      if (have_wall_segment) {
        w0 = wall_line_points_[0];
        w1 = wall_line_points_[1];
-       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 墙线起点: (%.2f, %.2f), 终点: (%.2f, %.2f)", w0.x(), w0.y(), w1.x(), w1.y());
+       RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "Edge following: 墙线起点: (%.2f, %.2f), 终点: (%.2f, %.2f)", w0.x(), w0.y(), w1.x(), w1.y());
      }
      for (const auto& vehicle : global_vehicle_poses_) {
        bool in_exit_region = false;
@@ -120,16 +120,17 @@ void TebLocalPlannerROS::updateWallLineVec(
        } else {
          in_exit_region = distance_points2d(robot_pose.pose.position, vehicle.pose.position) <
            cfg_->wall_line.close_vehicle_distance_threshold;
-         RCLCPP_INFO(logger_, "Edge following: 车辆距离机器人太近：%.2f m，小于阈值：%.2f m", 
-                     distance_points2d(robot_pose.pose.position, vehicle.pose.position), 
+         RCLCPP_DEBUG_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+                     "Edge following: 车辆距离机器人太近：%.2f m，小于阈值：%.2f m",
+                     distance_points2d(robot_pose.pose.position, vehicle.pose.position),
                      cfg_->wall_line.close_vehicle_distance_threshold);
        }
        if (in_exit_region) {
          if (have_wall_segment) {
-           RCLCPP_INFO(logger_,
+           RCLCPP_INFO_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
              "Edge following: 车辆在贴边检查区域范围内，退出贴边模式");
          } else {
-           RCLCPP_INFO(logger_,
+           RCLCPP_INFO_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
              "Edge following: 车辆距离机器人太近：%.2f m，小于阈值：%.2f m，退出贴边模式",
              distance_points2d(robot_pose.pose.position, vehicle.pose.position),
              cfg_->wall_line.close_vehicle_distance_threshold);
@@ -150,7 +151,7 @@ void TebLocalPlannerROS::updateWallLineVec(
    // Check for protruding obstacles that prohibit entering edge-following mode
    if (hasProtrudingObstacleInMonitorCorridor(robot_pose))
    {
-     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 机器人附近有障碍物，退出贴边模式，清空贴边配置");
+     RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "Edge following: 机器人附近有障碍物，退出贴边模式，清空贴边配置");
      if(wall_line_points_.size() > 0) wall_line_points_.clear();
      switchParameterMode(false);
      return;
@@ -166,7 +167,7 @@ void TebLocalPlannerROS::updateWallLineVec(
     const double dx_path = end_pose.x - start_pose.x;
     const double dy_path = end_pose.y - start_pose.y;
     const double path_length = std::hypot(dx_path, dy_path);
-    RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 路径长度: %.2f", path_length);
+    RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "Edge following: 路径长度: %.2f", path_length);
     if (path_length > cfg_->wall_line.min_path_line_length) {
       // 计算路径方向角度（相对于世界坐标系）
       const double path_yaw = std::atan2(dy_path, dx_path);
@@ -237,9 +238,9 @@ void TebLocalPlannerROS::updateWallLineVec(
       const double robot_to_edge_distance =
         std::fabs(A * robot_pose.pose.position.x + B * robot_pose.pose.position.y + C) / denominator;
       
-      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 墙线与路径平行度: %.2f, 距离: %.2f", 
+      RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "Edge following: 墙线与路径平行度: %.2f, 距离: %.2f", 
                            acos(cos_theta) * 180.0 / M_PI, avg_distance);
-      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 机器人到墙线距离: %.2f", 
+      RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "Edge following: 机器人到墙线距离: %.2f", 
                            robot_to_edge_distance);
       
       // 记录满足平行度且距离最小的墙线
@@ -252,7 +253,7 @@ void TebLocalPlannerROS::updateWallLineVec(
         best_wall_start = wall_start;
         best_wall_end = wall_end;
       } else {
-        RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 墙线与路径平行度不满足要求: %.2f, 距离: %.2f", 
+        RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "Edge following: 墙线与路径平行度不满足要求: %.2f, 距离: %.2f", 
                              acos(cos_theta) * 180.0 / M_PI, avg_distance);
       }
     }
@@ -282,8 +283,8 @@ void TebLocalPlannerROS::updateWallLineVec(
       // Switch to edge-following mode parameters
       switchParameterMode(true);
       
-      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 选择最佳墙线距离: %.2f", min_distance);
-      RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "Edge following: 最小障碍物距离: %.2f, 最优时间权重: %.2f, 墙线距离权重: %.2f, 侧隙Pull: %.2f", 
+      RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "Edge following: 选择最佳墙线距离: %.2f", min_distance);
+      RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "Edge following: 最小障碍物距离: %.2f, 最优时间权重: %.2f, 墙线距离权重: %.2f, 侧隙Pull: %.2f", 
                            cfg_->obstacles.min_obstacle_dist, cfg_->optim.weight_optimaltime, 
                            cfg_->optim.weight_wall_line_dist, cfg_->optim.weight_wall_side_pull);
       
@@ -356,7 +357,7 @@ void TebLocalPlannerROS::updateWallLineVec(
    bool has_near_vehicles = false;
    {
      std::lock_guard<std::mutex> veh_lock(global_vehicle_poses_mutex_);
-     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 机器人附近车辆数量: %ld", 
+     RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 机器人附近车辆数量: %ld", 
                           global_vehicle_poses_.size());
      const bool have_wall_segment = (wall_line_points_.size() >= 2);
      Eigen::Vector2d w0, w1;
@@ -374,10 +375,10 @@ void TebLocalPlannerROS::updateWallLineVec(
        }
        if (in_exit_region) {
          if (have_wall_segment) {
-           RCLCPP_INFO(logger_,
+           RCLCPP_INFO_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
              "[updateCurbLineVec] Edge following: 车辆在贴边检查区域范围内，退出贴边模式");
          } else {
-           RCLCPP_INFO(logger_,
+           RCLCPP_INFO_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
              "[updateCurbLineVec] Edge following: 车辆距离机器人太近：%.2f m，小于阈值：%.2f m，退出贴边模式",
              distance_points2d(robot_pose.pose.position, vehicle.pose.position),
              cfg_->wall_line.close_vehicle_distance_threshold);
@@ -463,7 +464,7 @@ void TebLocalPlannerROS::updateWallLineVec(
      const double wall_length = std::hypot(dx_wall, dy_wall);
      if(wall_length > min_wall_line_length_)
      {
-       RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 墙线长度: %.2f !", wall_length);
+       RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 墙线长度: %.2f !", wall_length);
        const double dir_wall_x = dx_wall / wall_length;
        const double dir_wall_y = dy_wall / wall_length;
        
@@ -473,7 +474,7 @@ void TebLocalPlannerROS::updateWallLineVec(
        const double parallel_threshold = std::abs(std::cos(parallel_tolerance / 180 * M_PI));
        if (cos_theta <= 1.0)
        {
-         RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 马路边沿与路径夹角: %.2f !", std::acos(cos_theta) / M_PI * 180);
+         RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 马路边沿与路径夹角: %.2f !", std::acos(cos_theta) / M_PI * 180);
        }
        // 检查平行度是否满足要求
        if(cos_theta > parallel_threshold)
@@ -487,12 +488,12 @@ void TebLocalPlannerROS::updateWallLineVec(
          const double denominator = std::hypot(A, B);
          const double avg_distance = numerator / denominator;
          
-         RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 墙线与路径夹角: %.2f, 平均距离: %.2f",
+         RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 墙线与路径夹角: %.2f, 平均距离: %.2f",
                               cos_theta * 180.0 / M_PI, avg_distance);
 
          const double robot_to_edge_distance =
            std::fabs(A * robot_pose.pose.position.x + B * robot_pose.pose.position.y + C) / denominator;
-         RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 机器人与贴边线的距离: %.2f", 
+         RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 机器人与贴边线的距离: %.2f", 
                               robot_to_edge_distance);
          
          // 记录满足平行度且距离最小的墙线
@@ -535,8 +536,8 @@ void TebLocalPlannerROS::updateWallLineVec(
      // Switch to edge-following mode parameters
      switchParameterMode(true);
      
-     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 选择最佳墙线距离: %.2f", min_distance);
-     RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 最小障碍物距离: %.2f, 最优时间权重: %.2f, 墙线距离权重: %.2f, 侧隙Pull: %.2f", 
+     RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 选择最佳墙线距离: %.2f", min_distance);
+     RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000, "[updateCurbLineVec] Edge following: 最小障碍物距离: %.2f, 最优时间权重: %.2f, 墙线距离权重: %.2f, 侧隙Pull: %.2f", 
                           cfg_->obstacles.min_obstacle_dist, 
                           cfg_->optim.weight_optimaltime, cfg_->optim.weight_wall_line_dist,
                           cfg_->optim.weight_wall_side_pull);
@@ -580,7 +581,7 @@ void TebLocalPlannerROS::updateWallLineVec(
        if (time_diff.seconds() > keep_wall_line_time_)
        {
          wall_line_points_.clear();
-         RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000,
+         RCLCPP_DEBUG_THROTTLE(logger_, *(clock_), 2000,
                      "[updateCurbLineVec] Edge following: 超过 keep_wall_line_time(%.2fs)，清空贴边配置并退出贴边模式",
                      keep_wall_line_time_);
          
@@ -624,7 +625,8 @@ void TebLocalPlannerROS::updateWallLineVec(
              tf2::durationFromSec(0.5));
            tf2::doTransform(msg->poses.front(), start_pose_transformed, transform_start);
          } catch (const tf2::ExtrapolationException& ex) {
-           RCLCPP_WARN(logger_, "curbLinePathCallback: 时间戳异常，重新转换起点: %s", ex.what());
+           RCLCPP_WARN_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+             "curbLinePathCallback: 时间戳异常，重新转换起点: %s", ex.what());
            try {
              geometry_msgs::msg::TransformStamped transform_start = tf_->lookupTransform(
                cfg_->map_frame, 
@@ -632,11 +634,13 @@ void TebLocalPlannerROS::updateWallLineVec(
                tf2::TimePointZero);
              tf2::doTransform(msg->poses.front(), start_pose_transformed, transform_start);
            } catch (const tf2::TransformException& ex2) {
-             RCLCPP_ERROR(logger_, "curbLinePathCallback: 转换起点失败: %s", ex2.what());
+             RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs,
+               "curbLinePathCallback: 转换起点失败: %s", ex2.what());
              return; // Skip this message if transform fails
            }
          } catch (const tf2::TransformException& ex) {
-           RCLCPP_ERROR(logger_, "curbLinePathCallback: 转换起点异常: %s", ex.what());
+           RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs,
+             "curbLinePathCallback: 转换起点异常: %s", ex.what());
            return; // Skip this message if transform fails
          }
        } else {
@@ -653,7 +657,8 @@ void TebLocalPlannerROS::updateWallLineVec(
              tf2::durationFromSec(0.5));
            tf2::doTransform(msg->poses.back(), end_pose_transformed, transform_end);
          } catch (const tf2::ExtrapolationException& ex) {
-           RCLCPP_WARN(logger_, "curbLinePathCallback: 转换终点异常: %s, 重新转换", ex.what());
+           RCLCPP_WARN_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+             "curbLinePathCallback: 转换终点异常: %s, 重新转换", ex.what());
            try {
              geometry_msgs::msg::TransformStamped transform_end = tf_->lookupTransform(
                cfg_->map_frame, 
@@ -661,11 +666,13 @@ void TebLocalPlannerROS::updateWallLineVec(
                tf2::TimePointZero);
              tf2::doTransform(msg->poses.back(), end_pose_transformed, transform_end);
            } catch (const tf2::TransformException& ex2) {
-             RCLCPP_ERROR(logger_, "curbLinePathCallback: 转换终点失败: %s", ex2.what());
+             RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs,
+               "curbLinePathCallback: 转换终点失败: %s", ex2.what());
              return; // Skip this message if transform fails
            }
          } catch (const tf2::TransformException& ex) {
-           RCLCPP_ERROR(logger_, "curbLinePathCallback: 转换终点异常: %s", ex.what());
+           RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs,
+             "curbLinePathCallback: 转换终点异常: %s", ex.what());
            return; // Skip this message if transform fails
          }
        } else {
@@ -686,7 +693,7 @@ void TebLocalPlannerROS::updateWallLineVec(
        curb_line_update_time_ = clock_->now();
      }
      catch (tf2::TransformException &ex) {
-       RCLCPP_WARN(logger_, 
+       RCLCPP_WARN_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
                    "坐标变换失败: %s, 不更新curb_line_path_", ex.what());
      }
    }

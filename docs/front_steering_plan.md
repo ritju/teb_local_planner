@@ -1,3 +1,5 @@
+> **新接口适配说明（2026-11）**：本文中的 `Twist` 仅表示 TEB 内部规划量。底盘最终控制接口已改为 `/front_steer_cmd`（`capella_ros_msg/msg/FrontSteerDriveCmd`，默认 QoS），底盘状态从 `/front_steer_stu`（`capella_ros_msg/msg/FrontSteerDriveStu`，默认 QoS）获取。完整的消息字段映射、状态超时和上线验收方案见《[前轮转向后桥驱动新接口适配方案](../前轮转向后桥驱动新接口适配方案.md)》。
+
 当前程序已经有一部分“前轮转向/汽车模型”支持，但目前主要是“差速模型 + 最小转弯半径”的近似，还没有完整利用你给出的前轮转向动态约束。
 
 ## 1. 当前程序已有的能力
@@ -96,14 +98,14 @@ robot:
   cmd_angle_instead_rotvel: false
 ```
 
-这里 `cmd_angle_instead_rotvel` 必须为 `false`，因为你要求输出的是：
+这里 `cmd_angle_instead_rotvel` 必须为 `false`，因为 TEB 内部优化量仍然是：
 
 ```text
 后轮中心线速度 v
 后轮中心角速度 omega
 ```
 
-而不是前轮转角。
+而不是前轮转角。前轮转角只在发布 `FrontSteerDriveCmd` 前由接口适配层输出。
 
 当前程序如果把该参数设为 `true`，会把 `cmd_vel.angular.z` 从角速度转换成前轮转角，代码在 `teb_local_planner_ros.cpp:1570`。这与你的接口定义不一致。
 
@@ -142,7 +144,7 @@ robot:
 \delta=\arctan\left(\frac{L\omega}{v}\right)
 \]
 
-因此输出给底盘的应该是：
+因此 TEB 内部控制量应该保持为：
 
 ```text
 linear.x  = 后轴中心线速度 v
@@ -150,13 +152,13 @@ linear.y  = 0
 angular.z = 后轴中心角速度 omega
 ```
 
-底盘控制器再根据：
+接口适配层再根据：
 
 \[
 \delta=\arctan\left(\frac{L\omega}{v}\right)
 \]
 
-换算成前轮转角。
+换算成 `FrontSteerDriveCmd.front_steer_angle`，并将 `v` 映射到 `FrontSteerDriveCmd.linear_x`。底盘实际状态通过 `FrontSteerDriveStu` 回传，按同一自行车模型还原为 TEB 所需的 `v` 和 `omega`。
 
 注意：当 \(v\) 接近零时，这个换算会变得病态。前轮转向车不能像差速车一样原地旋转，因此还需要关闭或修改“原地转向/旋转到目标角度”的逻辑。
 
@@ -500,10 +502,11 @@ W=0.84\text{ m}
 你的车辆不能仅通过设置 `wheelbase=0.854` 和 `min_turning_radius=0.493` 就完成适配。当前程序还需要重点处理：
 
 1. 将车体参考点明确为后轴中心；
-2. 输出 `v` 和后轴中心角速度 `omega`，不要转换成前轮转角；
-3. 将最大前轮转角转换为速度相关的角速度约束；
-4. 增加前轮转角速度 \(0.5\ \mathrm{rad/s}\) 约束；
-5. 增加前轮转角加速度 \(1.0\ \mathrm{rad/s^2}\) 约束；
-6. 禁止原地旋转；
-7. 使用 \(0.84\) m 轮距完善 footprint 或左右后轮速度换算；
-8. 最终最好增加曲率或转角状态，以保证曲率连续。
+2. 内部保持 `v` 和后轴中心角速度 `omega`，发布前转换为 `FrontSteerDriveCmd`；
+3. 订阅 `FrontSteerDriveStu`，用实际 `linear_x` 和 `front_steer_angle` 更新 TEB 当前速度；
+4. 将最大前轮转角转换为速度相关的角速度约束；
+5. 增加前轮转角速度 \(0.5\ \mathrm{rad/s}\) 约束；
+6. 增加前轮转角加速度 \(1.0\ \mathrm{rad/s^2}\) 约束；
+7. 禁止原地旋转并在状态超时时发布零速/零转角；
+8. 使用 \(0.84\) m 轮距完善 footprint 或左右后轮速度换算；
+9. 最终最好增加曲率或转角状态，以保证曲率连续。

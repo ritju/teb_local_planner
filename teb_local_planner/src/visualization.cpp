@@ -39,6 +39,7 @@
 // ros stuff
 #include "teb_local_planner/visualization.h"
 #include "teb_local_planner/optimal_planner.h"
+#include "teb_local_planner/misc.h"
 
 #include <algorithm>
 #include <cmath>
@@ -939,7 +940,8 @@ bool TebVisualization::printErrorWhenNotInitialized() const
 {
   if (!initialized_)
   {
-    RCLCPP_ERROR(nh_->get_logger(), "TebVisualization class not initialized. You must call initialize or an appropriate constructor");
+    RCLCPP_ERROR_THROTTLE(nh_->get_logger(), *nh_->get_clock(), kTebLogThrottleErrorMs,
+      "TebVisualization class not initialized. You must call initialize or an appropriate constructor");
     return true;
   }
   return false;

@@ -229,7 +229,7 @@
 | `max_vel_x_backwards` | `0.5` | 机器人对应方向的速度上限（m/s 或 rad/s）；同时影响优化约束和输出限幅。 |
 | `max_vel_y` | `0.0` | 机器人对应方向的速度上限（m/s 或 rad/s）；同时影响优化约束和输出限幅。 |
 | `safe_linear_speed_limit` | `2.0` | 机器人对应方向的速度上限（m/s 或 rad/s）；同时影响优化约束和输出限幅。 |
-| `cmd_angle_instead_rotvel` | `false` | 是否发布转向角命令而不是角速度命令。 |
+| `cmd_angle_instead_rotvel` | `false` | 旧 `Twist` 输出是否将角速度字段改写为转向角；启用 `/front_steer_cmd` 新接口时保持 `false`，由接口适配层单独填充 `front_steer_angle`。 |
 
 ### 前轮转向模式参数
 

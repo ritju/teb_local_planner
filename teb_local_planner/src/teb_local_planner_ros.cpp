@@ -38,6 +38,7 @@
 
  #include "teb_local_planner/teb_local_planner_ros.h"
 #include "teb_local_planner/front_steering_model.hpp"
+#include "teb_local_planner/front_steer_drive_interface.hpp"
 
  //#include <tf_conversions/tf_eigen.h>
  #include <boost/algorithm/string.hpp>
@@ -162,8 +163,84 @@ using detail::normalizeEdgeModeEnv;
               rclcpp::NodeOptions()));
     cfg_->declareParameters(node, name_);
 
+    // The interface parameters belong to the controller plugin namespace and
+    // are deliberately fixed during configure.  Runtime switching would
+    // allow two control chains to be active in the same cycle.
+    rcl_interfaces::msg::ParameterDescriptor interface_descriptor;
+    interface_descriptor.read_only = true;
+    declare_parameter_if_not_declared(
+      node, name_ + ".front_steer_drive_interface.mode",
+      rclcpp::ParameterValue(front_steer_interface_mode_), interface_descriptor);
+    declare_parameter_if_not_declared(
+      node, name_ + ".front_steer_drive_interface.legacy_command_topic",
+      rclcpp::ParameterValue(legacy_command_topic_), interface_descriptor);
+    declare_parameter_if_not_declared(
+      node, name_ + ".front_steer_drive_interface.command_topic",
+      rclcpp::ParameterValue(front_steer_command_topic_), interface_descriptor);
+    declare_parameter_if_not_declared(
+      node, name_ + ".front_steer_drive_interface.state_topic",
+      rclcpp::ParameterValue(front_steer_state_topic_), interface_descriptor);
+    declare_parameter_if_not_declared(
+      node, name_ + ".front_steer_drive_interface.state_timeout",
+      rclcpp::ParameterValue(front_steer_state_timeout_), interface_descriptor);
+    node->get_parameter(name_ + ".front_steer_drive_interface.mode", front_steer_interface_mode_);
+    node->get_parameter(
+      name_ + ".front_steer_drive_interface.legacy_command_topic", legacy_command_topic_);
+    node->get_parameter(
+      name_ + ".front_steer_drive_interface.command_topic", front_steer_command_topic_);
+    node->get_parameter(
+      name_ + ".front_steer_drive_interface.state_topic", front_steer_state_topic_);
+    node->get_parameter(
+      name_ + ".front_steer_drive_interface.state_timeout", front_steer_state_timeout_);
+
+    declare_parameter_if_not_declared(
+      node, name_ + ".front_steer_drive_interface.max_projection_omega_error",
+      rclcpp::ParameterValue(front_steer_projection_tolerance_), interface_descriptor);
+    node->get_parameter(name_ + ".front_steer_drive_interface.max_projection_omega_error",
+      front_steer_projection_tolerance_);
+
+    declare_parameter_if_not_declared(
+      node, name_ + ".front_steer_drive_interface.odom_to_state.enabled",
+      rclcpp::ParameterValue(front_steer_odom_enabled_), interface_descriptor);
+    node->get_parameter(
+      name_ + ".front_steer_drive_interface.odom_to_state.enabled", front_steer_odom_enabled_);
+    declare_parameter_if_not_declared(
+      node, name_ + ".front_steer_drive_interface.odom_to_state.topic",
+      rclcpp::ParameterValue(front_steer_odom_topic_), interface_descriptor);
+    node->get_parameter(
+      name_ + ".front_steer_drive_interface.odom_to_state.topic", front_steer_odom_topic_);
+    declare_parameter_if_not_declared(
+      node, name_ + ".front_steer_drive_interface.odom_to_state.wheel_radius",
+      rclcpp::ParameterValue(front_steer_odom_wheel_radius_), interface_descriptor);
+    node->get_parameter(
+      name_ + ".front_steer_drive_interface.odom_to_state.wheel_radius", front_steer_odom_wheel_radius_);
+    declare_parameter_if_not_declared(
+      node, name_ + ".front_steer_drive_interface.odom_to_state.angular_deadband",
+      rclcpp::ParameterValue(front_steer_odom_angular_deadband_), interface_descriptor);
+    node->get_parameter(
+      name_ + ".front_steer_drive_interface.odom_to_state.angular_deadband",
+      front_steer_odom_angular_deadband_);
+
+    declare_parameter_if_not_declared(
+      node, name_ + ".front_steer_drive_interface.steering_lag_speed_scaling",
+      rclcpp::ParameterValue(front_steer_lag_speed_scaling_), interface_descriptor);
+    node->get_parameter(name_ + ".front_steer_drive_interface.steering_lag_speed_scaling",
+      front_steer_lag_speed_scaling_);
+
+    // The Controller Server owns the Twist publisher. It reads this fixed
+    // per-controller setting; keep returning the real Twist for Nav2 internals.
+    declare_parameter_if_not_declared(
+      node, name_ + ".front_steer_drive_interface.publish_twist",
+      rclcpp::ParameterValue(true), interface_descriptor);
+    bool publish_twist = true;
+    node->get_parameter(name_ + ".front_steer_drive_interface.publish_twist", publish_twist);
+    if (front_steer_interface_mode_ == "front_steer_cmd" && !publish_twist) {
+      RCLCPP_INFO(logger_, "front_steer_cmd 模式关闭 Controller Server 的 Twist 下发");
+    }
+
     // get parameters of TebConfig via the nodehandle and override the default config
     cfg_->loadRosParamFromNodeHandle(node, name_);
+    initializeFrontSteerDriveInterface(node);
     weight_wall_line_direction_ = cfg_->optim.weight_wall_line_direction;
     weight_wall_line_dist_ = cfg_->optim.weight_wall_line_dist;
     weight_wall_side_pull_ = cfg_->optim.weight_wall_side_pull;
@@ -602,6 +679,345 @@ using detail::normalizeEdgeModeEnv;
    }
 }
 
+void TebLocalPlannerROS::initializeFrontSteerDriveInterface(
+  nav2_util::LifecycleNode::SharedPtr node)
+{
+  if (front_steer_interface_mode_ != "cmd_vel" &&
+      front_steer_interface_mode_ != "front_steer_cmd")
+  {
+    throw std::invalid_argument(
+      "front_steer_drive_interface.mode must be cmd_vel or front_steer_cmd");
+  }
+  if (!(std::isfinite(front_steer_state_timeout_) && front_steer_state_timeout_ > 0.0))
+  {
+    throw std::invalid_argument(
+      "front_steer_drive_interface.state_timeout must be finite and > 0");
+  }
+  if (!std::isfinite(front_steer_projection_tolerance_) || front_steer_projection_tolerance_ < 0.0)
+  {
+    throw std::invalid_argument("max_projection_omega_error must be finite and >= 0");
+  }
+  if (front_steer_interface_mode_ == "front_steer_cmd" &&
+      (!cfg_->robot.front_steering_rear_drive || cfg_->robot.cmd_angle_instead_rotvel ||
+       !validFrontSteerConfiguration(cfg_->robot)))
+  {
+    throw std::invalid_argument(
+      "front_steer_cmd mode requires a valid front-steering configuration and cmd_angle_instead_rotvel=false");
+  }
+  if (front_steer_command_topic_.empty() || front_steer_state_topic_.empty())
+  {
+    throw std::invalid_argument("front steer command/state topics must not be empty");
+  }
+
+  if (front_steer_odom_enabled_) {
+    capella_ros_msg::msg::FrontSteerDriveStu probe;
+    if (front_steer_odom_topic_.empty() || !odomToFrontSteerState(
+        geometry_msgs::msg::Twist(), cfg_->robot, front_steer_odom_wheel_radius_, probe,
+        front_steer_odom_angular_deadband_)) {
+      throw std::invalid_argument("Invalid odom_to_state topic, geometry, wheel_radius, or angular_deadband");
+    }
+    front_steer_sim_state_pub_ = node->create_publisher<
+      capella_ros_msg::msg::FrontSteerDriveStu>(
+        front_steer_state_topic_, rclcpp::SystemDefaultsQoS());
+    front_steer_odom_sub_ = node->create_subscription<nav_msgs::msg::Odometry>(
+      front_steer_odom_topic_, rclcpp::SensorDataQoS(),
+      std::bind(&TebLocalPlannerROS::frontSteerOdomCallback, this, std::placeholders::_1));
+    RCLCPP_WARN(logger_, "仿真 odom 转换已开启: %s -> %s；请停用真实底盘反馈发布器",
+      front_steer_odom_topic_.c_str(), front_steer_state_topic_.c_str());
+  }
+
+  front_steer_publish_valid_ = false;
+  front_steer_control_dt_prepared_ = false;
+  front_steer_aligning_ = false;
+  front_steer_lag_speed_limit_ = std::numeric_limits<double>::infinity();
+  front_steer_published_linear_ = 0.0;
+  front_steer_published_angle_ = 0.0;
+  front_steer_published_rate_ = 0.0;
+  front_steering_cmd_valid_ = false;
+  {
+    std::lock_guard<std::mutex> lock(front_steer_stu_mutex_);
+    front_steer_stu_valid_ = false;
+  }
+  front_steer_params_handler_ = node->add_on_set_parameters_callback(
+    [this](const std::vector<rclcpp::Parameter> & parameters) {
+      rcl_interfaces::msg::SetParametersResult result;
+      result.successful = true;
+      const std::string prefix = name_ + ".front_steer_drive_interface.";
+      for (const auto & parameter : parameters) {
+        if (parameter.get_name().compare(0, prefix.size(), prefix) == 0) {
+          result.successful = false;
+          result.reason = "Front-steer interface parameters are fixed during configure";
+          break;
+        }
+      }
+      return result;
+    });
+  // Always subscribe to feedback.  Legacy cmd_vel mode can fall back to the
+  // Nav2 velocity, while direct mode treats missing feedback as a fault.
+  front_steer_stu_sub_ = node->create_subscription<
+    capella_ros_msg::msg::FrontSteerDriveStu>(
+      front_steer_state_topic_, rclcpp::SystemDefaultsQoS(),
+      std::bind(&TebLocalPlannerROS::frontSteerDriveStuCallback, this, std::placeholders::_1));
+
+  front_steer_stu_linear_debug_pub_ = node->create_publisher<std_msgs::msg::Float64>(
+    front_steer_state_topic_ + "/debug/linear_x", rclcpp::SystemDefaultsQoS());
+  front_steer_stu_angle_debug_pub_ = node->create_publisher<std_msgs::msg::Float64>(
+    front_steer_state_topic_ + "/debug/front_steer_angle", rclcpp::SystemDefaultsQoS());
+  front_steer_stu_wheel_debug_pub_ = node->create_publisher<std_msgs::msg::Float64>(
+    front_steer_state_topic_ + "/debug/front_wheel_speed", rclcpp::SystemDefaultsQoS());
+
+  if (front_steer_interface_mode_ == "front_steer_cmd")
+  {
+    front_steer_cmd_pub_ = node->create_publisher<
+      capella_ros_msg::msg::FrontSteerDriveCmd>(
+        front_steer_command_topic_, rclcpp::SystemDefaultsQoS());
+    front_steer_cmd_linear_debug_pub_ = node->create_publisher<std_msgs::msg::Float64>(
+      front_steer_command_topic_ + "/debug/linear_x", rclcpp::SystemDefaultsQoS());
+    front_steer_cmd_angle_debug_pub_ = node->create_publisher<std_msgs::msg::Float64>(
+      front_steer_command_topic_ + "/debug/front_steer_angle", rclcpp::SystemDefaultsQoS());
+    front_steer_cmd_twist_debug_pub_ = node->create_publisher<geometry_msgs::msg::Twist>(
+      front_steer_command_topic_ + "/debug/twist", rclcpp::SystemDefaultsQoS());
+    RCLCPP_INFO(
+      logger_, "TEB 使用前轮转向直连接口: %s <- %s (默认 QoS, state_timeout=%.3fs)",
+      front_steer_command_topic_.c_str(), front_steer_state_topic_.c_str(),
+      front_steer_state_timeout_);
+  }
+  else
+  {
+    RCLCPP_INFO(
+      logger_, "TEB 使用传统 cmd_vel 接口: %s；底盘状态 %s 有效时优先用于规划",
+      legacy_command_topic_.c_str(), front_steer_state_topic_.c_str());
+  }
+}
+
+void TebLocalPlannerROS::frontSteerOdomCallback(
+  const nav_msgs::msg::Odometry::ConstSharedPtr msg)
+{
+  if (!front_steer_odom_enabled_ || !front_steer_sim_state_pub_) {return;}
+  capella_ros_msg::msg::FrontSteerDriveStu state;
+  bool valid;
+  {
+    std::lock_guard<std::mutex> lock(cfg_->configMutex());
+    valid = odomToFrontSteerState(
+      msg->twist.twist, cfg_->robot, front_steer_odom_wheel_radius_, state,
+      front_steer_odom_angular_deadband_);
+  }
+  if (!valid) {
+    RCLCPP_WARN_THROTTLE(logger_, *clock_, 2000,
+      "丢弃非法或不符合前轮转向模型的 odom，不刷新 /front_steer_stu");
+    return;
+  }
+  state.header.stamp = msg->header.stamp;
+  if (state.header.stamp.sec == 0 && state.header.stamp.nanosec == 0 && clock_) {
+    state.header.stamp = clock_->now();
+  }
+  state.header.frame_id = !msg->child_frame_id.empty() ?
+    msg->child_frame_id : msg->header.frame_id;
+  front_steer_sim_state_pub_->publish(state);
+}
+
+void TebLocalPlannerROS::frontSteerDriveStuCallback(
+  const capella_ros_msg::msg::FrontSteerDriveStu::ConstSharedPtr msg)
+{
+  const auto receive_time = std::chrono::steady_clock::now();
+  const bool finite = std::isfinite(static_cast<double>(msg->linear_x)) &&
+    std::isfinite(static_cast<double>(msg->front_steer_angle)) &&
+    std::isfinite(static_cast<double>(msg->front_wheel_speed));
+  {
+    std::lock_guard<std::mutex> lock(front_steer_stu_mutex_);
+    front_steer_stu_ = *msg;
+    front_steer_stu_receive_time_ = receive_time;
+    front_steer_stu_valid_ = finite;
+  }
+  // Mirror raw feedback, including invalid fields, so faults remain visible in rqt.
+  // Visualization failure must not prevent caching and validating chassis feedback.
+  try {
+    std_msgs::msg::Float64 value;
+    value.data = msg->linear_x;
+    if (front_steer_stu_linear_debug_pub_) {front_steer_stu_linear_debug_pub_->publish(value);}
+    value.data = msg->front_steer_angle;
+    if (front_steer_stu_angle_debug_pub_) {front_steer_stu_angle_debug_pub_->publish(value);}
+    value.data = msg->front_wheel_speed;
+    if (front_steer_stu_wheel_debug_pub_) {front_steer_stu_wheel_debug_pub_->publish(value);}
+  } catch (const std::exception & ex) {
+    RCLCPP_WARN_THROTTLE(logger_, *clock_, 1000,
+      "Failed to publish front-steer feedback visualization: %s", ex.what());
+  }
+  if (!finite)
+  {
+    RCLCPP_WARN_THROTTLE(
+      logger_, *clock_, 1000,
+      "收到非法 /front_steer_stu，状态将被视为无效 (linear_x=%.3f angle=%.3f wheel_rpm=%.3f)",
+      static_cast<double>(msg->linear_x), static_cast<double>(msg->front_steer_angle),
+      static_cast<double>(msg->front_wheel_speed));
+  }
+}
+
+bool TebLocalPlannerROS::getFreshFrontSteerVelocity(geometry_msgs::msg::Twist & velocity)
+{
+  capella_ros_msg::msg::FrontSteerDriveStu state;
+  std::chrono::steady_clock::time_point receive_time;
+  bool valid = false;
+  {
+    std::lock_guard<std::mutex> lock(front_steer_stu_mutex_);
+    state = front_steer_stu_;
+    receive_time = front_steer_stu_receive_time_;
+    valid = front_steer_stu_valid_;
+  }
+  if (!valid) {return false;}
+  const double age = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - receive_time).count();
+  const bool usable = frontSteerStateToVelocity(
+    state, age, front_steer_state_timeout_, cfg_->robot, velocity);
+  RCLCPP_DEBUG(logger_,
+    "Front-steer feedback valid=%d age=%.6f v=%.6f delta=%.6f front_wheel_rpm=%.3f",
+    usable ? 1 : 0, age, static_cast<double>(state.linear_x),
+    static_cast<double>(state.front_steer_angle), static_cast<double>(state.front_wheel_speed));
+  return usable;
+}
+
+void TebLocalPlannerROS::selectFrontSteerVelocity(
+  const geometry_msgs::msg::Twist & nav2_velocity)
+{
+  robot_vel_ = nav2_velocity;
+  geometry_msgs::msg::Twist chassis_velocity;
+  const bool fresh_chassis_state = getFreshFrontSteerVelocity(chassis_velocity);
+  if (fresh_chassis_state) {
+    robot_vel_ = chassis_velocity;
+  } else if (front_steer_interface_mode_ == "front_steer_cmd") {
+    robot_vel_ = geometry_msgs::msg::Twist();
+    RCLCPP_ERROR_THROTTLE(
+      logger_, *clock_, 1000,
+      "前轮转向直连接口没有新鲜有效的 /front_steer_stu，停止并等待底盘状态");
+    if (planner_) {planner_->clearPlanner();}
+    ++no_infeasible_plans_;
+    time_last_infeasible_plan_ = clock_->now();
+    throw nav2_core::PlannerException(
+      "TebLocalPlannerROS: front_steer_stu missing, invalid, or timed out");
+  } else {
+    RCLCPP_WARN_THROTTLE(
+      logger_, *clock_, 2000,
+      "未使用新鲜 /front_steer_stu，cmd_vel 模式回退到 Nav2 velocity");
+  }
+}
+
+bool TebLocalPlannerROS::publishFrontSteerCommand(
+  double linear_x, double steering_angle, double omega)
+{
+  if (!front_steer_cmd_pub_) {return true;}
+  const bool stationary_steering = front_steer_aligning_ && linear_x == 0.0 &&
+    steering_angle != 0.0 && omega == 0.0;
+  const bool stop = !stationary_steering && std::isfinite(linear_x) &&
+    std::isfinite(steering_angle) && std::abs(linear_x) <= cfg_->robot.steering_min_speed;
+  // Projection and final dynamics validation must use one interval. Recomputing
+  // it after visualization changes the inferred previous/current steering rate.
+  if (front_steer_publish_valid_ && !front_steer_control_dt_prepared_) {
+    front_steer_control_dt_ = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - front_steer_last_publish_time_).count();
+  }
+  front_steer_control_dt_prepared_ = false;
+  geometry_msgs::msg::Twist feedback;
+  const double publish_age = front_steer_publish_valid_ ? std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - front_steer_last_publish_time_).count() : 0.0;
+  const char * reason = nullptr;
+  if (!stop && (!std::isfinite(front_steer_control_dt_) ||
+      front_steer_control_dt_ <= 1e-4 || front_steer_control_dt_ > front_steer_state_timeout_ ||
+      publish_age > front_steer_state_timeout_)) {
+    reason = "untrusted control interval";
+  } else if (!stop && !getFreshFrontSteerVelocity(feedback)) {
+    reason = "missing, invalid or stale chassis feedback";
+  } else {
+    reason = frontSteerCommandError(linear_x, steering_angle, omega, front_steer_control_dt_,
+      cfg_->robot, front_steer_published_angle_, front_steer_published_rate_, stationary_steering);
+  }
+  if (!reason && !stop && !stationary_steering) {
+    const double linear_dt = front_steer_publish_valid_ ?
+      std::min(front_steer_control_dt_, publish_age) : front_steer_control_dt_;
+    linear_x = limitFrontSteerLinearAcceleration(
+      linear_x, front_steer_published_linear_, cfg_->robot.acc_lim_x, linear_dt);
+    // Deceleration needed for current velocity/yaw limits is safety-critical.
+    // Preserve the steering angle; never change it to undo the speed ramp.
+    if (!std::isfinite(linear_x)) {
+      reason = "invalid longitudinal acceleration interval or history";
+    } else {
+      linear_x = clampDouble(linear_x, -cfg_->robot.max_vel_x_backwards, cfg_->robot.max_vel_x);
+      const double curvature = std::tan(steering_angle) / cfg_->robot.wheelbase;
+      if (std::abs(curvature) > 0.0 && std::abs(linear_x * curvature) > cfg_->robot.max_vel_theta) {
+        linear_x = std::copysign(cfg_->robot.max_vel_theta / std::abs(curvature), linear_x);
+      }
+      if (front_steer_lag_speed_scaling_ && std::isfinite(front_steer_lag_speed_limit_) &&
+          std::abs(linear_x) > front_steer_lag_speed_limit_) {
+        linear_x = std::copysign(front_steer_lag_speed_limit_, linear_x);
+      }
+      omega = linear_x * curvature;
+      // Deliberate ramp samples below steering_min_speed must not be converted
+      // to a stop, otherwise 0 -> 0.03 m/s would reset the ramp every cycle.
+      reason = frontSteerCommandError(linear_x, steering_angle, omega, front_steer_control_dt_,
+        cfg_->robot, front_steer_published_angle_, front_steer_published_rate_, true);
+    }
+  }
+  if (reason) {
+    RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000,
+      "Reject front-steer command v=%.6f delta=%.6f omega=%.6f dt=%.6f previous_delta=%.6f previous_rate=%.6f: %s",
+      linear_x, steering_angle, omega, front_steer_control_dt_,
+      front_steer_published_angle_, front_steer_published_rate_, reason);
+  }
+  capella_ros_msg::msg::FrontSteerDriveCmd command;
+  if (!reason && !stop) {
+    command.linear_x = static_cast<float>(linear_x);
+    command.front_steer_angle = static_cast<float>(steering_angle);
+  }
+  front_steer_cmd_pub_->publish(command);
+  const double rate = (!reason && !stop && front_steer_control_dt_ > 0.0)
+    ? (steering_angle - front_steer_published_angle_) / front_steer_control_dt_ : 0.0;
+  front_steer_published_linear_ = command.linear_x;
+  front_steer_published_angle_ = command.front_steer_angle;
+  front_steer_published_rate_ = rate;
+  front_steer_last_publish_time_ = std::chrono::steady_clock::now();
+  front_steer_publish_valid_ = true;
+  // Keep recovery analysis, rear-wheel diagnostics and Nav2's returned Twist
+  // consistent with the actual float32 command sent after longitudinal slew.
+  last_cmd_ = geometry_msgs::msg::Twist();
+  last_cmd_.linear.x = command.linear_x;
+  if (command.linear_x != 0.0f) {
+    last_cmd_.angular.z = static_cast<double>(command.linear_x) *
+      std::tan(static_cast<double>(command.front_steer_angle)) / cfg_->robot.wheelbase;
+  }
+  front_steering_rear_left_ = last_cmd_.linear.x - 0.5 * cfg_->robot.rear_track * last_cmd_.angular.z;
+  front_steering_rear_right_ = last_cmd_.linear.x + 0.5 * cfg_->robot.rear_track * last_cmd_.angular.z;
+  if (reason || stop) {
+    front_steer_aligning_ = false;
+    // A safety stop intentionally overrides steering dynamics. Resume from the
+    // command actually sent, never the discarded projection from this cycle.
+    std::lock_guard<std::mutex> lock(steering_topic_mutex_);
+    front_steering_cmd_valid_ = true;
+    front_steering_delta_ = 0.0;
+    front_steering_delta_rate_ = 0.0;
+    front_steering_delta_acceleration_ = 0.0;
+    last_cmd_ = geometry_msgs::msg::Twist();
+  }
+  // Mirror the message actually sent, after all limiting and safety-stop decisions.
+  // Twist retains its standard v/omega meaning; steering angle has a scalar topic.
+  try {
+    std_msgs::msg::Float64 value;
+    value.data = command.linear_x;
+    if (front_steer_cmd_linear_debug_pub_) {front_steer_cmd_linear_debug_pub_->publish(value);}
+    value.data = command.front_steer_angle;
+    if (front_steer_cmd_angle_debug_pub_) {front_steer_cmd_angle_debug_pub_->publish(value);}
+    geometry_msgs::msg::Twist twist;
+    twist.linear.x = command.linear_x;
+    if (command.linear_x != 0.0f) {
+      twist.angular.z = static_cast<double>(command.linear_x) *
+        std::tan(static_cast<double>(command.front_steer_angle)) / cfg_->robot.wheelbase;
+    }
+    if (front_steer_cmd_twist_debug_pub_) {front_steer_cmd_twist_debug_pub_->publish(twist);}
+  } catch (const std::exception & ex) {
+    RCLCPP_WARN_THROTTLE(logger_, *clock_, 1000,
+      "Failed to publish front-steer command visualization: %s", ex.what());
+  }
+  return reason == nullptr;
+}
+
 void TebLocalPlannerROS::configure(
      const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent,
      std::string name,
@@ -679,20 +1095,21 @@ void TebLocalPlannerROS::configure(
      origin_plan_.push_back(out_pose);
    }
    if (dropped_nan_orientation > 0 || dropped_close_pose > 0) {
-     RCLCPP_WARN(
-       logger_,
+     RCLCPP_WARN_THROTTLE(
+       logger_, *clock_, kTebLogThrottleMs,
        "setPlan：剔除无效路径点，方向无效 %zu，相邻距离 < %.0e %zu，剩余 %zu / %zu",
        dropped_nan_orientation, kMinAdjacentSpacing, dropped_close_pose,
        global_plan_.size(), orig_global_plan.poses.size());
    }
    if (!global_plan_.empty()) {
-    RCLCPP_INFO(logger_, "TEB 设置全局路径，路径点数：%zu", global_plan_.size());
+    RCLCPP_INFO_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+                         "TEB 设置全局路径，路径点数：%zu", global_plan_.size());
    } else {
-    RCLCPP_WARN(logger_, "TEB 设置全局路径失败，路径点数为0");
+    RCLCPP_WARN_THROTTLE(logger_, *clock_, kTebLogThrottleMs, "TEB 设置全局路径失败，路径点数为0");
    }
 
    if (major_arc_active_) {
-     RCLCPP_INFO(logger_, "setPlan：清除优弧锁");
+     RCLCPP_INFO_THROTTLE(logger_, *clock_, kTebLogThrottleMs, "setPlan：清除优弧锁");
    }
    resetMajorArcLock();
    goal_standoff_latched_ = false;
@@ -720,6 +1137,7 @@ void TebLocalPlannerROS::configure(
    // check if plugin initialized
    if(!initialized_)
    {
+     publishFrontSteerCommand(0.0, 0.0);
      throw nav2_core::PlannerException(
        std::string("teb_local_planner 尚未初始化，请先调用 initialize()")
      );
@@ -732,6 +1150,31 @@ void TebLocalPlannerROS::configure(
    cmd_vel.twist.linear.x = 0;
    cmd_vel.twist.linear.y = 0;
    cmd_vel.twist.angular.z = 0;
+
+  front_steer_control_dt_prepared_ = false;
+  front_steer_aligning_ = false;
+  front_steer_lag_speed_limit_ = std::numeric_limits<double>::infinity();
+  front_steer_control_dt_ = front_steer_publish_valid_
+    ? std::chrono::duration<double>(std::chrono::steady_clock::now() -
+        front_steer_last_publish_time_).count() : control_duration_;
+
+  // Any exceptional or early-return path leaves the direct interface stopped.
+  // This also covers planner exceptions raised below the normal return path.
+  bool front_steer_command_sent = false;
+  struct FrontSteerCommandGuard
+  {
+    TebLocalPlannerROS * planner;
+    bool * sent;
+    ~FrontSteerCommandGuard()
+    {
+      if (planner && sent && !*sent) {
+        try {planner->publishFrontSteerCommand(0.0, 0.0);}
+        catch (const std::exception & ex) {
+          RCLCPP_ERROR(planner->logger_, "Failed to publish safety stop: %s", ex.what());
+        }
+      }
+    }
+  } front_steer_command_guard{this, &front_steer_command_sent};
  
    // Update for the current goal checker's state
    geometry_msgs::msg::Pose pose_tolerance;
@@ -751,8 +1194,7 @@ void TebLocalPlannerROS::configure(
    // 退出贴边后：大轮廓碰撞门控 / 超时强制恢复
    updatePendingNormalFootprintRestore();
    
-   // Get robot velocity
-   robot_vel_ = velocity;
+  selectFrontSteerVelocity(velocity);
 
    if (cfg_->robot.map_to_base_transform_max_age > 0.0) {
      const std::string & base_frame = costmap_ros_->getBaseFrameID();
@@ -818,10 +1260,12 @@ void TebLocalPlannerROS::configure(
           RCLCPP_INFO_THROTTLE(logger_, *(clock_), 2000, "正在应用速度限制，当前最大线速度: %.2f m/s", cfg_->robot.max_vel_x);
         } else if (limit >= safe_linear_speed_limit_ && cfg_->robot.max_vel_x != safe_linear_speed_limit_) {
           cfg_->robot.max_vel_x = safe_linear_speed_limit_;
-          RCLCPP_WARN(logger_, "收到的速度限制大于安全线速度上限，已钳到安全上限: %.2f m/s", safe_linear_speed_limit_);
+          RCLCPP_WARN_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+            "收到的速度限制大于安全线速度上限，已钳到安全上限: %.2f m/s", safe_linear_speed_limit_);
         }
       } else if (!std::isfinite(limit) || limit <= 0) {
-        RCLCPP_WARN(logger_, "速度限制无效 (非有限或 <=0)，当前速度上限: %.2f m/s", cfg_->robot.max_vel_x);
+        RCLCPP_WARN_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+          "速度限制无效 (非有限或 <=0)，当前速度上限: %.2f m/s", cfg_->robot.max_vel_x);
       }
     }
   }
@@ -871,8 +1315,8 @@ void TebLocalPlannerROS::configure(
         corner_found = true;
         corner_index = static_cast<size_t>(locked_idx);
         corner_pose_global = global_plan_.at(corner_index);
-        RCLCPP_INFO_THROTTLE(
-          logger_, *clock_, 2000,
+        RCLCPP_DEBUG_THROTTLE(
+          logger_, *clock_, kTebLogThrottleMs,
           "Edge following: 找到最近的角点: %zu, 角度: %.2f",
           corner_index, polylineVertexAngleDeg(global_plan_, locked_idx));
       }
@@ -901,17 +1345,18 @@ void TebLocalPlannerROS::configure(
             tf2::TimePointZero);
           corner_pose_global.header.stamp = transform.header.stamp;
         } else {
-          RCLCPP_WARN(logger_, "TF 查询失败 (ExtrapolationException): %s, 尝试使用最新可用时间", ex.what());
+          RCLCPP_WARN_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+            "TF 查询失败 (ExtrapolationException): %s, 尝试使用最新可用时间", ex.what());
           corner_found = false;
         }
       } catch (const tf2::TransformException& ex2) {
-        RCLCPP_ERROR(logger_, "TF 查询失败: %s", ex2.what());
+        RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs, "TF 查询失败: %s", ex2.what());
         corner_found = false;
       }
     }
     catch (const tf2::TransformException &ex)
     {
-      RCLCPP_ERROR(logger_, "TF 查询失败: %s", ex.what());
+      RCLCPP_ERROR_THROTTLE(logger_, *clock_, kTebLogThrottleErrorMs, "TF 查询失败: %s", ex.what());
       corner_found = false;
     }
     if (corner_found &&
@@ -952,8 +1397,8 @@ void TebLocalPlannerROS::configure(
   {
     const int last_keep = static_cast<int>(global_plan_.size()) - 1;
     if (last_keep >= 0 && prune_row_to_idx >= last_keep) {
-      RCLCPP_WARN(
-        logger_,
+      RCLCPP_WARN_THROTTLE(
+        logger_, *clock_, kTebLogThrottleMs,
         "transformGlobalPlan: 裁剪区间含路径终点 [%d,%d]，改为保留最后一个点",
         prune_row_from_idx, prune_row_to_idx);
       prune_row_to_idx = last_keep - 1;
@@ -963,8 +1408,8 @@ void TebLocalPlannerROS::configure(
         prune_row_from_idx < static_cast<int>(global_plan_.size()))
     {
       const int erase_count = prune_row_to_idx - prune_row_from_idx + 1;
-      RCLCPP_WARN(
-        logger_,
+      RCLCPP_WARN_THROTTLE(
+        logger_, *clock_, kTebLogThrottleMs,
         "transformGlobalPlan: 放弃当前行（无安全点或已到达行终点），"
         "删除 global_plan_[%d, %d]（%d 个点）；保留掉头/下一行",
         prune_row_from_idx, prune_row_to_idx, erase_count);
@@ -992,7 +1437,7 @@ void TebLocalPlannerROS::configure(
   if (corner_found && corner_pose_robot.pose.position.x < cfg_->trajectory.max_global_plan_lookahead_dist &&
       (corner_pose_robot.pose.position.x > 0.3 || 
       (corner_pose_robot.pose.position.x < 0 && 
-      std::fabs(velocity.linear.x) > cfg_->trajectory.prune_before_corner_linear_x_threshold)))
+      std::fabs(robot_vel_.linear.x) > cfg_->trajectory.prune_before_corner_linear_x_threshold)))
   {
     geometry_msgs::msg::PoseStamped local_corner_check_pose2d;
     tf2::doTransform(corner_pose_global, local_corner_check_pose2d, tf_plan_to_global);
@@ -1064,14 +1509,14 @@ void TebLocalPlannerROS::configure(
       if (corner_hit_cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
         cut_path_before_corner_distance = cfg_->trajectory.cut_path_before_corner_lethal_dist;
         RCLCPP_INFO_THROTTLE(
-          logger_, *clock_, 2000,
+          logger_, *clock_, kTebLogThrottleMs,
           "角点/射线路径检测到 LETHAL_OBSTACLE cost=%u (ray_check=%s)",
           static_cast<unsigned>(corner_hit_cost),
           cfg_->trajectory.corner_approach_ray_check_enable ? "true" : "false");
       } else {
         cut_path_before_corner_distance = cfg_->trajectory.cut_path_before_corner_inscribed_dist;
         RCLCPP_INFO_THROTTLE(
-          logger_, *clock_, 2000,
+          logger_, *clock_, kTebLogThrottleMs,
           "角点/射线路径检测到 INSCRIBED_INFLATED_OBSTACLE cost=%u (ray_check=%s)",
           static_cast<unsigned>(corner_hit_cost),
           cfg_->trajectory.corner_approach_ray_check_enable ? "true" : "false");
@@ -1083,8 +1528,8 @@ void TebLocalPlannerROS::configure(
     if (corner_has_obstacle)
     {
       if (corner_index + 1 >= global_plan_.size()) {
-        RCLCPP_INFO(
-          logger_,
+        RCLCPP_INFO_THROTTLE(
+          logger_, *clock_, kTebLogThrottleMs,
           "角点为路径终点(idx=%zu size=%zu)，跳过删除以免掏空路径",
           corner_index, global_plan_.size());
       } else {
@@ -1093,13 +1538,14 @@ void TebLocalPlannerROS::configure(
           corner_index < global_plan_.size() &&
           robot_corner_distance < std::max(pow(cfg_->trajectory.max_global_plan_lookahead_dist / 2.0, 2), 
                                            pow(cut_path_before_corner_distance, 2)) &&
-          std::fabs(velocity.linear.x) > cfg_->trajectory.prune_before_corner_linear_x_threshold && 
+          std::fabs(robot_vel_.linear.x) > cfg_->trajectory.prune_before_corner_linear_x_threshold &&
           corner_pose_robot.pose.position.x < 0)
       {
         // Erase all points before the corner (keep the corner point itself)
         cut_path_before_corner = true;
         global_plan_.erase(global_plan_.begin(), global_plan_.begin() + corner_index + 1);
-        RCLCPP_INFO(logger_, "角点被障碍物占用，删除角点前的所有路径点，裁剪距离: %.2f m", robot_corner_distance);
+        RCLCPP_INFO_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+          "角点被障碍物占用，删除角点前的所有路径点，裁剪距离: %.2f m", robot_corner_distance);
       }
       }
       goto jump_prune_transformed_plan;
@@ -1170,8 +1616,8 @@ void TebLocalPlannerROS::configure(
       const double min_hold_s = std::max(0.0, cfg_->rotation.dual_arc_reverse_min_hold);
       if (elapsed_s >= std::max(timeout_s, min_hold_s)) {
         dual_arc_timeout_probe = true;
-        RCLCPP_INFO(
-          logger_,
+        RCLCPP_INFO_THROTTLE(
+          logger_, *clock_, kTebLogThrottleMs,
           "双弧失败: latch 超时 %.2fs，本拍 probe 高权重",
           elapsed_s);
       }
@@ -1183,8 +1629,8 @@ void TebLocalPlannerROS::configure(
   const bool enable_narrow_teb = (enable_backward_cmd_received && enable_backward_cmd) ?
     true : (narrow_mode || reverse_segment || dual_arc_for_weights);
   updateNarrowPassageTebSettings(enable_narrow_teb);
-  RCLCPP_INFO_THROTTLE(
-    logger_, *clock_, 2000,
+  RCLCPP_DEBUG_THROTTLE(
+    logger_, *clock_, kTebLogThrottleMs,
     "TEB 倒车模式: enable_backward=%s narrow_latch=%s reverse_seg=%s dual_arc=%s "
     "fail=%zu/%d probe=%s enable=%s forward_drive=%.2f prefer_fwd=%d allow_back=%d",
     (enable_backward_cmd_received && enable_backward_cmd) ? "是" : "否",
@@ -1210,7 +1656,7 @@ void TebLocalPlannerROS::configure(
 
   {
     geometry_msgs::msg::TwistStamped wait_cmd;
-    if (tryPathWaitHold(robot_pose, velocity, wait_cmd))
+    if (tryPathWaitHold(robot_pose, robot_vel_, wait_cmd))
     {
       return wait_cmd;
     }
@@ -1218,7 +1664,7 @@ void TebLocalPlannerROS::configure(
 
   {
     geometry_msgs::msg::TwistStamped standoff_cmd;
-    if (tryGoalStandoffHold(robot_pose, velocity, standoff_cmd))
+    if (tryGoalStandoffHold(robot_pose, robot_vel_, standoff_cmd))
     {
       return standoff_cmd;
     }
@@ -1226,7 +1672,7 @@ void TebLocalPlannerROS::configure(
 
   {
     geometry_msgs::msg::TwistStamped occupied_goal_cmd;
-    if (tryOccupiedGoalNearHold(velocity, occupied_goal_cmd))
+    if (tryOccupiedGoalNearHold(robot_vel_, occupied_goal_cmd))
     {
       return occupied_goal_cmd;
     }
@@ -1235,7 +1681,7 @@ void TebLocalPlannerROS::configure(
   // Check if in-place rotation should be performed before TEB planning
   const bool use_inplace_rotation =
     !cfg_->robot.front_steering_rear_drive &&
-    shouldRotateInPlace(velocity, transformed_plan, robot_pose);
+    shouldRotateInPlace(robot_vel_, transformed_plan, robot_pose);
   if (use_inplace_rotation)
   {
     geometry_msgs::msg::TwistStamped rotation_cmd_vel;
@@ -1269,9 +1715,9 @@ void TebLocalPlannerROS::configure(
     while (angular_distance_to_heading > M_PI) angular_distance_to_heading -= 2.0 * M_PI;
     while (angular_distance_to_heading < -M_PI) angular_distance_to_heading += 2.0 * M_PI;
     
-    if (computeRotateToHeadingCommand(angular_distance_to_heading, robot_pose, velocity, rotation_cmd_vel))
+    if (computeRotateToHeadingCommand(angular_distance_to_heading, robot_pose, robot_vel_, rotation_cmd_vel))
     {
-      const double v_xy = std::hypot(velocity.linear.x, velocity.linear.y);
+      const double v_xy = std::hypot(robot_vel_.linear.x, robot_vel_.linear.y);
       // RCLCPP_INFO_THROTTLE(
       //   logger_, *clock_, 500,
       //   "原地转: 执行中（跳过 TEB），cmd_w=%.3f rad/s，|dtheta|=%.3f rad，w_odom=%.3f，v_xy=%.3f，wn=%.3f，dt=%.3f",
@@ -1365,8 +1811,8 @@ void TebLocalPlannerROS::configure(
      cfg_->near_horizon_runtime.omega_hold_enable = threat.enable_omega_hold;
      cfg_->near_horizon_runtime.omega_ref = robot_vel_.angular.z;
 
-     RCLCPP_INFO_THROTTLE(
-         logger_, *clock_, 2000,
+     RCLCPP_DEBUG_THROTTLE(
+         logger_, *clock_, kTebLogThrottleMs,
          "[NearHorizon] 近动态障碍物门控 mode=%d as_static_edges=%d cache=%zu raw_threat=%d enable=%d "
          "overlap_excl=%d trig_id=%d reason=%s omega_ref=%.3f delta=%.3f "
          "(roi f/r/l/r=%.2f/%.2f/%.2f/%.2f T_near=%.2f hold=%.2f)",
@@ -1490,8 +1936,8 @@ void TebLocalPlannerROS::configure(
            d_short, d_long,
            (major_arc_rotdir_ == RotType::left) ? "left" : "right");
        } else {
-         RCLCPP_INFO(
-           logger_,
+         RCLCPP_INFO_THROTTLE(
+           logger_, *clock_, kTebLogThrottleMs,
            "劣弧 TEB 不可行，改用优弧初始化重优化 d_short=%.3f rad d_long=%.3f rad",
            d_short, d_long);
        }
@@ -1505,14 +1951,14 @@ void TebLocalPlannerROS::configure(
        } else {
          resetMajorArcLock();
          planner_->setPreferredTurningDir(RotType::none);
-         RCLCPP_WARN(
-           logger_,
+         RCLCPP_WARN_THROTTLE(
+           logger_, *clock_, kTebLogThrottleMs,
            "优弧重优化仍不可行 d_short=%.3f rad d_long=%.3f rad",
            d_short, d_long);
        }
      } else if (!ok) {
-       RCLCPP_INFO(
-         logger_,
+       RCLCPP_INFO_THROTTLE(
+         logger_, *clock_, kTebLogThrottleMs,
          "劣弧不可行但跳过优弧重试 enable=%d |d_short|=%.3f rad thr=%.3f rad heading_ok=%d keep=%d stagnation=%d",
          cfg_->rotation.major_arc_retry_enable ? 1 : 0,
          std::abs(d_short), cfg_->rotation.major_arc_retry_heading_threshold,
@@ -1531,8 +1977,8 @@ void TebLocalPlannerROS::configure(
      if (!already_latched && !dual_arc_timeout_probe) {
        ++dual_arc_reverse_fail_count_;
        const int need_fails = std::max(1, cfg_->rotation.dual_arc_reverse_fail_num);
-       RCLCPP_INFO(
-         logger_,
+       RCLCPP_INFO_THROTTLE(
+         logger_, *clock_, kTebLogThrottleMs,
          "双弧连续失败 %zu/%d，%s降权允许倒车",
          dual_arc_reverse_fail_count_, need_fails,
          dual_arc_reverse_fail_count_ >= static_cast<size_t>(need_fails) ? "达到次数，" : "未达次数，暂不");
@@ -1545,8 +1991,8 @@ void TebLocalPlannerROS::configure(
        }
        const bool need_replan = !narrow_teb_settings_applied_ || dual_arc_timeout_probe;
        if (need_replan) {
-         RCLCPP_INFO(
-           logger_,
+         RCLCPP_INFO_THROTTLE(
+           logger_, *clock_, kTebLogThrottleMs,
            "双弧均不可行，降 forward_drive 后同周期重试");
          updateNarrowPassageTebSettings(true);
          planner_->clearPlanner();
@@ -1574,6 +2020,45 @@ void TebLocalPlannerROS::configure(
      );
    }
  
+   if (front_steer_interface_mode_ == "front_steer_cmd") {
+     auto optimal = std::dynamic_pointer_cast<TebOptimalPlanner>(planner_);
+     if (!optimal) {
+       auto homotopy = std::dynamic_pointer_cast<HomotopyClassPlanner>(planner_);
+       if (homotopy) {optimal = homotopy->bestTeb();}
+     }
+     bool kinematics_ok = optimal && optimal->teb().sizeTimeDiffs() > 0;
+     std::string kinematics_detail = "no valid optimized trajectory";
+     if (kinematics_ok) {
+       const auto & teb = optimal->teb();
+       const int segments = std::min(teb.sizeTimeDiffs(),
+         std::max(1, cfg_->trajectory.control_look_ahead_poses));
+       for (int i = 0; i < segments && kinematics_ok; ++i) {
+         SegmentKinematics segment;
+         const bool valid_segment = computeSteeringSegment(teb.Pose(i), teb.Pose(i + 1),
+           teb.TimeDiff(i), cfg_->robot.wheelbase, cfg_->robot.steering_min_speed,
+           cfg_->robot.steering_omega_epsilon, segment);
+         kinematics_ok = valid_segment && !segment.inplace_rotation &&
+           std::abs(segment.steering_angle) <= cfg_->robot.max_steering_angle + 1e-6;
+         if (!kinematics_ok) {
+           kinematics_detail = "segment=" + std::to_string(i) +
+             " valid=" + std::to_string(valid_segment) +
+             " inplace=" + std::to_string(segment.inplace_rotation) +
+             " v=" + std::to_string(segment.velocity) +
+             " omega=" + std::to_string(segment.omega) +
+             " delta=" + std::to_string(segment.steering_angle) +
+             " max_delta=" + std::to_string(cfg_->robot.max_steering_angle) +
+             " dt=" + std::to_string(segment.dt);
+         }
+       }
+     }
+     if (!kinematics_ok) {
+       planner_->clearPlanner();
+       ++no_infeasible_plans_;
+       time_last_infeasible_plan_ = clock_->now();
+       throw nav2_core::PlannerException("Front-steer trajectory kinematics invalid: " + kinematics_detail);
+     }
+   }
+
    // Get the velocity command for this sampling interval
    if (!planner_->getVelocityCommand(cmd_vel.twist.linear.x, cmd_vel.twist.linear.y, cmd_vel.twist.angular.z, cfg_->trajectory.control_look_ahead_poses))
    {
@@ -1588,11 +2073,22 @@ void TebLocalPlannerROS::configure(
      );
    }
    
+   if (front_steer_interface_mode_ == "front_steer_cmd" &&
+       (!std::isfinite(cmd_vel.twist.linear.x) || !std::isfinite(cmd_vel.twist.linear.y) ||
+        !std::isfinite(cmd_vel.twist.angular.z))) {
+     planner_->clearPlanner();
+     ++no_infeasible_plans_;
+     time_last_infeasible_plan_ = clock_->now();
+     throw nav2_core::PlannerException("Non-finite front-steer planner command");
+   }
+
    // Saturate velocity, if the optimization results violates the constraints (could be possible due to soft constraints).
    saturateVelocity(cmd_vel.twist.linear.x, cmd_vel.twist.linear.y, cmd_vel.twist.angular.z, cfg_->robot.max_vel_x, cfg_->robot.max_vel_y,
                     cfg_->robot.max_vel_theta, cfg_->robot.max_vel_x_backwards);
 
-   if (cfg_->robot.front_steering_rear_drive && cfg_->robot.front_steering_hard_limit)
+  if (cfg_->robot.front_steering_rear_drive &&
+      (cfg_->robot.front_steering_hard_limit ||
+       front_steer_interface_mode_ == "front_steer_cmd"))
    {
      applyFrontSteeringCommandLimits(
        cmd_vel.twist.linear.x, cmd_vel.twist.linear.y, cmd_vel.twist.angular.z);
@@ -1618,8 +2114,6 @@ void TebLocalPlannerROS::configure(
      }
    }
    
-   // a feasible solution should be found, reset counter
-   no_infeasible_plans_ = 0;
 
    if (dual_arc_reverse_active_) {
      if (dual_arc_timeout_probe) {
@@ -1637,8 +2131,8 @@ void TebLocalPlannerROS::configure(
        }
        if (elapsed_s >= min_hold_s &&
            dual_arc_reverse_forward_count_ >= static_cast<size_t>(need_frames)) {
-         RCLCPP_INFO(
-           logger_,
+         RCLCPP_INFO_THROTTLE(
+           logger_, *clock_, kTebLogThrottleMs,
            "双弧失败: 连续前进 %zu 帧 vx=%.3f 且保持 %.2fs，切回高权重",
            dual_arc_reverse_forward_count_, cmd_vel.twist.linear.x, elapsed_s);
          exitDualArcReverseLatch();
@@ -1678,7 +2172,29 @@ void TebLocalPlannerROS::configure(
      global_plan_msg.poses = global_plan_;
      global_plan_pub_->publish(global_plan_msg);
    }
+
+  if (front_steer_interface_mode_ == "front_steer_cmd")
+  {
+    double steering_angle = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(steering_topic_mutex_);
+      steering_angle = front_steering_cmd_valid_ ? front_steering_delta_ : 0.0;
+    }
+    if (cmd_vel.twist.linear.x == 0.0 && !front_steer_aligning_) {steering_angle = 0.0;}
+    const bool accepted = publishFrontSteerCommand(
+      cmd_vel.twist.linear.x, steering_angle, cmd_vel.twist.angular.z);
+    front_steer_command_sent = true;
+    if (!accepted) {
+      planner_->clearPlanner();
+      ++no_infeasible_plans_;
+      time_last_infeasible_plan_ = clock_->now();
+      throw nav2_core::PlannerException("Front-steer final command validation failed");
+    }
+    cmd_vel.twist = last_cmd_;
+  }
    
+   // Reset failure history only after the final interface check succeeds.
+   no_infeasible_plans_ = 0;
    return cmd_vel;
  }
  
@@ -1692,12 +2208,86 @@ void TebLocalPlannerROS::configure(
      previous.steering_angle = front_steering_delta_;
      previous.steering_rate = front_steering_delta_rate_;
    }
-   const double dt_ctrl = control_duration_ > 1e-4 ? control_duration_ : cfg_->trajectory.dt_ref;
-   const FrontSteeringCommand command = projectFrontSteeringCommand(
-     vx, vy, omega, dt_ctrl, cfg_->robot, previous);
+   const bool direct = front_steer_interface_mode_ == "front_steer_cmd";
+   if (direct) {
+     front_steer_control_dt_ = front_steer_publish_valid_ ?
+       std::chrono::duration<double>(std::chrono::steady_clock::now() -
+         front_steer_last_publish_time_).count() : control_duration_;
+     // An old, explicit zero command plus fresh standstill feedback is idle,
+     // not an active motion command timing out. Start a new bounded interval.
+     if (front_steer_publish_valid_ && front_steer_control_dt_ > front_steer_state_timeout_ &&
+         front_steer_published_angle_ == 0.0 && front_steer_published_rate_ == 0.0 &&
+         last_cmd_.linear.x == 0.0 && last_cmd_.angular.z == 0.0) {
+       geometry_msgs::msg::Twist idle_feedback;
+       if (getFreshFrontSteerVelocity(idle_feedback) &&
+           std::abs(idle_feedback.linear.x) <= cfg_->robot.steering_min_speed &&
+           std::abs(idle_feedback.angular.z) <= 1e-6) {
+         front_steer_publish_valid_ = false;
+         front_steer_control_dt_ = control_duration_;
+       }
+     }
+     previous.valid = true;
+     previous.steering_angle = front_steer_published_angle_;
+     previous.steering_rate = front_steer_published_rate_;
+     if (!std::isfinite(vx) || !std::isfinite(vy) || !std::isfinite(omega) ||
+         !std::isfinite(front_steer_control_dt_) || front_steer_control_dt_ <= 1e-4 ||
+         front_steer_control_dt_ > front_steer_state_timeout_) {
+       if (planner_) {planner_->clearPlanner();}
+       ++no_infeasible_plans_;
+       time_last_infeasible_plan_ = clock_->now();
+       throw nav2_core::PlannerException("Invalid front-steer input or control interval: dt=" +
+         std::to_string(front_steer_control_dt_) + " timeout=" + std::to_string(front_steer_state_timeout_) +
+         " v=" + std::to_string(vx) + " vy=" + std::to_string(vy) + " omega=" + std::to_string(omega));
+     }
+   }
+   const double dt_ctrl = direct ? front_steer_control_dt_ :
+     (control_duration_ > 1e-4 ? control_duration_ : cfg_->trajectory.dt_ref);
+   FrontSteeringCommand command;
+   front_steer_aligning_ = false;
+   if (direct) {
+     double measured_angle;
+     {
+       std::lock_guard<std::mutex> lock(front_steer_stu_mutex_);
+       measured_angle = front_steer_stu_.front_steer_angle;
+     }
+     const char * error = projectFrontSteerDriveCommand(vx, vy, omega, dt_ctrl,
+       cfg_->robot, previous, measured_angle, front_steer_projection_tolerance_,
+       command, front_steer_aligning_, front_steer_lag_speed_scaling_, &front_steer_lag_speed_limit_);
+     if (error) {
+       const std::string reason = std::string(error) + ": v=" + std::to_string(vx) +
+         " omega_before=" + std::to_string(omega) +
+         " limit=" + std::to_string(front_steer_projection_tolerance_) +
+         " previous_delta=" + std::to_string(previous.steering_angle) +
+         " previous_rate=" + std::to_string(previous.steering_rate) +
+         " measured_delta=" + std::to_string(measured_angle) +
+         " dt=" + std::to_string(dt_ctrl);
+       RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000, "%s", reason.c_str());
+       if (planner_) {planner_->clearPlanner();}
+       ++no_infeasible_plans_;
+       time_last_infeasible_plan_ = clock_->now();
+       throw nav2_core::PlannerException(reason);
+     }
+     front_steer_control_dt_prepared_ = true;
+     if (front_steer_lag_speed_scaling_ && !front_steer_aligning_ &&
+         std::isfinite(front_steer_lag_speed_limit_) && std::abs(command.vx) < std::abs(vx)) {
+       RCLCPP_INFO_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+         "Front-steer steering lag speed cap: requested_v=%.3f cap=%.3f measured_delta=%.3f command_delta=%.3f",
+         vx, front_steer_lag_speed_limit_, measured_angle, command.steering_angle);
+     }
+     if (front_steer_aligning_) {
+       RCLCPP_INFO_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
+         "Front-steer aligning at zero speed: requested v=%.3f omega=%.3f measured_delta=%.3f command_delta=%.3f",
+         vx, omega, measured_angle, command.steering_angle);
+     }
+   } else {
+     command = projectFrontSteeringCommand(vx, vy, omega, dt_ctrl, cfg_->robot, previous);
+   }
    vx = command.vx;
    vy = command.vy;
    omega = command.omega;
+   if (direct && std::abs(vx) <= cfg_->robot.steering_min_speed) {
+     vx = vy = omega = 0.0;
+   }
    {
      const double steering_acceleration =
        (previous.valid && dt_ctrl > 1e-4) ?
@@ -2025,7 +2615,7 @@ void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstS
    return;
  }
  void TebLocalPlannerROS::deactivate() {
-   
+   publishFrontSteerCommand(0.0, 0.0);
    visualization_->on_deactivate();
    restoreNarrowPassageTebSettings();
    resetDualArcReverseLatch();
@@ -2034,6 +2624,7 @@ void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstS
    return;
  }
  void TebLocalPlannerROS::cleanup() {
+   publishFrontSteerCommand(0.0, 0.0);
    shutting_down_.store(true, std::memory_order_release);
    joinBackgroundTasks(std::chrono::milliseconds(1500));
    // Destroy LinePathCompare here (joins its TF thread) before plugin map clear.
@@ -2053,6 +2644,21 @@ void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstS
    local_footprint_client_.reset();
    global_footprint_client_.reset();
    backward_mode_pub_.reset();
+   front_steer_params_handler_.reset();
+   front_steer_cmd_pub_.reset();
+   front_steer_odom_sub_.reset();
+   front_steer_sim_state_pub_.reset();
+   front_steer_stu_sub_.reset();
+   front_steer_cmd_linear_debug_pub_.reset();
+   front_steer_cmd_angle_debug_pub_.reset();
+   front_steer_cmd_twist_debug_pub_.reset();
+   front_steer_stu_linear_debug_pub_.reset();
+   front_steer_stu_angle_debug_pub_.reset();
+   front_steer_stu_wheel_debug_pub_.reset();
+   {
+     std::lock_guard<std::mutex> lock(front_steer_stu_mutex_);
+     front_steer_stu_valid_ = false;
+   }
    safe_terminal_marker_pub_.reset();
    occupied_goal_stop_marker_pub_.reset();
    resetBackwardModePublicationState(false);

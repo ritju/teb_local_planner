@@ -47,11 +47,23 @@
 #include <exception>
 #include <type_traits>
 
+#include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
 
 namespace teb_local_planner
 {
 #define SMALL_NUM 0.00000001
+
+//! 控制循环内 INFO/WARN 默认限频间隔（毫秒）
+constexpr int64_t kTebLogThrottleMs = 2000;
+//! ERROR 默认限频间隔（毫秒）
+constexpr int64_t kTebLogThrottleErrorMs = 1000;
+
+inline rclcpp::Clock & tebLogClock()
+{
+  static rclcpp::Clock clock(RCL_STEADY_TIME);
+  return clock;
+}
 
 //! Symbols for left/none/right rotations      
 enum class RotType { left, none, right };

@@ -38,6 +38,7 @@
 
 #include "teb_local_planner/graph_search.h"
 #include "teb_local_planner/homotopy_class_planner.h"
+#include "teb_local_planner/misc.h"
 
 namespace teb_local_planner
 {
@@ -105,7 +106,7 @@ void lrKeyPointGraph::createGraph(const PoseSE2& start, const PoseSE2& goal, dou
                  "HomotopyClassPlanner::createProbRoadmapGraph(): xy-goal-tolerance already reached.");
     if (hcp_->getTrajectoryContainer().empty())
     {
-      RCLCPP_INFO(rclcpp::get_logger("teb_local_planner"),
+      RCLCPP_INFO_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleMs,
                   "HomotopyClassPlanner::createProbRoadmapGraph(): Initializing a small straight line to just correct orientation errors.");
       hcp_->addAndInitNewTeb(start, goal, start_velocity, free_goal_vel);
     }
@@ -235,7 +236,7 @@ void ProbRoadmapGraph::createGraph(const PoseSE2& start, const PoseSE2& goal, do
                  "HomotopyClassPlanner::createProbRoadmapGraph(): xy-goal-tolerance already reached.");
     if (hcp_->getTrajectoryContainer().empty())
     {
-      RCLCPP_INFO(rclcpp::get_logger("teb_local_planner"),
+      RCLCPP_INFO_THROTTLE(rclcpp::get_logger("teb_local_planner"), tebLogClock(), kTebLogThrottleMs,
                    "HomotopyClassPlanner::createProbRoadmapGraph(): Initializing a small straight line to just correct orientation errors.");
       hcp_->addAndInitNewTeb(start, goal, start_velocity, free_goal_vel);
     }

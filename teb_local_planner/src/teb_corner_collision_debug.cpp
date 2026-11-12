@@ -562,7 +562,7 @@ void TebLocalPlannerROS::publishCollisionFootprintDebug(
 {
   const int cost_i = static_cast<int>(std::lround(cost));
   RCLCPP_INFO_THROTTLE(
-    logger_, *clock_, 500,
+    logger_, *clock_, kTebLogThrottleMs,
     "碰撞检查失败 [%s] cost=%d (%s) pose=(%.3f, %.3f, %.3f rad)",
     ns ? ns : "?", cost_i, footprintCostName(cost), x, y, yaw);
 
