@@ -892,6 +892,7 @@
    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr front_steer_stu_linear_debug_pub_;
    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr front_steer_stu_angle_debug_pub_;
    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr front_steer_stu_wheel_debug_pub_;
+   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr front_steer_measured_rate_pub_;
    capella_ros_msg::msg::FrontSteerDriveStu front_steer_stu_;
    std::chrono::steady_clock::time_point front_steer_stu_receive_time_;
    std::chrono::steady_clock::time_point front_steer_last_publish_time_;
@@ -906,6 +907,7 @@
    double front_steer_lag_speed_limit_{std::numeric_limits<double>::infinity()};
    double front_steer_projection_tolerance_{0.2};
    bool front_steer_stu_valid_{false};
+   std::atomic<bool> front_steer_debug_logging_{false};
    std::mutex front_steer_stu_mutex_;
    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr front_steer_params_handler_;
    

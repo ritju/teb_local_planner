@@ -709,6 +709,14 @@ void TebLocalPlannerROS::initializeFrontSteerDriveInterface(
     throw std::invalid_argument("front steer command/state topics must not be empty");
   }
 
+  // This diagnostic switch is intentionally mutable while the interface
+  // configuration itself remains fixed until the next configure cycle.
+  declare_parameter_if_not_declared(node,
+    name_ + ".front_steer_drive_interface.debug_logging", rclcpp::ParameterValue(false));
+  bool debug_logging = false;
+  node->get_parameter(name_ + ".front_steer_drive_interface.debug_logging", debug_logging);
+  front_steer_debug_logging_.store(debug_logging);
+
   if (front_steer_odom_enabled_) {
     capella_ros_msg::msg::FrontSteerDriveStu probe;
     if (front_steer_odom_topic_.empty() || !odomToFrontSteerState(
@@ -743,12 +751,27 @@ void TebLocalPlannerROS::initializeFrontSteerDriveInterface(
       rcl_interfaces::msg::SetParametersResult result;
       result.successful = true;
       const std::string prefix = name_ + ".front_steer_drive_interface.";
+      bool debug_change = false;
+      bool debug_value = false;
       for (const auto & parameter : parameters) {
+        if (parameter.get_name() == prefix + "debug_logging") {
+          if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+            result.successful = false;
+            result.reason = "debug_logging 必须是布尔值";
+            break;
+          }
+          debug_change = true;
+          debug_value = parameter.as_bool();
+          continue;
+        }
         if (parameter.get_name().compare(0, prefix.size(), prefix) == 0) {
           result.successful = false;
           result.reason = "Front-steer interface parameters are fixed during configure";
           break;
         }
+      }
+      if (result.successful && debug_change) {
+        front_steer_debug_logging_.store(debug_value);
       }
       return result;
     });
@@ -765,6 +788,8 @@ void TebLocalPlannerROS::initializeFrontSteerDriveInterface(
     front_steer_state_topic_ + "/debug/front_steer_angle", rclcpp::SystemDefaultsQoS());
   front_steer_stu_wheel_debug_pub_ = node->create_publisher<std_msgs::msg::Float64>(
     front_steer_state_topic_ + "/debug/front_wheel_speed", rclcpp::SystemDefaultsQoS());
+  front_steer_measured_rate_pub_ = node->create_publisher<std_msgs::msg::Float64>(
+    "/front_steering/measured_steering_angular_velocity", rclcpp::SystemDefaultsQoS());
 
   if (front_steer_interface_mode_ == "front_steer_cmd")
   {
@@ -820,9 +845,13 @@ void TebLocalPlannerROS::frontSteerDriveStuCallback(
   const capella_ros_msg::msg::FrontSteerDriveStu::ConstSharedPtr msg)
 {
   const auto receive_time = std::chrono::steady_clock::now();
+  // front_wheel_speed is the steering joint output RPM about +Z, not the
+  // rolling speed of the front tire. Keep its sign when converting to rad/s.
+  const double measured_rate = static_cast<double>(msg->front_wheel_speed) *
+    (2.0 * std::acos(-1.0) / 60.0);
   const bool finite = std::isfinite(static_cast<double>(msg->linear_x)) &&
     std::isfinite(static_cast<double>(msg->front_steer_angle)) &&
-    std::isfinite(static_cast<double>(msg->front_wheel_speed));
+    std::isfinite(static_cast<double>(msg->front_wheel_speed)) && std::isfinite(measured_rate);
   {
     std::lock_guard<std::mutex> lock(front_steer_stu_mutex_);
     front_steer_stu_ = *msg;
@@ -839,6 +868,10 @@ void TebLocalPlannerROS::frontSteerDriveStuCallback(
     if (front_steer_stu_angle_debug_pub_) {front_steer_stu_angle_debug_pub_->publish(value);}
     value.data = msg->front_wheel_speed;
     if (front_steer_stu_wheel_debug_pub_) {front_steer_stu_wheel_debug_pub_->publish(value);}
+    if (std::isfinite(measured_rate) && front_steer_measured_rate_pub_) {
+      value.data = measured_rate;
+      front_steer_measured_rate_pub_->publish(value);
+    }
   } catch (const std::exception & ex) {
     RCLCPP_WARN_THROTTLE(logger_, *clock_, 1000,
       "Failed to publish front-steer feedback visualization: %s", ex.what());
@@ -850,6 +883,14 @@ void TebLocalPlannerROS::frontSteerDriveStuCallback(
       "收到非法 /front_steer_stu，状态将被视为无效 (linear_x=%.3f angle=%.3f wheel_rpm=%.3f)",
       static_cast<double>(msg->linear_x), static_cast<double>(msg->front_steer_angle),
       static_cast<double>(msg->front_wheel_speed));
+  }
+  if (front_steer_debug_logging_.load()) {
+    RCLCPP_INFO_THROTTLE(logger_, *clock_, 1000,
+      "前轮转向底盘反馈：v=%.6f米/秒，转角=%.6f弧度，转向轴转速=%.6f转/分，"
+      "转向角速度=%.6f弧度/秒，有效=%d，消息时间=%d.%09u",
+      static_cast<double>(msg->linear_x), static_cast<double>(msg->front_steer_angle),
+      static_cast<double>(msg->front_wheel_speed), measured_rate, finite ? 1 : 0,
+      msg->header.stamp.sec, msg->header.stamp.nanosec);
   }
 }
 
@@ -957,10 +998,19 @@ bool TebLocalPlannerROS::publishFrontSteerCommand(
     }
   }
   if (reason) {
-    RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000,
-      "Reject front-steer command v=%.6f delta=%.6f omega=%.6f dt=%.6f previous_delta=%.6f previous_rate=%.6f: %s",
-      linear_x, steering_angle, omega, front_steer_control_dt_,
-      front_steer_published_angle_, front_steer_published_rate_, reason);
+    if (front_steer_debug_logging_.load()) {
+      RCLCPP_ERROR(logger_,
+        "拒绝前轮转向指令：v=%.6f，转角=%.6f，偏航角速度=%.6f，dt=%.6f，"
+        "上次转角=%.6f，上次转向角速度=%.6f，原因=%s",
+        linear_x, steering_angle, omega, front_steer_control_dt_,
+        front_steer_published_angle_, front_steer_published_rate_, reason);
+    } else {
+      RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000,
+        "拒绝前轮转向指令：v=%.6f，转角=%.6f，偏航角速度=%.6f，dt=%.6f，"
+        "上次转角=%.6f，上次转向角速度=%.6f，原因=%s",
+        linear_x, steering_angle, omega, front_steer_control_dt_,
+        front_steer_published_angle_, front_steer_published_rate_, reason);
+    }
   }
   capella_ros_msg::msg::FrontSteerDriveCmd command;
   if (!reason && !stop) {
@@ -985,6 +1035,14 @@ bool TebLocalPlannerROS::publishFrontSteerCommand(
   }
   front_steering_rear_left_ = last_cmd_.linear.x - 0.5 * cfg_->robot.rear_track * last_cmd_.angular.z;
   front_steering_rear_right_ = last_cmd_.linear.x + 0.5 * cfg_->robot.rear_track * last_cmd_.angular.z;
+  if (front_steer_debug_logging_.load()) {
+    RCLCPP_INFO(logger_,
+      "前轮转向最终下发：v=%.6f米/秒，转角=%.6f弧度，偏航角速度=%.6f弧度/秒，"
+      "转向角速度=%.6f弧度/秒，dt=%.6f秒，停止=%d，原因=%s",
+      static_cast<double>(command.linear_x), static_cast<double>(command.front_steer_angle),
+      last_cmd_.angular.z, rate, front_steer_control_dt_, stop ? 1 : 0,
+      reason ? reason : "无");
+  }
   if (reason || stop) {
     front_steer_aligning_ = false;
     // A safety stop intentionally overrides steering dynamics. Resume from the
@@ -2281,9 +2339,12 @@ void TebLocalPlannerROS::configure(
    front_steer_aligning_ = false;
    if (direct) {
      double measured_angle;
+     double measured_rate;
      {
        std::lock_guard<std::mutex> lock(front_steer_stu_mutex_);
        measured_angle = front_steer_stu_.front_steer_angle;
+       measured_rate = static_cast<double>(front_steer_stu_.front_wheel_speed) *
+         (2.0 * std::acos(-1.0) / 60.0);
      }
      const char * error = projectFrontSteerDriveCommand(vx, vy, omega, dt_ctrl,
        cfg_->robot, previous, measured_angle, front_steer_projection_tolerance_,
@@ -2296,7 +2357,11 @@ void TebLocalPlannerROS::configure(
          " previous_rate=" + std::to_string(previous.steering_rate) +
          " measured_delta=" + std::to_string(measured_angle) +
          " dt=" + std::to_string(dt_ctrl);
-       RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000, "%s", reason.c_str());
+       if (front_steer_debug_logging_.load()) {
+         RCLCPP_ERROR(logger_, "%s", reason.c_str());
+       } else {
+         RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000, "%s", reason.c_str());
+       }
        if (planner_) {planner_->clearPlanner();}
        ++no_infeasible_plans_;
        time_last_infeasible_plan_ = clock_->now();
@@ -2313,6 +2378,25 @@ void TebLocalPlannerROS::configure(
        RCLCPP_INFO_THROTTLE(logger_, *clock_, kTebLogThrottleMs,
          "Front-steer aligning at zero speed: requested v=%.3f omega=%.3f measured_delta=%.3f command_delta=%.3f",
          vx, omega, measured_angle, command.steering_angle);
+     }
+     if (front_steer_debug_logging_.load()) {
+       const double remaining_angle = measured_rate >= 0.0 ?
+         cfg_->robot.max_steering_angle - measured_angle :
+         cfg_->robot.max_steering_angle + measured_angle;
+       const double braking_angle = measured_rate * measured_rate /
+         (2.0 * cfg_->robot.max_steering_acceleration);
+       RCLCPP_INFO(logger_,
+         "前轮转向投影：请求v=%.6f米/秒、偏航角速度=%.6f弧度/秒；"
+         "底盘转角=%.6f弧度、实测转向角速度=%.6f弧度/秒；"
+         "上次指令转角=%.6f弧度、转向角速度=%.6f弧度/秒；"
+         "输出v=%.6f米/秒、转角=%.6f弧度、转向角速度=%.6f弧度/秒；"
+         "距转角极限=%.6f弧度、按最大减速度估算制动角度=%.6f弧度、余量=%.6f弧度；"
+         "dt=%.6f秒、对齐等待=%d",
+         vx, omega, measured_angle, measured_rate,
+         previous.steering_angle, previous.steering_rate,
+         command.vx, command.steering_angle, command.steering_rate,
+         remaining_angle, braking_angle, remaining_angle - braking_angle,
+         dt_ctrl, front_steer_aligning_ ? 1 : 0);
      }
    } else {
      command = projectFrontSteeringCommand(vx, vy, omega, dt_ctrl, cfg_->robot, previous);
@@ -2357,6 +2441,11 @@ void TebLocalPlannerROS::configure(
    optimized_steering_rate_ = steering_rate;
    optimized_steering_acceleration_ = steering_acceleration;
    optimized_steering_valid_ = true;
+   if (front_steer_debug_logging_.load()) {
+     RCLCPP_INFO(logger_,
+       "前轮转向优化结果：预测转向角速度=%.6f弧度/秒，预测转向角加速度=%.6f弧度/秒²",
+       steering_rate, steering_acceleration);
+   }
  }
 
  void TebLocalPlannerROS::publishFrontSteeringTopics()
@@ -2690,6 +2779,7 @@ void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstS
    front_steer_stu_linear_debug_pub_.reset();
    front_steer_stu_angle_debug_pub_.reset();
    front_steer_stu_wheel_debug_pub_.reset();
+   front_steer_measured_rate_pub_.reset();
    {
      std::lock_guard<std::mutex> lock(front_steer_stu_mutex_);
      front_steer_stu_valid_ = false;

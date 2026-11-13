@@ -148,8 +148,7 @@ TEST(FrontSteerInterface, OdomConversion)
     ASSERT_TRUE(odomToFrontSteerState(twist, cfg.robot, 0.1, state));
     EXPECT_NEAR(state.linear_x, v, 1e-7);
     EXPECT_NEAR(state.front_steer_angle, 0.4, 1e-7);
-    EXPECT_NEAR(state.front_wheel_speed,
-      v / std::cos(0.4) / 0.1 * 60.0 / (2.0 * std::acos(-1.0)), 1e-5);
+    EXPECT_EQ(state.front_wheel_speed, 0.0f); // odom does not measure steering-joint rate
   }
   twist = geometry_msgs::msg::Twist();
   ASSERT_TRUE(odomToFrontSteerState(twist, cfg.robot, 0.0, state));
@@ -201,7 +200,8 @@ TEST(FrontSteerInterface, OdomConversion)
   EXPECT_FALSE(odomToFrontSteerState(twist, cfg.robot, 0.0, state));
   twist.angular.x = 0.0;
   EXPECT_FALSE(odomToFrontSteerState(twist, cfg.robot, -0.1, state));
-  EXPECT_FALSE(odomToFrontSteerState(twist, cfg.robot, 1e-310, state));
+  EXPECT_TRUE(odomToFrontSteerState(twist, cfg.robot, 1e-310, state));
+  EXPECT_EQ(state.front_wheel_speed, 0.0f); // legacy wheel radius does not imply steering rate
   cfg.robot.wheelbase = 0.0;
   EXPECT_FALSE(odomToFrontSteerState(twist, cfg.robot, 0.0, state));
   cfg.robot.wheelbase = 0.854; cfg.robot.rear_track = -0.84;
@@ -509,6 +509,37 @@ TEST_F(FrontSteerRosInterface, OdomBridgeDisabledByDefault)
 {
   connect();
   EXPECT_FALSE(Access::hasOdomBridge(*planner));
+}
+
+TEST_F(FrontSteerRosInterface, PublishesMeasuredSteeringRateConvertedFromRpm)
+{
+  connect();
+  double measured_rate = 0.0;
+  int count = 0;
+  auto rate_sub = observer->create_subscription<std_msgs::msg::Float64>(
+    "/front_steering/measured_steering_angular_velocity", rclcpp::SystemDefaultsQoS(),
+    [&](std_msgs::msg::Float64::ConstSharedPtr msg) {
+      measured_rate = msg->data;
+      ++count;
+    });
+  pumpUntil([&]() {return rate_sub->get_publisher_count() > 0;});
+  Access::receive(*planner, 0.2, 0.4, 60.0);
+  pumpUntil([&]() {return count == 1;});
+  EXPECT_NEAR(measured_rate, 2.0 * std::acos(-1.0), 1e-9);
+  Access::receive(*planner, -0.2, -0.4, -30.0);
+  pumpUntil([&]() {return count == 2;});
+  EXPECT_NEAR(measured_rate, -std::acos(-1.0), 1e-9);
+}
+
+TEST_F(FrontSteerRosInterface, DebugLoggingCanBeChangedAtRuntime)
+{
+  connect();
+  const std::string name = "FollowPath.front_steer_drive_interface.debug_logging";
+  EXPECT_FALSE(node->get_parameter(name).as_bool());
+  EXPECT_TRUE(node->set_parameter(rclcpp::Parameter(name, true)).successful);
+  EXPECT_TRUE(node->get_parameter(name).as_bool());
+  EXPECT_TRUE(node->set_parameter(rclcpp::Parameter(name, false)).successful);
+  EXPECT_FALSE(node->get_parameter(name).as_bool());
 }
 
 TEST_F(FrontSteerRosInterface, OdomBridgePublishesOnlyValidInput)

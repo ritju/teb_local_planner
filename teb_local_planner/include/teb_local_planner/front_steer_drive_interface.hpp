@@ -9,7 +9,8 @@
 namespace teb_local_planner
 {
 // The odometry twist must describe the rear axle center in vehicle axes.
-// A zero radius explicitly means wheel RPM is unavailable (diagnostic zero).
+// Odom cannot provide steering-joint RPM; wheel_radius is retained for
+// compatibility with existing configurations.
 inline bool odomToFrontSteerState(
   const geometry_msgs::msg::Twist & twist, const TebConfig::Robot & robot,
   double wheel_radius, capella_ros_msg::msg::FrontSteerDriveStu & state,
@@ -51,8 +52,10 @@ inline bool odomToFrontSteerState(
   const double delta = std::atan(robot.wheelbase * (w / v));
   const double left = v - w * robot.rear_track / 2.0;
   const double right = v + w * robot.rear_track / 2.0;
-  const double rpm = wheel_radius == 0.0 ? 0.0 :
-    (v / std::cos(delta)) / wheel_radius * (60.0 / (2.0 * std::acos(-1.0)));
+  // A single odometry sample cannot reveal the steering joint's angular rate.
+  // The old rolling-wheel RPM calculation described a different axis and
+  // would falsely appear as steering feedback on the diagnostic topic.
+  const double rpm = 0.0;
   if (!std::isfinite(delta) || std::abs(delta) > robot.max_steering_angle ||
       !std::isfinite(left) || !std::isfinite(right) ||
       std::abs(left) > limit || std::abs(right) > limit ||
