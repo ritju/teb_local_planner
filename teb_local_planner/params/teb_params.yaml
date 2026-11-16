@@ -3,6 +3,7 @@
     ros__parameters:
       use_sim_time: True
       controller_frequency: 10.0
+      debug_mode: false  # 打印 PathWait、原地转、NearHorizon、TEB cost dbg；保持原日志等级，支持动态切换
       min_x_velocity_threshold: 0.01
       min_y_velocity_threshold: 0.5
       min_theta_velocity_threshold: 0.001
@@ -195,8 +196,11 @@
         transformed_plan_row_terminal_arrive_distance: 0.3  # arrived at row-terminal safe pose → prune remaining row [m]
         transform_global_plan_goal_occupied_tolerance: 0.3
         transform_global_plan_goal_search_resolution: 0.1
-        goal_standoff_stop_distance: 0.08  # compatibility parameter; occupied goal now stops immediately
-        occupied_goal_braking_margin: 0.15  # compatibility parameter; occupied goal now stops immediately
+        enable_occupied_goal_stop: true  # 终点进入截取窗口后，回搜安全点停车并限时等待
+        enable_occupied_goal_standoff_search: true  # 终点占用时沿全局路径寻找替代终点
+        goal_standoff_stop_distance: 0.08
+        occupied_goal_clear_duration: 0.4  # 原终点持续确认安全多久后解除停车等待 [s]；<=0 立即解除
+        last_occupied_goal_hold_timeout: 15.0  # 停车等待超时后按 SUCCEEDED 结束；<=0 不超时 [s]
         prune_angle_threshold: 90.0  # [deg] heading align for prune and current-row split
 
         exact_arc_length: false
@@ -257,105 +261,4 @@
         # 劣弧 TEB 不可行时优弧展开 yaw 再优化；heading_threshold=0 表示一侧失败即试另一侧
         major_arc_retry_enable: True
         major_arc_retry_heading_threshold: 0.0
-        # 优弧锁停滞看门狗：timeout 内剩余转角下降不足 yaw、位移也不足 xy 则解锁；timeout<=0 关闭
-        major_arc_stagnation_timeout: 3.0
-        major_arc_stagnation_yaw: 0.2
-        major_arc_stagnation_xy: 0.1
-        # 双弧均失败：连续 fail_num 次后降 forward_drive 并 latch；连续前进 + min_hold 切回；timeout probe 高权重
-        dual_arc_reverse_enable: True
-        dual_arc_reverse_fail_num: 5
-        dual_arc_reverse_min_hold: 10.0
-        dual_arc_reverse_timeout: 20.0
-        dual_arc_reverse_forward_vx: 0.2
-        dual_arc_reverse_forward_num: 10
-        dual_arc_reverse_publish_backward_mode: False
-
-        # Near-horizon predictable dynamic safety (see 动态障碍物避让.md)
-        dynamic_safety_predictable_mode: False
-        dynamic_obstacles_as_static_edges: True
-        dynamic_obstacle_cache_time: 0.5
-        dyn_gate_T_near: 3.0
-        dyn_gate_v_x_max: 5.0
-        dyn_gate_omega_z_max: 1.0
-        dyn_gate_inflation: 0.5
-        dyn_gate_overlap_dist: 0.5
-        dyn_gate_roi_front: 1.0
-        dyn_gate_roi_rear: 1.0
-        dyn_gate_roi_left: 1.0
-        dyn_gate_roi_right: 1.0
-        dyn_gate_hold_time: 0.5
-        delta_omega_scale: 0.2
-        publish_near_horizon_debug: False
-        # Contour feasibility (see 动态障碍物避让.md)
-        feasibility_check_obstacle_contours: False
-        feasibility_check_dynamic_prediction: False
-        feas_contour_margin: 0.0
-        feas_pred_T: 3.0
-        feas_pred_R: 3.0
-        feas_pred_gate_mode: "both_or"  # rel | abs | both_or
-        feas_pred_delta_omega_abs: 0.2
-        feas_pred_delta_omega_rel: -1.0  # <=0 → delta_omega_scale * max_vel_theta
-        feas_pred_v_min: 0.0
-
-        costmap_converter_plugin: "costmap_converter::CostmapToPolygonsDBSMCCH"
-        costmap_converter_spin_thread: true
-
-        # Optimization
-        no_inner_iterations: 5
-        no_outer_iterations: 4
-        optimization_activate: true
-        optimization_verbose: false
-        penalty_epsilon: 0.05
-        obstacle_cost_exponent: 1.0
-        weight_max_vel_x: 0.1
-        weight_max_vel_theta: 0.1
-        weight_acc_lim_x: 0.1
-        weight_acc_lim_theta: 0.1
-        weight_kinematics_nh: 10000.0
-        weight_kinematics_forward_drive: 100.0
-        weight_kinematics_forward_drive_in_narrow_passages: 1.0
-        weight_kinematics_turning_radius: 1.0
-        weight_optimaltime: 2.0 # must be > 0
-        weight_shortest_path: 0.0
-        weight_obstacle: 1000.0
-        weight_inflation: 1.0
-        weight_dynamic_obstacle: 50.0 # not in use yet
-        weight_dynamic_obstacle_inflation: 0.1
-        weight_velocity_obstacle_ratio: 0.2
-        weight_viapoint: 5.0
-        weight_wall_line_dist: 40.0
-        weight_adapt_factor: 2.0
-        weight_prefer_rotdir: 0.0
-        # Homotopy Class Planner
-
-        enable_homotopy_class_planning: true
-        enable_multithreading: true
-        max_number_classes: 5
-        max_number_plans_in_current_class: 5
-        selection_cost_hysteresis: 1.0
-        selection_prefer_initial_plan: 2.0
-        selection_obst_cost_scale: 2.0
-        selection_dropping_probability: 0.05
-        selection_alternative_time_cost: false
-
-        roadmap_graph_no_samples: 15
-        roadmap_graph_area_width: 5.0
-        roadmap_graph_area_length_scale: 1.0
-        h_signature_prescaler: 1.0
-        h_signature_threshold: 0.1
-        obstacle_heading_threshold: 0.45
-        switching_blocking_period: 0.0
-        viapoints_all_candidates: true
-        delete_detours_backwards: true
-        max_ratio_detours_duration_best_duration: 3.0
-        visualize_hc_graph: false
-        visualize_with_time_as_z_axis_scale: 0.0
-
-        # Recovery
-        shrink_horizon_backup: true
-        shrink_horizon_min_duration: 10.0
-        oscillation_recovery: true
-        oscillation_v_eps: 0.1
-        oscillation_omega_eps: 0.1
-        oscillation_recovery_min_duration: 10.0
-        oscillation_filter_duration: 10.0
+        # 优弧锁停滞看门狗：ti

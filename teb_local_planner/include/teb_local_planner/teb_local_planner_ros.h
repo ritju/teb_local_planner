@@ -55,6 +55,7 @@
  
  // message types
  #include <nav_msgs/msg/path.hpp>
+ #include <teb_msgs/msg/trajectory_msg.hpp>
  #include <nav_msgs/msg/odometry.hpp>
  #include <geometry_msgs/msg/pose_stamped.hpp>
  #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -538,19 +539,36 @@
      geometry_msgs::msg::TwistStamped & cmd_vel);
 
    /**
-    * @brief 兼容保留：原终点退让锁已停用，不再由该函数触发终点停车。
+    * @brief 到达沿路径搜索出的替代终点后零速等待原终点释放。
     * @return true 时 cmd_vel 已填好，调用方应直接返回
     */
    bool tryGoalStandoffHold(
      const geometry_msgs::msg::PoseStamped & robot_pose,
      const geometry_msgs::msg::Twist & velocity,
      geometry_msgs::msg::TwistStamped & cmd_vel);
+   bool isOccupiedGoalBrakingPathSafe(
+     const std::vector<geometry_msgs::msg::PoseStamped> & path) const;
+   void checkOccupiedGoalWaitTimeout(bool waiting);
+   void resetOccupiedGoalState();
+   void stopForOccupiedGoal(
+     const geometry_msgs::msg::PoseStamped & robot_pose,
+     const geometry_msgs::msg::Twist & velocity,
+     geometry_msgs::msg::TwistStamped & cmd_vel);
+   void publishOccupiedGoalStopPrediction(
+     const geometry_msgs::msg::PoseStamped & robot_pose,
+     const geometry_msgs::msg::Twist & velocity);
+   void applyGoalStandoffBraking(
+     const geometry_msgs::msg::PoseStamped & robot_pose,
+     const geometry_msgs::msg::Twist & velocity,
+     geometry_msgs::msg::TwistStamped & cmd_vel);
 
    /**
-    * @brief 原终点 footprint 被占用时立即输出零速度并等待。
-    *        条件消失后保持 0.4s 再退出。超过 last_occupied_goal_hold_timeout 则抛出失败。
+    * @brief 终点进入窗口后沿路径退让停车；等待超时抛终止异常。
+    *        原终点连续安全 occupied_goal_clear_duration 后退出并取消计时。
+    *        超过 last_occupied_goal_hold_timeout 抛出专用异常，由 controller_server 按成功结束。
     */
    bool tryOccupiedGoalNearHold(
+     const geometry_msgs::msg::PoseStamped & robot_pose,
      const geometry_msgs::msg::Twist & velocity,
      geometry_msgs::msg::TwistStamped & cmd_vel);
 
@@ -612,7 +630,7 @@
                             const std::string& global_frame, double max_plan_length, std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan,
                             int* current_goal_idx = NULL, geometry_msgs::msg::TransformStamped* tf_plan_to_global = NULL,
                             int* prune_row_from_idx = NULL, int* prune_row_to_idx = NULL,
-                            PathWindowKeyPoints* key_points = NULL) const;
+                            PathWindowKeyPoints* key_points = NULL);
      
    /**
      * @brief Estimate the orientation of a pose from the global_plan that is treated as a local goal for the local planner.
@@ -895,6 +913,8 @@
    double reference_line_hold_robot_perpendicular_distance_to_edge_line_{0.0};
    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr transformed_path;
    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_plan_pub_;
+   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr occupied_goal_braking_path_pub_;
+   rclcpp::Publisher<teb_msgs::msg::TrajectoryMsg>::SharedPtr occupied_goal_braking_trajectory_pub_;
    mutable rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr
      safe_terminal_marker_pub_;
    mutable rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr
@@ -975,26 +995,31 @@
     */
    bool globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
      const geometry_msgs::msg::PoseStamped& pose_plan_frame,
-     const geometry_msgs::msg::TransformStamped& plan_to_global_transform) const;
+     const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
+     bool require_full_observation = false) const;
+   bool orientedFootprintFullyObservedAndFree(
+     const std::vector<geometry_msgs::msg::Point> & oriented_footprint) const;
 
    /**
     * Oriented footprint（控制器系）相对局部滚动代价图：外包框不与图相交则视为无障碍；
-    * 顶点全部落在图内时沿用 DWB scorePose；跨界时仅对已裁剪至图内的轮廓段做栅栏带代价判定。
+    * 检查 footprint 与代价图交集的轮廓及内部栅格；出图本身不等于占用。
+    * 停车点和制动检查另须完整入图；终点释放须复核已观测触障区域。
     */
    bool orientedFootprintNavigableOnPartialCostmap(
      const geometry_msgs::msg::Pose2D & pose2d_controller_frame,
      const std::vector<geometry_msgs::msg::Point> & oriented_footprint) const;
 
    /**
-    * @brief 检查原终点 footprint 是否空闲。
-    *        原终点占用时不再搜索沿路径退让点，由停车保持逻辑立即输出零速度等待。
-    * @param standoff_idx_out 始终为 -1（保留接口兼容）
-    * @param effective_last_plan_pose 空路径注入用的原始终点
-    * @return 原终点空闲时为 true，否则为 false
+    * @brief 检查原终点 footprint，按开关沿路径搜索安全替代终点。
+    * @param standoff_idx_out 替代终点下标；未找到时为 -1
+    * @param effective_last_plan_pose 空路径注入用的有效终点
+    * @return 原终点空闲或找到替代终点时为 true
     */
    bool selectGoalStandoffAlongPlan(
      const std::vector<geometry_msgs::msg::PoseStamped>& global_plan,
      const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
+     int first_candidate_idx,
+     const std::function<bool(int)> & candidate_is_safe,
      int& standoff_idx_out,
      geometry_msgs::msg::PoseStamped& effective_last_plan_pose) const;
 
@@ -1008,19 +1033,27 @@
   geometry_msgs::msg::PoseStamped last_rotation_pose_;  //!< Robot pose when last in-place rotation started, finished, or failed
   rclcpp::Time last_rotation_pose_time_{0};
   bool was_inplace_rotation_active_{false};
-  //! 兼容保留：终点占用后不再锁定沿路径退让点。
+  //! 原终点占用时选出的沿路径替代终点。
   mutable bool goal_standoff_latched_{false};
+  mutable bool goal_standoff_search_done_{false};
   mutable int goal_standoff_plan_idx_{-1};
   mutable geometry_msgs::msg::PoseStamped goal_standoff_pose_plan_;
   mutable geometry_msgs::msg::PoseStamped goal_standoff_pose_global_;
   mutable bool goal_standoff_force_hold_{false};
+  mutable std::string goal_standoff_failure_reason_{"none"};
+  mutable std::string goal_standoff_failure_detail_;
+  mutable std::string goal_standoff_last_logged_reason_;
   bool goal_standoff_hold_active_{false};
-  //! 本拍终点被占用。由 transformGlobalPlan 写入，触发立即停车保持。
+  //! 本拍终点占用且无停车点，或锁定停车点失效；立即零速。
+  mutable bool occupied_goal_active_{false};
+  bool occupied_goal_timed_out_{false};
   mutable bool occupied_goal_no_standoff_{false};
   mutable double occupied_goal_dist_m_{std::numeric_limits<double>::infinity()};
   bool occupied_goal_near_hold_active_{false};
   rclcpp::Time occupied_goal_near_hold_since_{0};
-  rclcpp::Time occupied_goal_near_clear_since_{0};
+  mutable rclcpp::Time occupied_goal_near_clear_since_{0};
+  bool occupied_goal_clear_active_{false};
+  std::vector<geometry_msgs::msg::Point> occupied_goal_blocking_cells_;
   std::vector<geometry_msgs::msg::PoseStamped> major_arc_plan_;
   bool major_arc_active_{false};
   RotType major_arc_rotdir_{RotType::none};

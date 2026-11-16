@@ -35,6 +35,7 @@
 #include <limits>
 
 #include "teb_local_planner/path_dynamic_wait.h"
+#include "teb_local_planner/occupied_goal_braking.hpp"
 
 using nav2_util::declare_parameter_if_not_declared;
 
@@ -166,20 +167,22 @@ bool TebLocalPlannerROS::tryPathWaitHold(
     path_wait_debug_marker_pub_->publish(ma);
   }
 
-  RCLCPP_INFO_THROTTLE(
-    logger_, *clock_, 1000,
-    "[PathWait] mode=%s reason=%s hw=%.3f n_dyn=%zu blocking=%s waiting=%s "
-    "latched=%s wait=%.2fs rem=%.2fs msg_valid=%d",
-    pathWaitModeName(result.mode),
-    result.reason.c_str(),
-    result.half_width,
-    obsts.size(),
-    joinPathWaitIds(result.blocking_ids).c_str(),
-    joinPathWaitIds(result.waiting_ids).c_str(),
-    joinPathWaitIds(result.latched_ids).c_str(),
-    result.elapsed_wait_s,
-    result.remaining_wait_s,
-    message_valid ? 1 : 0);
+  if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
+    RCLCPP_INFO_THROTTLE(
+      logger_, *clock_, 1000,
+      "[PathWait] mode=%s reason=%s hw=%.3f n_dyn=%zu blocking=%s waiting=%s "
+      "latched=%s wait=%.2fs rem=%.2fs msg_valid=%d",
+      pathWaitModeName(result.mode),
+      result.reason.c_str(),
+      result.half_width,
+      obsts.size(),
+      joinPathWaitIds(result.blocking_ids).c_str(),
+      joinPathWaitIds(result.waiting_ids).c_str(),
+      joinPathWaitIds(result.latched_ids).c_str(),
+      result.elapsed_wait_s,
+      result.remaining_wait_s,
+      message_valid ? 1 : 0);
+  }
 
   if (result.mode != PathWaitMode::Wait)
   {
@@ -239,110 +242,451 @@ bool TebLocalPlannerROS::tryGoalStandoffHold(
   }
 
   bool should_hold = goal_standoff_force_hold_;
-  if (!should_hold) {
-    if (goal_standoff_pose_global_.header.frame_id != robot_pose.header.frame_id) {
-      goal_standoff_hold_active_ = false;
-      return false;
-    }
+  if (goal_standoff_pose_global_.header.frame_id == robot_pose.header.frame_id) {
     const double dist = std::hypot(
       robot_pose.pose.position.x - goal_standoff_pose_global_.pose.position.x,
       robot_pose.pose.position.y - goal_standoff_pose_global_.pose.position.y);
-    const double xy_tol = std::max(
-      0.05, std::max(cfg_->goal_tolerance.xy_goal_tolerance,
-      cfg_->trajectory.goal_standoff_stop_distance));
-    const double linear_speed = std::hypot(velocity.linear.x, velocity.linear.y);
-    const double linear_acc = std::max(1e-6, cfg_->robot.acc_lim_x);
-    const double braking_distance = (linear_speed * linear_speed) / (2.0 * linear_acc);
-    const double braking_margin = std::max(
-      0.0, cfg_->trajectory.occupied_goal_braking_margin);
-    should_hold = dist <= std::max(xy_tol, braking_distance + braking_margin);
+    const double stop_dist = std::max(0.05, cfg_->trajectory.goal_standoff_stop_distance);
+    should_hold = should_hold ||
+      (dist <= stop_dist && std::hypot(velocity.linear.x, velocity.linear.y) <= 0.05);
   }
   if (!should_hold) {
     goal_standoff_hold_active_ = false;
     return false;
   }
 
-  if (!goal_standoff_hold_active_ && planner_) {
-    planner_->clearPlanner();
-    RCLCPP_INFO(logger_, "终点退让: 到达退让点，改为零速度保持");
-  }
   goal_standoff_hold_active_ = true;
-
-  cmd_vel.header.stamp = clock_->now();
-  cmd_vel.header.frame_id = costmap_ros_->getBaseFrameID();
-  // 终点停车直接输出零速度，不经过加速度限制的减速曲线。
-  cmd_vel.twist.linear.x = 0.0;
-  cmd_vel.twist.linear.y = 0.0;
-  cmd_vel.twist.angular.z = 0.0;
-  last_cmd_ = cmd_vel.twist;
-  RCLCPP_INFO_THROTTLE(
-    logger_, *clock_, 1000,
-    "终点退让: 零速度保持 (force=%s)",
-    goal_standoff_force_hold_ ? "是" : "否");
+  stopForOccupiedGoal(robot_pose, velocity, cmd_vel);
   return true;
 }
 
-bool TebLocalPlannerROS::tryOccupiedGoalNearHold(
+bool TebLocalPlannerROS::isOccupiedGoalBrakingPathSafe(
+  const std::vector<geometry_msgs::msg::PoseStamped> & path) const
+{
+  if (!costmap_ || !costmap_model_ || footprint_spec_.size() < 3 || path.empty()) {
+    return false;
+  }
+  std::lock_guard<nav2_costmap_2d::Costmap2D::mutex_t> map_lock(*costmap_->getMutex());
+  const double spacing = std::max(0.005, costmap_->getResolution() * 0.5);
+  auto previous = path.front();
+  for (const auto & pose : path) {
+    if (!std::isfinite(pose.pose.position.x) || !std::isfinite(pose.pose.position.y) ||
+        !std::isfinite(tf2::getYaw(pose.pose.orientation))) {
+      return false;
+    }
+    const double yaw0 = tf2::getYaw(previous.pose.orientation);
+    const double dyaw = angles::shortest_angular_distance(yaw0,
+      tf2::getYaw(pose.pose.orientation));
+    const double distance = std::hypot(pose.pose.position.x - previous.pose.position.x,
+      pose.pose.position.y - previous.pose.position.y);
+    const int count = std::max(1, static_cast<int>(std::ceil(
+      std::max(distance / spacing, std::fabs(dyaw) / 0.05))));
+    for (int j = 0; j <= count; ++j) {
+      const double ratio = static_cast<double>(j) / count;
+      geometry_msgs::msg::Pose2D sample;
+      sample.x = previous.pose.position.x + ratio *
+        (pose.pose.position.x - previous.pose.position.x);
+      sample.y = previous.pose.position.y + ratio *
+        (pose.pose.position.y - previous.pose.position.y);
+      sample.theta = yaw0 + ratio * dyaw;
+      const auto footprint = dwb_critics::getOrientedFootprint(sample, lateralPaddedFootprintSpec());
+      for (const auto & vertex : footprint) {
+        unsigned int mx, my;
+        if (!costmap_->worldToMap(vertex.x, vertex.y, mx, my)) {
+          return false;
+        }
+      }
+      if (!orientedFootprintFullyObservedAndFree(footprint)) {
+        return false;
+      }
+    }
+    previous = pose;
+  }
+  return true;
+}
+
+void TebLocalPlannerROS::resetOccupiedGoalState()
+{
+  occupied_goal_active_ = false;
+  occupied_goal_timed_out_ = false;
+  occupied_goal_no_standoff_ = false;
+  occupied_goal_dist_m_ = std::numeric_limits<double>::infinity();
+  occupied_goal_near_hold_active_ = false;
+  occupied_goal_near_hold_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
+  occupied_goal_near_clear_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
+  occupied_goal_clear_active_ = false;
+  occupied_goal_blocking_cells_.clear();
+  goal_standoff_latched_ = false;
+  goal_standoff_search_done_ = false;
+  goal_standoff_plan_idx_ = -1;
+  goal_standoff_force_hold_ = false;
+  goal_standoff_failure_reason_ = "none";
+  goal_standoff_failure_detail_.clear();
+  goal_standoff_last_logged_reason_.clear();
+  goal_standoff_hold_active_ = false;
+}
+
+void TebLocalPlannerROS::publishOccupiedGoalStopPrediction(
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const geometry_msgs::msg::Twist & velocity)
+{
+  auto start = robot_pose;
+  start.header.stamp = clock_->now();
+  nav_msgs::msg::Path path;
+  path.header = start.header;
+  path.poses.push_back(start);
+  teb_msgs::msg::TrajectoryMsg trajectory;
+  trajectory.header = start.header;
+  teb_msgs::msg::TrajectoryPointMsg first;
+  first.pose = start.pose;
+  first.velocity = velocity;
+  trajectory.trajectory.push_back(first);
+
+  const double vx = velocity.linear.x, vy = velocity.linear.y, wz = velocity.angular.z;
+  const bool finite_velocity = std::isfinite(vx) && std::isfinite(vy) && std::isfinite(wz);
+  if (!finite_velocity) {
+    // Do not advertise an invalid measurement as a stationary, safe prediction.
+    path.poses.clear();
+    trajectory.trajectory.clear();
+    RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000,
+      "终点占用立即停车: reason=invalid_measured_velocity，无法生成制动预测，保持零速");
+  } else if (std::hypot(vx, vy) > 1e-6 || std::fabs(wz) > 1e-6) {
+    const double ax = cfg_->robot.acc_lim_x;
+    const double ay = cfg_->robot.acc_lim_y;
+    const double aw = cfg_->robot.acc_lim_theta;
+    auto valid_axis = [](double speed, double decel) {
+      return std::fabs(speed) <= 1e-6 || (std::isfinite(decel) && decel > 0.0);
+    };
+    const bool valid_deceleration = valid_axis(vx, ax) && valid_axis(vy, ay) && valid_axis(wz, aw);
+    const double delay = std::isfinite(control_duration_) ? std::max(1e-3, control_duration_) : 0.1;
+    auto stopping_time = [](double speed, double decel) {
+      return std::fabs(speed) <= 1e-6 ? 0.0 : std::fabs(speed) / decel;
+    };
+    // Invalid deceleration cannot define a stopping distance. Publish a clearly
+    // diagnosed constant-velocity preview instead of collapsing to one point.
+    const double horizon = valid_deceleration ? delay + std::max({
+      stopping_time(vx, ax), stopping_time(vy, ay), stopping_time(wz, aw)}) : 2.0;
+    if (!valid_deceleration) {
+      RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000,
+        "终点占用立即停车: reason=invalid_prediction_deceleration "
+        "acc=(%.3f,%.3f,%.3f)，发布 2s 匀速运动预测，保持零速", ax, ay, aw);
+    }
+    const double spacing = costmap_ ? std::max(0.005, costmap_->getResolution() * 0.5) : 0.025;
+    const double step = std::min({0.05, spacing / std::max(1e-6, std::hypot(vx, vy)),
+      0.025 / std::max(1e-6, std::fabs(wz))});
+    auto component = [&](double speed, double decel, double t) {
+      if (!valid_deceleration || t <= delay || std::fabs(speed) <= 1e-6) {
+        return speed;
+      }
+      return std::copysign(std::max(0.0, std::fabs(speed) - decel * (t - delay)), speed);
+    };
+    auto pose = start;
+    double yaw = tf2::getYaw(start.pose.orientation);
+    double t = 0.0;
+    // Bound work for malformed/extreme configurations. A truncated preview
+    // retains nonzero terminal velocity and is explicitly diagnosed below.
+    for (size_t i = 0; t < horizon && i < 10000; ++i) {
+      double next = std::min(horizon, t + step);
+      if (valid_deceleration && t < delay) {
+        next = std::min(next, delay);
+      }
+      const double dt = next - t;
+      if (dt <= 0.0) {break;}
+      const double ux = component(vx, ax, next);
+      const double uy = component(vy, ay, next);
+      const double uw = component(wz, aw, next);
+      const double mx = (component(vx, ax, t) + ux) * 0.5;
+      const double my = (component(vy, ay, t) + uy) * 0.5;
+      const double mw = (component(wz, aw, t) + uw) * 0.5;
+      const double middle_yaw = yaw + mw * dt * 0.5;
+      pose.pose.position.x += (mx * std::cos(middle_yaw) - my * std::sin(middle_yaw)) * dt;
+      pose.pose.position.y += (mx * std::sin(middle_yaw) + my * std::cos(middle_yaw)) * dt;
+      yaw += mw * dt;
+      tf2::Quaternion orientation;
+      orientation.setRPY(0.0, 0.0, yaw);
+      pose.pose.orientation = tf2::toMsg(orientation);
+      path.poses.push_back(pose);
+      teb_msgs::msg::TrajectoryPointMsg point;
+      point.pose = pose.pose;
+      point.velocity.linear.x = ux;
+      point.velocity.linear.y = uy;
+      point.velocity.angular.z = uw;
+      point.time_from_start = static_cast<builtin_interfaces::msg::Duration>(
+        rclcpp::Duration::from_seconds(next));
+      trajectory.trajectory.push_back(point);
+      t = next;
+    }
+    if (t < horizon) {
+      RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000,
+        "终点占用制动预测达到采样上限: preview=%.3fs required=%.3fs，保持零速", t, horizon);
+    }
+    if (!isOccupiedGoalBrakingPathSafe(path.poses)) {
+      RCLCPP_WARN_THROTTLE(logger_, *clock_, 1000,
+        "终点占用立即停车: 制动预测范围存在碰撞、未知或出图，保留预测供监控并保持零速");
+    }
+  }
+  if (visualization_) {
+    visualization_->deferLocalPlanPublish(false);
+    visualization_->publishLocalPlan(path.poses);
+  }
+  if (occupied_goal_braking_path_pub_) {
+    occupied_goal_braking_path_pub_->publish(path);
+  }
+  if (occupied_goal_braking_trajectory_pub_) {
+    occupied_goal_braking_trajectory_pub_->publish(trajectory);
+  }
+}
+
+void TebLocalPlannerROS::stopForOccupiedGoal(
+  const geometry_msgs::msg::PoseStamped & robot_pose,
   const geometry_msgs::msg::Twist & velocity,
   geometry_msgs::msg::TwistStamped & cmd_vel)
 {
-  (void)velocity;
-  constexpr double kReleaseDelaySec = 0.4;
-  const rclcpp::Time now = clock_->now();
-  if (occupied_goal_no_standoff_) {
-    occupied_goal_near_clear_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
-    if (!occupied_goal_near_hold_active_) {
-      occupied_goal_near_hold_active_ = true;
-      occupied_goal_near_hold_since_ = now;
-      if (planner_) {
-        planner_->clearPlanner();
-      }
-      RCLCPP_INFO(
-        logger_,
-        "终点占用，取消退让点搜索，立即零速停车等待 (base 距终点 %.3f m)",
-        occupied_goal_dist_m_);
+  cmd_vel.header = robot_pose.header;
+  cmd_vel.header.stamp = clock_->now();
+  if (costmap_ros_) {
+    cmd_vel.header.frame_id = costmap_ros_->getBaseFrameID();
+  }
+  cmd_vel.twist = geometry_msgs::msg::Twist();
+  last_cmd_ = cmd_vel.twist;
+  if (planner_) {
+    planner_->clearPlanner();
+  }
+  publishOccupiedGoalStopPrediction(robot_pose, velocity);
+  checkOccupiedGoalWaitTimeout(true);
+}
+
+void TebLocalPlannerROS::checkOccupiedGoalWaitTimeout(bool waiting)
+{
+  if (occupied_goal_timed_out_) {
+    throw nav2_core::OccupiedGoalTimeout("终点占用停车等待超时");
+  }
+  if (!occupied_goal_active_) {
+    occupied_goal_near_hold_active_ = false;
+    return;
+  }
+  const auto now = clock_->now();
+  if (waiting && !occupied_goal_near_hold_active_) {
+    occupied_goal_near_hold_active_ = true;
+    occupied_goal_near_hold_since_ = now;
+  }
+  const double timeout = cfg_->trajectory.last_occupied_goal_hold_timeout;
+  if (occupied_goal_near_hold_active_ && timeout > 0.0 &&
+      (now - occupied_goal_near_hold_since_).seconds() >= timeout) {
+    occupied_goal_timed_out_ = true;
+    last_cmd_ = geometry_msgs::msg::Twist();
+    throw nav2_core::OccupiedGoalTimeout("终点占用停车等待超时");
+  }
+}
+
+void TebLocalPlannerROS::applyGoalStandoffBraking(
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const geometry_msgs::msg::Twist & velocity,
+  geometry_msgs::msg::TwistStamped & cmd_vel)
+{
+  if (!visualization_) {
+    if (goal_standoff_latched_) {
+      RCLCPP_WARN_THROTTLE(logger_, *clock_, 1000,
+        "替代终点制动: reason=visualization_unavailable，立即零速并发布制动预测");
+      stopForOccupiedGoal(robot_pose, velocity, cmd_vel);
     }
-  } else if (occupied_goal_near_hold_active_) {
-    if (occupied_goal_near_clear_since_.nanoseconds() == 0) {
-      occupied_goal_near_clear_since_ = now;
+    return;
+  }
+  if (!goal_standoff_latched_) {
+    nav_msgs::msg::Path empty;
+    empty.header.stamp = clock_->now();
+    empty.header.frame_id = robot_pose.header.frame_id;
+    if (occupied_goal_braking_path_pub_) {
+      occupied_goal_braking_path_pub_->publish(empty);
     }
-    const double clear_elapsed = (now - occupied_goal_near_clear_since_).seconds();
-    if (clear_elapsed >= kReleaseDelaySec) {
-      occupied_goal_near_hold_active_ = false;
-      occupied_goal_near_hold_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
-      occupied_goal_near_clear_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
-      RCLCPP_INFO(logger_, "终点占用近距停车解除");
-      return false;
+    if (occupied_goal_braking_trajectory_pub_) {
+      teb_msgs::msg::TrajectoryMsg empty_trajectory;
+      empty_trajectory.header = empty.header;
+      occupied_goal_braking_trajectory_pub_->publish(empty_trajectory);
     }
+    return;
+  }
+  const auto plan = visualization_->lastLocalPlan();
+  if (plan.size() < 2 || plan.front().header.frame_id != robot_pose.header.frame_id ||
+      plan.back().header.frame_id != goal_standoff_pose_global_.header.frame_id) {
+    RCLCPP_WARN_THROTTLE(logger_, *clock_, 1000,
+      "替代终点制动: reason=%s poses=%zu robot_frame=%s stop_frame=%s "
+      "plan_front_frame=%s plan_back_frame=%s，停车等待",
+      plan.size() < 2 ? "optimized_plan_missing" : "optimized_plan_frame_mismatch", plan.size(),
+      robot_pose.header.frame_id.c_str(), goal_standoff_pose_global_.header.frame_id.c_str(),
+      plan.empty() ? "" : plan.front().header.frame_id.c_str(),
+      plan.empty() ? "" : plan.back().header.frame_id.c_str());
+    stopForOccupiedGoal(robot_pose, velocity, cmd_vel);
+    return;
+  }
+  if (std::hypot(plan.back().pose.position.x - goal_standoff_pose_global_.pose.position.x,
+        plan.back().pose.position.y - goal_standoff_pose_global_.pose.position.y) > 0.25) {
+    // The optimized endpoint does not match the locked stop. Hold rather than
+    // allowing an unchecked command to drive beyond the intended terminal.
+    RCLCPP_WARN_THROTTLE(logger_, *clock_, 1000,
+      "替代终点制动: reason=optimized_endpoint_mismatch "
+      "endpoint=(%.3f,%.3f) stop=(%.3f,%.3f) tolerance=0.250，停车等待",
+      plan.back().pose.position.x, plan.back().pose.position.y,
+      goal_standoff_pose_global_.pose.position.x, goal_standoff_pose_global_.pose.position.y);
+    stopForOccupiedGoal(robot_pose, velocity, cmd_vel);
+    return;
+  }
+
+  double remaining = std::hypot(
+    robot_pose.pose.position.x - plan.front().pose.position.x,
+    robot_pose.pose.position.y - plan.front().pose.position.y);
+  for (size_t i = 1; i < plan.size(); ++i) {
+    remaining += std::hypot(plan[i].pose.position.x - plan[i - 1].pose.position.x,
+      plan[i].pose.position.y - plan[i - 1].pose.position.y);
+  }
+  const double stop_offset = std::max(0.05, cfg_->trajectory.goal_standoff_stop_distance);
+  const double available = std::max(0.0, remaining - stop_offset);
+  const double decel = cfg_->robot.acc_lim_x;
+  if (!std::isfinite(decel) || decel <= 0.0) {
+    RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000,
+      "替代终点制动: reason=invalid_deceleration acc_lim_x=%.3f，停车等待", decel);
+    stopForOccupiedGoal(robot_pose, velocity, cmd_vel);
+    return;
+  }
+  // 以已配置的 controller_frequency 对应控制周期作为一次指令响应延迟。
+  const double delay = std::max(1e-3, control_duration_);
+  const double measured_speed = std::hypot(velocity.linear.x, velocity.linear.y);
+  // 解 d = v*T + v²/(2*a)，得到当前距离允许的最大速度。
+  const double safe_speed = occupiedGoalSafeSpeed(available, decel, delay);
+  const double required = occupiedGoalStoppingDistance(measured_speed, decel, delay);
+  if (required > available + 0.02) {
+    cmd_vel.twist = geometry_msgs::msg::Twist();
+    RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000,
+      "替代终点制动距离不足: available=%.3f required=%.3f v=%.3f reason=insufficient_braking_distance",
+      available, required, measured_speed);
   } else {
+    const double commanded = std::hypot(cmd_vel.twist.linear.x, cmd_vel.twist.linear.y);
+    if (commanded > safe_speed && commanded > 1e-6) {
+      const double ratio = safe_speed / commanded;
+      cmd_vel.twist.linear.x *= ratio;
+      cmd_vel.twist.linear.y *= ratio;
+      if (!cfg_->robot.cmd_angle_instead_rotvel) {
+        cmd_vel.twist.angular.z *= ratio;
+      }
+    }
+  }
+
+  // 从优化后的 TEB 路径截取保守停车距离，作为监控器检查的制动预测。
+  const double projected_speed = std::max(measured_speed,
+    std::hypot(cmd_vel.twist.linear.x, cmd_vel.twist.linear.y));
+  const double projected_arc = occupiedGoalStoppingDistance(projected_speed, decel, delay);
+  std::vector<geometry_msgs::msg::PoseStamped> braking_path;
+  auto start = robot_pose;
+  start.header.stamp = clock_->now();
+  braking_path.push_back(start);
+  double arc = 0.0;
+  auto previous = start;
+  for (const auto & pose : plan) {
+    const double segment = std::hypot(pose.pose.position.x - previous.pose.position.x,
+      pose.pose.position.y - previous.pose.position.y);
+    if (segment < 1e-6) {
+      previous = pose;
+      continue;
+    }
+    const double take = std::min(segment, std::max(0.0, projected_arc - arc));
+    const int samples = std::max(1, static_cast<int>(std::ceil(take / 0.1)));
+    tf2::Quaternion q0, q1;
+    tf2::fromMsg(previous.pose.orientation, q0);
+    tf2::fromMsg(pose.pose.orientation, q1);
+    for (int j = 1; j <= samples; ++j) {
+      const double ratio = (take / segment) * static_cast<double>(j) / samples;
+      auto sample = pose;
+      sample.pose.position.x = previous.pose.position.x + ratio *
+        (pose.pose.position.x - previous.pose.position.x);
+      sample.pose.position.y = previous.pose.position.y + ratio *
+        (pose.pose.position.y - previous.pose.position.y);
+      sample.pose.orientation = tf2::toMsg(q0.slerp(q1, ratio));
+      braking_path.push_back(sample);
+    }
+    if (arc + segment >= projected_arc) {
+      break;
+    }
+    arc += segment;
+    previous = pose;
+  }
+  // Always expose the complete optimized path to collision_monitor while decelerating.
+  // The braking prediction has its own topics and must not hide upcoming obstacles.
+  visualization_->publishLocalPlan(plan);
+  if (!isOccupiedGoalBrakingPathSafe(braking_path)) {
+    cmd_vel.twist = geometry_msgs::msg::Twist();
+    RCLCPP_ERROR_THROTTLE(logger_, *clock_, 500,
+      "替代终点制动范围内存在近障碍、未知或出图，立即输出零速度 reason=braking_corridor_unsafe");
+  }
+  checkOccupiedGoalWaitTimeout(std::hypot(cmd_vel.twist.linear.x,
+    cmd_vel.twist.linear.y) < 1e-6 && std::fabs(cmd_vel.twist.angular.z) < 1e-6);
+  nav_msgs::msg::Path path_msg;
+  path_msg.header = start.header;
+  path_msg.poses = braking_path;
+  if (occupied_goal_braking_path_pub_) {
+    occupied_goal_braking_path_pub_->publish(path_msg);
+  }
+  if (occupied_goal_braking_trajectory_pub_) {
+    teb_msgs::msg::TrajectoryMsg trajectory;
+    trajectory.header = path_msg.header;
+    double distance = 0.0;
+    for (size_t i = 0; i < braking_path.size(); ++i) {
+      if (i > 0) {
+        distance += std::hypot(
+          braking_path[i].pose.position.x - braking_path[i - 1].pose.position.x,
+          braking_path[i].pose.position.y - braking_path[i - 1].pose.position.y);
+      }
+      teb_msgs::msg::TrajectoryPointMsg point;
+      point.pose = braking_path[i].pose;
+      double t = 0.0;
+      double speed = projected_speed;
+      if (projected_speed > 1e-6) {
+        const double response_distance = projected_speed * delay;
+        if (distance <= response_distance) {
+          t = distance / projected_speed;
+        } else {
+          const double brake_distance = distance - response_distance;
+          speed = std::sqrt(std::max(0.0,
+            projected_speed * projected_speed - 2.0 * decel * brake_distance));
+          t = delay + (projected_speed - speed) / decel;
+          point.acceleration.linear.x =
+            -std::copysign(decel, velocity.linear.x != 0.0 ? velocity.linear.x :
+              cmd_vel.twist.linear.x);
+        }
+      }
+      point.velocity.linear.x = std::copysign(speed,
+        velocity.linear.x != 0.0 ? velocity.linear.x : cmd_vel.twist.linear.x);
+      point.time_from_start = static_cast<builtin_interfaces::msg::Duration>(
+        rclcpp::Duration::from_seconds(t));
+      trajectory.trajectory.push_back(point);
+    }
+    occupied_goal_braking_trajectory_pub_->publish(trajectory);
+  }
+}
+
+bool TebLocalPlannerROS::tryOccupiedGoalNearHold(
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const geometry_msgs::msg::Twist & velocity,
+  geometry_msgs::msg::TwistStamped & cmd_vel)
+{
+  if (occupied_goal_timed_out_) {
+    throw nav2_core::OccupiedGoalTimeout("终点占用停车等待超时");
+  }
+  if (!occupied_goal_active_) {
+    occupied_goal_near_hold_active_ = false;
     return false;
   }
 
-  const double timeout = cfg_->trajectory.last_occupied_goal_hold_timeout;
-  if (timeout > 0.0 && occupied_goal_near_hold_since_.nanoseconds() > 0) {
-    const double held = (now - occupied_goal_near_hold_since_).seconds();
-    if (held >= timeout) {
-      occupied_goal_near_hold_active_ = false;
-      occupied_goal_near_hold_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
-      occupied_goal_near_clear_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
-      RCLCPP_ERROR(logger_, "终点占用立即停车已持续 %.1f s，本次控制失败", held);
-      throw nav2_core::PlannerException(
-        "终点被占用，立即停车等待超时");
-    }
+  bool holding = false;
+  if (goal_standoff_latched_) {
+    holding = tryGoalStandoffHold(robot_pose, velocity, cmd_vel);
+  } else {
+    stopForOccupiedGoal(robot_pose, velocity, cmd_vel);
+    holding = true;
   }
 
-  cmd_vel.header.stamp = now;
-  cmd_vel.header.frame_id = costmap_ros_->getBaseFrameID();
-  // 终点占用时直接输出零速度，不经过加速度限制的减速曲线。
-  cmd_vel.twist.linear.x = 0.0;
-  cmd_vel.twist.linear.y = 0.0;
-  cmd_vel.twist.angular.z = 0.0;
-  last_cmd_ = cmd_vel.twist;
-  RCLCPP_INFO_THROTTLE(
-    logger_, *clock_, 1000,
-    "终点占用立即零速停车: dist=%.3f m",
-    occupied_goal_dist_m_);
-  return true;
+  // Replanning or recovery of the same terminal cannot extend a running deadline.
+  checkOccupiedGoalWaitTimeout(holding);
+  return holding;
 }
 
 }  // namespace teb_local_planner

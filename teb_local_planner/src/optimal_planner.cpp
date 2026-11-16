@@ -723,8 +723,10 @@ void TebOptimalPlanner::AddEdgesNearHorizonOmegaHold()
   }
   if (!cfg_->near_horizon_runtime.omega_hold_enable)
   {
-    RCLCPP_DEBUG(node_->get_logger(),
-                 "[NearHorizon] OmegaHold skipped: gate disabled this cycle");
+    if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
+      RCLCPP_DEBUG(node_->get_logger(),
+                   "[NearHorizon] OmegaHold skipped: gate disabled this cycle");
+    }
     return;
   }
   if (cfg_->optim.weight_near_horizon_omega_hold <= 0.0 || teb_.sizePoses() < 2)
@@ -765,10 +767,12 @@ void TebOptimalPlanner::AddEdgesNearHorizonOmegaHold()
 
   if (node_)
   {
-    RCLCPP_INFO_THROTTLE(
-        node_->get_logger(), *node_->get_clock(), 2000,
-        "[NearHorizon] AddEdgesNearHorizonOmegaHold: edges=%d omega_ref=%.3f delta_allow=%.3f T_near=%.2f",
-        edges_added, omega_ref, delta_allow, T_near);
+    if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
+      RCLCPP_INFO_THROTTLE(
+          node_->get_logger(), *node_->get_clock(), 2000,
+          "[NearHorizon] AddEdgesNearHorizonOmegaHold: edges=%d omega_ref=%.3f delta_allow=%.3f T_near=%.2f",
+          edges_added, omega_ref, delta_allow, T_near);
+    }
   }
 }
 
@@ -1329,7 +1333,8 @@ void TebOptimalPlanner::logTebNumericFailure(const char* where, const std::excep
 
 void TebOptimalPlanner::logWallAndObstacleCostsIfDue()
 {
-  if (!cfg_ || !optimizer_ || !node_ || !enable_wall_obstacle_cost_log_)
+  if (!cfg_ || !cfg_->debug_mode.load(std::memory_order_relaxed) ||
+      !optimizer_ || !node_ || !enable_wall_obstacle_cost_log_)
     return;
 
   const double interval = cfg_->wall_line.debug_wall_obstacle_cost_interval;

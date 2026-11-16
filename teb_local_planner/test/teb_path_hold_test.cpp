@@ -2,7 +2,9 @@
 #include "split_module_scenarios.hpp"
 
 #include "teb_local_planner/path_dynamic_wait.h"
+#include "teb_local_planner/occupied_goal_braking.hpp"
 #include "teb_params_loader.hpp"
+#include <nav2_core/exceptions.hpp>
 
 TEST(PathWaitGeometry, samplesCenterlineAlongPlan)
 {
@@ -18,6 +20,28 @@ TEST(PathWaitGeometry, samplesCenterlineAlongPlan)
     EXPECT_LE(arc, data.lookahead_m + 1e-3) << "seed " << seed;
     EXPECT_GT(arc, 0.5);
   }
+}
+
+TEST(OccupiedGoalBraking, speedLimitAccountsForResponseDelay)
+{
+  const double deceleration = 0.3;
+  const double response_time = 0.1;  // controller_frequency = 10 Hz
+  const double speed = 0.5;
+  const double required = teb_local_planner::occupiedGoalStoppingDistance(
+    speed, deceleration, response_time);
+  EXPECT_NEAR(required, 0.4666666667, 1e-6);
+  EXPECT_NEAR(teb_local_planner::occupiedGoalSafeSpeed(
+    required, deceleration, response_time), speed, 1e-6);
+  EXPECT_LT(teb_local_planner::occupiedGoalSafeSpeed(
+    required - 0.1, deceleration, response_time), speed);
+  EXPECT_DOUBLE_EQ(teb_local_planner::occupiedGoalSafeSpeed(
+    0.0, deceleration, response_time), 0.0);
+}
+
+TEST(OccupiedGoalBraking, honorsSmallConfiguredDeceleration)
+{
+  EXPECT_NEAR(teb_local_planner::occupiedGoalStoppingDistance(0.5, 0.02, 0.1), 6.3, 1e-9);
+  EXPECT_NEAR(teb_local_planner::occupiedGoalSafeSpeed(6.3, 0.02, 0.1), 0.5, 1e-9);
 }
 
 TEST_F(SplitModuleFixture, holdReturnsFalseWithoutLatchOrMessage)
@@ -77,3 +101,635 @@ TEST(PathWaitGeometry, movingObstacleEntersThenLeavesCorridor)
     }
   }
 }
+
+namespace
+{
+class GoalTestCritic : public dwb_critics::ObstacleFootprintCritic
+{
+public:
+  explicit GoalTestCritic(nav2_costmap_2d::Costmap2D & map) {costmap_ = &map;}
+};
+using GoalAccess = teb_local_planner::TebSplitModuleTestAccess;
+
+class OccupiedGoalTest : public SplitModuleFixture
+{
+protected:
+  void SetUp() override
+  {
+    SplitModuleFixture::SetUp();
+    map_ = std::make_unique<nav2_costmap_2d::Costmap2D>(240, 120, 0.05, -2.0, -2.0, 0);
+    GoalAccess::configureOccupiedGoal(*planner_, *map_, std::make_shared<GoalTestCritic>(*map_));
+    for (int i = 0; i <= 12; ++i) {plan_.push_back(makePose(i * 0.5, 0.0));}
+  }
+  void blockGoal()
+  {
+    for (unsigned int x = 156; x <= 164; ++x) {
+      for (unsigned int y = 34; y <= 46; ++y) {map_->setCost(x, y, 254);}
+    }
+  }
+  std::unique_ptr<nav2_costmap_2d::Costmap2D> map_;
+  std::vector<geometry_msgs::msg::PoseStamped> plan_;
+};
+
+TEST_F(OccupiedGoalTest, ignoresOccupiedGoalOutsideWindowThenSelectsSafeTerminal)
+{
+  blockGoal();
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 1.0, local));
+  EXPECT_FALSE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_EQ(GoalAccess::standoffIndex(*planner_), -1);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_TRUE(GoalAccess::occupiedActive(*planner_));
+  ASSERT_GE(GoalAccess::standoffIndex(*planner_), 0);
+  EXPECT_LT(GoalAccess::standoffIndex(*planner_), 12);
+  EXPECT_LT(local.back().pose.position.x, plan_.back().pose.position.x);
+  EXPECT_EQ(plan_.size(), 13u);
+  // Once entered, a shrinking horizon cannot release the occupied-goal episode.
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 1.0, local));
+  EXPECT_TRUE(GoalAccess::occupiedActive(*planner_));
+}
+
+TEST_F(OccupiedGoalTest, detectsObstacleEntirelyInsideGoalFootprint)
+{
+  unsigned int x, y;
+  ASSERT_TRUE(map_->worldToMap(6.025, 0.025, x, y));
+  map_->setCost(x, y, 254);
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_TRUE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_LT(local.back().pose.position.x, 6.0);
+  EXPECT_FALSE(GoalAccess::brakingPathSafe(*planner_, {makePose(6.0, 0.0)}));
+  map_->setCost(x, y, 255);
+  EXPECT_FALSE(GoalAccess::brakingPathSafe(*planner_, {makePose(6.0, 0.0)}));
+}
+
+TEST_F(OccupiedGoalTest, forwardExtendedWindowDoesNotTreatGoalClippingAsOccupation)
+{
+  // Ordinary row fallback extends the 5m horizon to x=6. Clipping of the
+  // otherwise free goal footprint must not trigger occupied-goal parking.
+  map_->resizeMap(161, 120, 0.05, -2.0, -2.0);
+  unsigned int x, y;
+  ASSERT_TRUE(map_->worldToMap(4.525, 0.025, x, y));
+  map_->setCost(x, y, 254);
+  GoalAccess::setGoalTailDistance(*planner_, 4.0);
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 5.0, local));
+  EXPECT_FALSE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_DOUBLE_EQ(local.back().pose.position.x, plan_.back().pose.position.x);
+}
+
+TEST(OccupiedGoalParameters, clearDurationLoadsAndUpdatesDynamically)
+{
+  teb_local_planner::TebConfig config;
+  teb_local_planner::test_data::loadFollowPathParams(config);
+  EXPECT_DOUBLE_EQ(config.trajectory.occupied_goal_clear_duration, 0.4);
+  const auto result = config.dynamicParametersCallback(
+    {rclcpp::Parameter("FollowPath.occupied_goal_clear_duration", 1.25)});
+  EXPECT_TRUE(result.successful);
+  EXPECT_DOUBLE_EQ(config.trajectory.occupied_goal_clear_duration, 1.25);
+}
+
+TEST_F(OccupiedGoalTest, partiallyVisibleOrOutsideFreeGoalDoesNotStartParking)
+{
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  map_->resizeMap(161, 120, 0.05, -2.0, -2.0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_FALSE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_EQ(GoalAccess::standoffIndex(*planner_), -1);
+  map_->resizeMap(100, 120, 0.05, -2.0, -2.0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_FALSE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_FALSE(GoalAccess::goalWaitStarted(*planner_));
+}
+
+TEST_F(OccupiedGoalTest, partialFootprintDetectsVisibleInteriorAcrossEveryMapEdge)
+{
+  map_->resizeMap(40, 40, 0.05, -1.0, -1.0);
+  const std::vector<std::pair<double, double>> directions = {
+    {1.0, 0.0}, {-1.0, 0.0}, {0.0, 1.0}, {0.0, -1.0}};
+  for (const auto & direction : directions) {
+    for (double offset : {0.95, 1.05}) {
+      for (double yaw : {0.0, M_PI / 4.0}) {
+        const auto pose = makePose(direction.first * offset, direction.second * offset, yaw);
+        ASSERT_TRUE(GoalAccess::partialFootprintFree(*planner_, pose));
+        const double bx = direction.first == 0.0 ? 0.025 : direction.first * 0.975;
+        const double by = direction.second == 0.0 ? 0.025 : direction.second * 0.975;
+        unsigned int x, y;
+        ASSERT_TRUE(map_->worldToMap(bx, by, x, y));
+        map_->setCost(x, y, 254);
+        EXPECT_FALSE(GoalAccess::partialFootprintFree(*planner_, pose));
+        map_->setCost(x, y, 255);
+        EXPECT_FALSE(GoalAccess::partialFootprintFree(*planner_, pose));
+        map_->setCost(x, y, 0);
+      }
+    }
+  }
+}
+
+TEST_F(OccupiedGoalTest, partiallyVisibleGoalChecksVisibleInteriorAndKeepsFrontClearance)
+{
+  map_->resizeMap(161, 120, 0.05, -2.0, -2.0);
+  unsigned int x, y;
+  ASSERT_TRUE(map_->worldToMap(6.025, 0.025, x, y));
+  map_->setCost(x, y, 254);
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  ASSERT_TRUE(GoalAccess::occupiedActive(*planner_));
+  const int index = GoalAccess::standoffIndex(*planner_);
+  ASSERT_GE(index, 0);
+  const auto stop = GoalAccess::standoffPose(*planner_);
+  EXPECT_LE(stop.pose.position.x, 5.5);
+  EXPECT_TRUE(GoalAccess::brakingPathSafe(*planner_, {stop}));
+  EXPECT_FALSE(GoalAccess::brakingPathSafe(*planner_, {plan_.back()}));
+}
+
+TEST_F(OccupiedGoalTest, skipsFreeCandidateWhoseFootprintIsNotFullyInsideMap)
+{
+  map_->resizeMap(800, 400, 0.01, -2.0, -2.0);
+  plan_.clear();
+  for (int i = 0; i <= 60; ++i) {plan_.push_back(makePose(i * 0.1, 0.0));}
+  plan_.back() = makePose(6.0, 0.0, M_PI / 4.0);
+  GoalAccess::disableStandoffClearanceForGeometryTest(*planner_);
+  unsigned int x, y;
+  ASSERT_TRUE(map_->worldToMap(5.975, 0.225, x, y));
+  map_->setCost(x, y, 254);
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  ASSERT_TRUE(GoalAccess::occupiedActive(*planner_));
+  ASSERT_GE(GoalAccess::standoffIndex(*planner_), 0);
+  const auto stop = GoalAccess::standoffPose(*planner_);
+  // x=5.9 has no collision but its right vertices are outside the map.
+  EXPECT_NEAR(stop.pose.position.x, 5.8, 1e-6);
+  EXPECT_TRUE(GoalAccess::brakingPathSafe(*planner_, {stop}));
+}
+
+TEST_F(OccupiedGoalTest, partiallyVisibleGoalCanClearWithoutFullFootprintEnteringMap)
+{
+  map_->resizeMap(161, 120, 0.05, -2.0, -2.0);
+  unsigned int x, y;
+  ASSERT_TRUE(map_->worldToMap(6.025, 0.025, x, y));
+  map_->setCost(x, y, 254);
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  ASSERT_TRUE(GoalAccess::occupiedActive(*planner_));
+  GoalAccess::checkGoalWait(*planner_, true);
+  map_->setCost(x, y, 0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_TRUE(GoalAccess::occupiedActive(*planner_));
+  GoalAccess::ageGoalClearBy(*planner_, 2.0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_FALSE(GoalAccess::brakingPathSafe(*planner_, {plan_.back()}));
+  EXPECT_FALSE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_FALSE(GoalAccess::goalWaitStarted(*planner_));
+  EXPECT_DOUBLE_EQ(local.back().pose.position.x, plan_.back().pose.position.x);
+}
+
+TEST_F(OccupiedGoalTest, losingObservedBlockerDoesNotReleaseEvenWhileGoalIsPartlyVisible)
+{
+  unsigned int x, y;
+  ASSERT_TRUE(map_->worldToMap(6.125, 0.025, x, y));
+  map_->setCost(x, y, 254);
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  ASSERT_TRUE(GoalAccess::occupiedActive(*planner_));
+  GoalAccess::checkGoalWait(*planner_, true);
+  // The previously detected obstacle exits the map. The visible part is clear,
+  // which must not be mistaken for actual disappearance of that obstacle.
+  map_->resizeMap(161, 120, 0.05, -2.0, -2.0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  GoalAccess::ageGoalClearBy(*planner_, 2.0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_TRUE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_TRUE(GoalAccess::goalWaitStarted(*planner_));
+  // Bring only the old blocking area back into view, now free. Full observation
+  // of the entire goal footprint is not needed to complete release debounce.
+  map_->resizeMap(163, 120, 0.05, -2.0, -2.0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  GoalAccess::ageGoalClearBy(*planner_, 2.0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_FALSE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_FALSE(GoalAccess::goalWaitStarted(*planner_));
+}
+
+TEST_F(OccupiedGoalTest, pathFailureStopPreservesTerminalAndHonorsExistingDeadline)
+{
+  blockGoal();
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  const auto locked = GoalAccess::standoffPose(*planner_);
+  const auto index = GoalAccess::standoffIndex(*planner_);
+  geometry_msgs::msg::TwistStamped command;
+  command.twist.linear.x = 0.4;
+  command.twist.angular.z = 0.3;
+  GoalAccess::stopOccupiedGoal(*planner_, plan_.front(), command);
+  EXPECT_DOUBLE_EQ(command.twist.linear.x, 0.0);
+  EXPECT_DOUBLE_EQ(command.twist.angular.z, 0.0);
+  EXPECT_TRUE(GoalAccess::goalWaitStarted(*planner_));
+  EXPECT_EQ(GoalAccess::standoffIndex(*planner_), index);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_DOUBLE_EQ(GoalAccess::standoffPose(*planner_).pose.position.x, locked.pose.position.x);
+  GoalAccess::expireGoalWait(*planner_);
+  EXPECT_THROW(GoalAccess::stopOccupiedGoal(*planner_, plan_.front(), command),
+    nav2_core::OccupiedGoalTimeout);
+  EXPECT_DOUBLE_EQ(command.twist.linear.x, 0.0);
+}
+
+TEST_F(OccupiedGoalTest, occupiedLockedStopImmediatelyHoldsWithoutSelectingAnotherPoint)
+{
+  blockGoal();
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  const int index = GoalAccess::standoffIndex(*planner_);
+  ASSERT_GE(index, 0);
+  const auto locked = GoalAccess::standoffPose(*planner_);
+  geometry_msgs::msg::Twist velocity;
+  velocity.linear.x = 0.3;
+  geometry_msgs::msg::TwistStamped command;
+  EXPECT_FALSE(GoalAccess::holdOccupiedGoal(*planner_, plan_.front(), velocity, command));
+  EXPECT_FALSE(GoalAccess::goalWaitStarted(*planner_));
+  unsigned int x, y;
+  ASSERT_TRUE(map_->worldToMap(locked.pose.position.x + 0.025, 0.025, x, y));
+  map_->setCost(x, y, 254);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_EQ(GoalAccess::standoffIndex(*planner_), index);
+  EXPECT_TRUE(GoalAccess::standoffBlocked(*planner_));
+  command.twist.linear.x = 0.3;
+  ASSERT_TRUE(GoalAccess::holdOccupiedGoal(*planner_, plan_.front(), velocity, command));
+  EXPECT_DOUBLE_EQ(command.twist.linear.x, 0.0);
+  EXPECT_DOUBLE_EQ(command.twist.angular.z, 0.0);
+  EXPECT_TRUE(GoalAccess::goalWaitStarted(*planner_));
+  map_->setCost(x, y, 0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_EQ(GoalAccess::standoffIndex(*planner_), index);
+  EXPECT_FALSE(GoalAccess::standoffBlocked(*planner_));
+  EXPECT_FALSE(GoalAccess::holdOccupiedGoal(*planner_, plan_.front(), velocity, command));
+  EXPECT_TRUE(GoalAccess::goalWaitStarted(*planner_));
+  GoalAccess::expireGoalWait(*planner_);
+  EXPECT_THROW(GoalAccess::holdOccupiedGoal(*planner_, plan_.front(), velocity, command),
+    nav2_core::OccupiedGoalTimeout);
+}
+
+TEST_F(OccupiedGoalTest, configuredClearDurationCancelsWaitAndRestoresOriginalGoal)
+{
+  GoalAccess::setGoalClearDuration(*planner_, 2.0);
+  blockGoal();
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  GoalAccess::checkGoalWait(*planner_, true);
+  std::fill(map_->getCharMap(), map_->getCharMap() + 240 * 120, 0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  GoalAccess::ageGoalClearBy(*planner_, 1.0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_TRUE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_TRUE(GoalAccess::goalWaitStarted(*planner_));
+  GoalAccess::ageGoalClearBy(*planner_, 2.1);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_FALSE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_FALSE(GoalAccess::goalWaitStarted(*planner_));
+  EXPECT_EQ(GoalAccess::standoffIndex(*planner_), -1);
+  EXPECT_DOUBLE_EQ(local.back().pose.position.x, plan_.back().pose.position.x);
+  GoalAccess::expireGoalWait(*planner_);
+  EXPECT_NO_THROW(GoalAccess::checkGoalWait(*planner_, false));
+  blockGoal();
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_TRUE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_FALSE(GoalAccess::goalWaitStarted(*planner_));
+}
+
+TEST_F(OccupiedGoalTest, unknownOrOffMapGoalCannotCancelWait)
+{
+  blockGoal();
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  GoalAccess::checkGoalWait(*planner_, true);
+  std::fill(map_->getCharMap(), map_->getCharMap() + 240 * 120, 0);
+  map_->setCost(160, 40, 255);
+  GoalAccess::ageGoalClearBy(*planner_, 2.0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_TRUE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_TRUE(GoalAccess::goalWaitStarted(*planner_));
+  map_->resizeMap(100, 120, 0.05, -2.0, -2.0);
+  GoalAccess::ageGoalClearBy(*planner_, 2.0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_TRUE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_TRUE(GoalAccess::goalWaitStarted(*planner_));
+}
+
+TEST_F(OccupiedGoalTest, noInitialSafePointDoesNotStartAnotherSearch)
+{
+  std::fill(map_->getCharMap(), map_->getCharMap() + 240 * 120, 254);
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  ASSERT_EQ(GoalAccess::standoffIndex(*planner_), -1);
+  std::fill(map_->getCharMap(), map_->getCharMap() + 240 * 120, 0);
+  blockGoal();
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_EQ(GoalAccess::standoffIndex(*planner_), -1);
+  geometry_msgs::msg::TwistStamped command;
+  EXPECT_TRUE(GoalAccess::holdOccupiedGoal(*planner_, plan_.front(), geometry_msgs::msg::Twist{}, command));
+  EXPECT_DOUBLE_EQ(command.twist.linear.x, 0.0);
+  EXPECT_TRUE(GoalAccess::goalWaitStarted(*planner_));
+}
+
+TEST_F(OccupiedGoalTest, sameGoalReplanMissingLockedPointStopsWithoutReplacingIt)
+{
+  GoalAccess::markInitialized(*planner_);
+  nav_msgs::msg::Path path;
+  path.header.frame_id = "map";
+  path.poses = plan_;
+  planner_->setPlan(path);
+  blockGoal();
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  const auto locked = GoalAccess::standoffPose(*planner_);
+  const int index = GoalAccess::standoffIndex(*planner_);
+  ASSERT_GE(index, 0);
+  path.poses.erase(path.poses.begin() + index);
+  planner_->setPlan(path);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, path.poses, 8.0, local));
+  EXPECT_TRUE(GoalAccess::standoffBlocked(*planner_));
+  EXPECT_DOUBLE_EQ(GoalAccess::standoffPose(*planner_).pose.position.x, locked.pose.position.x);
+  geometry_msgs::msg::TwistStamped command;
+  EXPECT_TRUE(GoalAccess::holdOccupiedGoal(*planner_, plan_.front(), geometry_msgs::msg::Twist{}, command));
+  EXPECT_TRUE(GoalAccess::goalWaitStarted(*planner_));
+}
+
+TEST_F(OccupiedGoalTest, zeroClearDurationReleasesImmediately)
+{
+  GoalAccess::setGoalClearDuration(*planner_, 0.0);
+  blockGoal();
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  GoalAccess::checkGoalWait(*planner_, true);
+  std::fill(map_->getCharMap(), map_->getCharMap() + 240 * 120, 0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_FALSE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_FALSE(GoalAccess::goalWaitStarted(*planner_));
+}
+
+TEST_F(OccupiedGoalTest, noSafeTerminalAndStableClearRelease)
+{
+  map_->resetMap(0, 0, 240, 120);
+  std::fill(map_->getCharMap(), map_->getCharMap() + 240 * 120, 254);
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_TRUE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_EQ(GoalAccess::standoffIndex(*planner_), -1);
+  std::fill(map_->getCharMap(), map_->getCharMap() + 240 * 120, 0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_TRUE(GoalAccess::occupiedActive(*planner_));
+  GoalAccess::ageGoalClear(*planner_);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_FALSE(GoalAccess::occupiedActive(*planner_));
+}
+
+TEST_F(OccupiedGoalTest, sameGoalReplanPreservesDeadlineAndTimeoutStaysTerminal)
+{
+  GoalAccess::markInitialized(*planner_);
+  nav_msgs::msg::Path path;
+  path.header.frame_id = "map";
+  path.poses = plan_;
+  planner_->setPlan(path);
+  blockGoal();
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  GoalAccess::checkGoalWait(*planner_, true);
+  GoalAccess::expireGoalWait(*planner_);
+  planner_->setPlan(path);
+  EXPECT_TRUE(GoalAccess::goalWaitStarted(*planner_));
+  EXPECT_THROW(GoalAccess::checkGoalWait(*planner_, false), nav2_core::OccupiedGoalTimeout);
+  EXPECT_THROW(GoalAccess::checkGoalWait(*planner_, false), nav2_core::OccupiedGoalTimeout);
+  // A new setPlan after the terminal abort permits a new attempt, even to the same goal.
+  planner_->setPlan(path);
+  EXPECT_FALSE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_NO_THROW(GoalAccess::checkGoalWait(*planner_, false));
+}
+
+TEST_F(OccupiedGoalTest, differentGoalReplanResetsDeadline)
+{
+  GoalAccess::markInitialized(*planner_);
+  nav_msgs::msg::Path path;
+  path.header.frame_id = "map";
+  path.poses = plan_;
+  planner_->setPlan(path);
+  blockGoal();
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  GoalAccess::checkGoalWait(*planner_, true);
+  GoalAccess::expireGoalWait(*planner_);
+  path.poses.back().pose.position.x += 1.0;
+  planner_->setPlan(path);
+  EXPECT_FALSE(GoalAccess::occupiedActive(*planner_));
+  EXPECT_FALSE(GoalAccess::goalWaitStarted(*planner_));
+}
+
+TEST_F(OccupiedGoalTest, brakingChecksBetweenPosesAndRejectsUnknownOrOffMap)
+{
+  const std::vector<geometry_msgs::msg::PoseStamped> sparse = {makePose(0.0, 0.0), makePose(1.0, 0.0)};
+  EXPECT_TRUE(GoalAccess::brakingPathSafe(*planner_, sparse));
+  // Obstacle intersects the padded footprint between the two published endpoints.
+  map_->setCost(50, 43, 254);
+  EXPECT_FALSE(GoalAccess::brakingPathSafe(*planner_, sparse));
+  map_->setCost(50, 43, 255);
+  EXPECT_FALSE(GoalAccess::brakingPathSafe(*planner_, sparse));
+  EXPECT_FALSE(GoalAccess::brakingPathSafe(*planner_, {makePose(-2.0, 0.0)}));
+}
+
+TEST_F(OccupiedGoalTest, publishesFullOptimizedPlanDuringBrakingAndStopsForNearObstacle)
+{
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("occupied_goal_publication_test");
+  auto listener = std::make_shared<rclcpp::Node>("occupied_goal_plan_listener");
+  nav_msgs::msg::Path::SharedPtr received;
+  auto sub = listener->create_subscription<nav_msgs::msg::Path>("local_plan", 1,
+    [&](nav_msgs::msg::Path::SharedPtr msg) {received = msg;});
+  std::vector<geometry_msgs::msg::PoseStamped> optimized;
+  for (int i = 0; i <= 10; ++i) {
+    auto pose = makePose(i * 0.1, 0.0);
+    pose.header.stamp = node->now();
+    optimized.push_back(pose);
+  }
+  GoalAccess::setGoalVisualization(*planner_, node, optimized);
+  const auto discovery_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!received && std::chrono::steady_clock::now() < discovery_deadline) {
+    // Republish to survive DDS discovery; consume this seed before checking braking output.
+    GoalAccess::seedLocalPlan(*planner_, optimized);
+    rclcpp::spin_some(listener);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_NE(received, nullptr);
+  received.reset();
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  geometry_msgs::msg::Twist velocity;
+  velocity.linear.x = 0.5;
+  geometry_msgs::msg::TwistStamped command;
+  do {
+    command.twist.linear.x = 0.9;
+    GoalAccess::brakeGoal(*planner_, optimized.front(), velocity, command);
+    rclcpp::spin_some(listener);
+    if (received) {break;}
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  } while (std::chrono::steady_clock::now() < until);
+  ASSERT_NE(received, nullptr);
+  EXPECT_GT(command.twist.linear.x, 0.0);
+  EXPECT_LT(command.twist.linear.x, 0.9);
+  EXPECT_EQ(received->poses.size(), optimized.size());
+  EXPECT_DOUBLE_EQ(received->poses.back().pose.position.x, 1.0);
+  map_->setCost(46, 43, 254);
+  command.twist.linear.x = 0.9;
+  GoalAccess::brakeGoal(*planner_, optimized.front(), velocity, command);
+  EXPECT_DOUBLE_EQ(command.twist.linear.x, 0.0);
+  EXPECT_DOUBLE_EQ(command.twist.angular.z, 0.0);
+  EXPECT_TRUE(GoalAccess::goalWaitStarted(*planner_));
+}
+TEST_F(OccupiedGoalTest, reportsCollisionUnknownOutOfMapAndMissingLockedPoint)
+{
+  blockGoal();
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  const auto locked = GoalAccess::standoffPose(*planner_);
+  unsigned int x, y;
+  ASSERT_TRUE(map_->worldToMap(locked.pose.position.x, locked.pose.position.y, x, y));
+  for (const auto cost : {254, 255}) {
+    map_->setCost(x, y, cost);
+    ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+    EXPECT_TRUE(GoalAccess::standoffBlocked(*planner_));
+    EXPECT_EQ(GoalAccess::standoffFailureReason(*planner_),
+      cost == 254 ? "footprint_collision" : "footprint_unknown");
+    EXPECT_NE(GoalAccess::standoffFailureDetail(*planner_).find("blocking_cell="), std::string::npos);
+    EXPECT_NE(GoalAccess::standoffFailureDetail(*planner_).find("cost=" + std::to_string(cost)),
+      std::string::npos);
+  }
+  map_->setCost(x, y, 0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_EQ(GoalAccess::standoffFailureReason(*planner_), "valid");
+  const auto width = static_cast<unsigned int>(std::round((locked.pose.position.x + 2.1) / 0.05));
+  map_->resizeMap(width, 120, 0.05, -2.0, -2.0);
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_EQ(GoalAccess::standoffFailureReason(*planner_), "footprint_outside_costmap");
+  plan_.erase(plan_.begin() + GoalAccess::standoffIndex(*planner_));
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  EXPECT_EQ(GoalAccess::standoffFailureReason(*planner_), "locked_point_missing");
+}
+
+TEST_F(OccupiedGoalTest, reportsFrontAndBackClearanceFailureDespiteFreeLockedFootprint)
+{
+  plan_.clear();
+  for (int i = 0; i <= 30; ++i) {plan_.push_back(makePose(i * 0.2, 0.0));}
+  unsigned int gx, gy;
+  ASSERT_TRUE(map_->worldToMap(6.025, 0.025, gx, gy));
+  map_->setCost(gx, gy, 254);
+  std::vector<geometry_msgs::msg::PoseStamped> local;
+  ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+  const auto locked = GoalAccess::standoffPose(*planner_);
+  for (const double direction : {1.0, -1.0}) {
+    unsigned int x, y;
+    ASSERT_TRUE(map_->worldToMap(locked.pose.position.x + direction * 0.55, 0.025, x, y));
+    map_->setCost(x, y, 254);
+    ASSERT_TRUE(GoalAccess::brakingPathSafe(*planner_, {locked}));
+    ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+    EXPECT_EQ(GoalAccess::standoffFailureReason(*planner_), direction > 0.0 ?
+      "front_clearance_insufficient" : "back_clearance_insufficient");
+    EXPECT_NE(GoalAccess::standoffFailureDetail(*planner_).find("front_clear="), std::string::npos);
+    EXPECT_NE(GoalAccess::standoffFailureDetail(*planner_).find("back_clear="), std::string::npos);
+    map_->setCost(x, y, 0);
+    ASSERT_TRUE(GoalAccess::occupiedWindow(*planner_, plan_, 8.0, local));
+    EXPECT_EQ(GoalAccess::standoffFailureReason(*planner_), "valid");
+  }
+}
+
+TEST_F(OccupiedGoalTest, publishesMeasuredBrakingUntilStoppedEvenWhenPredictionCollides)
+{
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("occupied_goal_coasting_test");
+  auto listener = std::make_shared<rclcpp::Node>("occupied_goal_coasting_listener");
+  nav_msgs::msg::Path::SharedPtr received;
+  nav_msgs::msg::Path::SharedPtr braking_path;
+  teb_msgs::msg::TrajectoryMsg::SharedPtr braking_trajectory;
+  auto sub = listener->create_subscription<nav_msgs::msg::Path>("local_plan", 1,
+    [&](nav_msgs::msg::Path::SharedPtr msg) {received = msg;});
+  auto braking_sub = listener->create_subscription<nav_msgs::msg::Path>(
+    "teb_occupied_goal_braking_path", 1,
+    [&](nav_msgs::msg::Path::SharedPtr msg) {braking_path = msg;});
+  auto trajectory_sub = listener->create_subscription<teb_msgs::msg::TrajectoryMsg>(
+    "teb_occupied_goal_braking_trajectory", 1,
+    [&](teb_msgs::msg::TrajectoryMsg::SharedPtr msg) {braking_trajectory = msg;});
+  GoalAccess::setGoalVisualization(*planner_, node, {makePose(0.0, 0.0), makePose(1.0, 0.0)});
+  geometry_msgs::msg::Twist velocity;
+  velocity.linear.x = 0.5;
+  geometry_msgs::msg::TwistStamped command;
+  // A collision in the coasting corridor must not hide the predicted path.
+  map_->setCost(46, 43, 254);
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  do {
+    GoalAccess::stopOccupiedGoal(*planner_, makePose(0.0, 0.0), velocity, command);
+    rclcpp::spin_some(listener);
+    if (received && braking_path && braking_trajectory && received->poses.size() > 2 &&
+        received->poses.back().pose.position.x < 0.5) {break;}
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  } while (std::chrono::steady_clock::now() < until);
+  ASSERT_NE(received, nullptr);
+  ASSERT_GT(received->poses.size(), 2u);
+  ASSERT_NE(braking_path, nullptr);
+  ASSERT_NE(braking_trajectory, nullptr);
+  EXPECT_EQ(braking_path->poses.size(), received->poses.size());
+  ASSERT_EQ(braking_trajectory->trajectory.size(), received->poses.size());
+  EXPECT_DOUBLE_EQ(braking_trajectory->trajectory.front().velocity.linear.x, 0.5);
+  EXPECT_NEAR(braking_trajectory->trajectory.back().velocity.linear.x, 0.0, 1e-6);
+  EXPECT_NEAR(rclcpp::Duration(braking_trajectory->trajectory.back().time_from_start).seconds(),
+    0.1 + 0.5 / 0.3, 1e-6);
+  EXPECT_NEAR(received->poses.back().pose.position.x, 0.4666666667, 0.001);
+  EXPECT_FALSE(GoalAccess::brakingPathSafe(*planner_, received->poses));
+  EXPECT_DOUBLE_EQ(command.twist.linear.x, 0.0);
+  EXPECT_DOUBLE_EQ(command.twist.angular.z, 0.0);
+  // The next hold must regenerate from current odometry, not replay the old path.
+  velocity.linear.x = 0.2;
+  GoalAccess::stopOccupiedGoal(*planner_, makePose(0.1, 0.0), velocity, command);
+  const auto & shorter = GoalAccess::localPlan(*planner_);
+  ASSERT_GT(shorter.size(), 1u);
+  EXPECT_DOUBLE_EQ(shorter.front().pose.position.x, 0.1);
+  EXPECT_NEAR(shorter.back().pose.position.x, 0.1 + 0.0866666667, 0.001);
+  velocity.linear.x = 0.0;
+  GoalAccess::stopOccupiedGoal(*planner_, makePose(0.18, 0.0), velocity, command);
+  ASSERT_EQ(GoalAccess::localPlan(*planner_).size(), 1u);
+  EXPECT_DOUBLE_EQ(GoalAccess::localPlan(*planner_).front().pose.position.x, 0.18);
+}
+
+TEST_F(OccupiedGoalTest, stopPredictionCoversReverseAndPureRotationAndMissingOptimizedPath)
+{
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("occupied_goal_rotation_stop_test");
+  GoalAccess::setGoalVisualization(*planner_, node, {makePose(0.0, 0.0), makePose(1.0, 0.0)});
+  geometry_msgs::msg::Twist velocity;
+  velocity.linear.x = -0.5;
+  geometry_msgs::msg::TwistStamped command;
+  GoalAccess::stopOccupiedGoal(*planner_, makePose(0.0, 0.0, M_PI / 2.0), velocity, command);
+  EXPECT_NEAR(GoalAccess::localPlan(*planner_).back().pose.position.x, 0.0, 1e-6);
+  EXPECT_NEAR(GoalAccess::localPlan(*planner_).back().pose.position.y, -0.4666666667, 0.001);
+  velocity.linear.x = 0.0;
+  velocity.angular.z = 0.6;
+  GoalAccess::stopOccupiedGoal(*planner_, makePose(0.0, 0.0), velocity, command);
+  const auto & rotation = GoalAccess::localPlan(*planner_);
+  ASSERT_GT(rotation.size(), 1u);
+  EXPECT_DOUBLE_EQ(rotation.back().pose.position.x, 0.0);
+  EXPECT_DOUBLE_EQ(rotation.back().pose.position.y, 0.0);
+  EXPECT_GT(tf2::getYaw(rotation.back().pose.orientation), 0.06);
+  GoalAccess::seedLocalPlan(*planner_, {});
+  velocity.angular.z = 0.0;
+  velocity.linear.x = 0.5;
+  command.twist.linear.x = 0.5;
+  GoalAccess::brakeGoal(*planner_, makePose(0.0, 0.0), velocity, command);
+  EXPECT_DOUBLE_EQ(command.twist.linear.x, 0.0);
+  ASSERT_GT(GoalAccess::localPlan(*planner_).size(), 1u);
+  EXPECT_GT(GoalAccess::localPlan(*planner_).back().pose.position.x, 0.46);
+  GoalAccess::seedLocalPlan(*planner_, {makePose(0.0, 0.0), makePose(0.4, 0.0)});
+  command.twist.linear.x = 0.5;
+  GoalAccess::brakeGoal(*planner_, makePose(0.0, 0.0), velocity, command);
+  EXPECT_DOUBLE_EQ(command.twist.linear.x, 0.0);
+  EXPECT_NEAR(GoalAccess::localPlan(*planner_).back().pose.position.x, 0.4666666667, 0.001);
+  auto mismatched = makePose(1.0, 0.0);
+  mismatched.header.frame_id = "odom";
+  GoalAccess::seedLocalPlan(*planner_, {makePose(0.0, 0.0), mismatched});
+  command.twist.linear.x = 0.5;
+  GoalAccess::brakeGoal(*planner_, makePose(0.0, 0.0), velocity, command);
+  EXPECT_DOUBLE_EQ(command.twist.linear.x, 0.0);
+  EXPECT_NEAR(GoalAccess::localPlan(*planner_).back().pose.position.x, 0.4666666667, 0.001);
+}
+}  // namespace

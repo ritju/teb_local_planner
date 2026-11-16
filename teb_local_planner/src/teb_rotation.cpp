@@ -263,11 +263,13 @@ std::vector<geometry_msgs::msg::PoseStamped> TebLocalPlannerROS::buildMajorArcOr
       const double robot_dist = std::hypot(dx, dy);
       if (robot_dist <= rotation_limit_distance)
       {
-        RCLCPP_INFO_THROTTLE(
-          logger_, *clock_, 500,
-          "原地转: shouldRotateInPlace=false，rotation_limit 生效 "
-          "(dt=%.2f <= %.2f, robot_dist=%.3f <= %.3f)",
-          elapsed, rotation_limit_duration, robot_dist, rotation_limit_distance);
+        if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
+          RCLCPP_INFO_THROTTLE(
+            logger_, *clock_, 500,
+            "原地转: shouldRotateInPlace=false，rotation_limit 生效 "
+            "(dt=%.2f <= %.2f, robot_dist=%.3f <= %.3f)",
+            elapsed, rotation_limit_duration, robot_dist, rotation_limit_distance);
+        }
         return false;
       }
     }
@@ -311,10 +313,12 @@ std::vector<geometry_msgs::msg::PoseStamped> TebLocalPlannerROS::buildMajorArcOr
         stampRotationAnchor();
       }
       was_inplace_rotation_active_ = false;
-      RCLCPP_INFO_THROTTLE(
-        logger_, *clock_, 500,
-        "原地转: shouldRotateInPlace=false，横向距离否决 (lateral=%.3f > %.3f m)",
-        min_lateral, max_lateral);
+      if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
+        RCLCPP_INFO_THROTTLE(
+          logger_, *clock_, 500,
+          "原地转: shouldRotateInPlace=false，横向距离否决 (lateral=%.3f > %.3f m)",
+          min_lateral, max_lateral);
+      }
       return false;
     }
   }
@@ -345,23 +349,27 @@ std::vector<geometry_msgs::msg::PoseStamped> TebLocalPlannerROS::buildMajorArcOr
   if (!collision_ok) {
     stampRotationAnchor();
     was_inplace_rotation_active_ = false;
-    RCLCPP_INFO_THROTTLE(
-      logger_, *clock_, 500,
-      "原地转: shouldRotateInPlace=false，碰障预检未通过 |dtheta|=%.3f rad、w_odom=%.3f、v_xy=%.3f "
-      "(原地扫掠=%s、路径采样=%s)",
-      std::abs(angular_distance), velocity.angular.z, std::abs(velocity.linear.x),
-      rotate_in_place_clear ? "通过" : "未通过",
-      path_check_enable ? (path_footprint_clear ? "通过" : "未通过") : "关闭");
+    if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
+      RCLCPP_INFO_THROTTLE(
+        logger_, *clock_, 500,
+        "原地转: shouldRotateInPlace=false，碰障预检未通过 |dtheta|=%.3f rad、w_odom=%.3f、v_xy=%.3f "
+        "(原地扫掠=%s、路径采样=%s)",
+        std::abs(angular_distance), velocity.angular.z, std::abs(velocity.linear.x),
+        rotate_in_place_clear ? "通过" : "未通过",
+        path_check_enable ? (path_footprint_clear ? "通过" : "未通过") : "关闭");
+    }
   } else {
     if (!was_inplace_rotation_active_) {
       stampRotationAnchor();
     }
     was_inplace_rotation_active_ = true;
-    RCLCPP_INFO_THROTTLE(
-      logger_, *clock_, 500,
-      "原地转: shouldRotateInPlace=true，碰障预检通过 |dtheta|=%.3f rad、v_xy=%.3f、w_odom=%.3f、forward_lookahead=%.2f m",
-      std::abs(angular_distance), std::abs(velocity.linear.x), velocity.angular.z,
-      cfg_->rotation.forward_lookahead_distance);
+    if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
+      RCLCPP_INFO_THROTTLE(
+        logger_, *clock_, 500,
+        "原地转: shouldRotateInPlace=true，碰障预检通过 |dtheta|=%.3f rad、v_xy=%.3f、w_odom=%.3f、forward_lookahead=%.2f m",
+        std::abs(angular_distance), std::abs(velocity.linear.x), velocity.angular.z,
+        cfg_->rotation.forward_lookahead_distance);
+    }
   }
   return collision_ok;
 }
@@ -636,12 +644,14 @@ bool TebLocalPlannerROS::computeRotateToHeadingCommand(
     return true;
   }
 
-  RCLCPP_INFO_THROTTLE(
-    logger_, *clock_, 500,
-    "原地转: 两旋转方向碰障预检均失败（computeRotateToHeadingCommand），|dtheta|=%.3f rad，use_clockwise=%d，w_odom=%.3f",
-    abs_angular_distance,
-    use_clockwise ? 1 : 0,
-    velocity.angular.z);
+  if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
+    RCLCPP_INFO_THROTTLE(
+      logger_, *clock_, 500,
+      "原地转: 两旋转方向碰障预检均失败（computeRotateToHeadingCommand），|dtheta|=%.3f rad，use_clockwise=%d，w_odom=%.3f",
+      abs_angular_distance,
+      use_clockwise ? 1 : 0,
+      velocity.angular.z);
+  }
   return false;
 }
 

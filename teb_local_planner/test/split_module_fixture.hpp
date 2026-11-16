@@ -8,6 +8,8 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
+#include <nav2_costmap_2d/footprint.hpp>
+#include <dwb_critics/obstacle_footprint.hpp>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -17,6 +19,119 @@ namespace teb_local_planner
 
 struct TebSplitModuleTestAccess
 {
+  static void configureOccupiedGoal(
+    TebLocalPlannerROS & planner, nav2_costmap_2d::Costmap2D & map,
+    std::shared_ptr<dwb_critics::ObstacleFootprintCritic> critic)
+  {
+    planner.costmap_ = &map;
+    planner.costmap_model_ = critic;
+    planner.tf_ = std::make_shared<tf2_ros::Buffer>(planner.clock_);
+    nav2_costmap_2d::makeFootprintFromString(
+      "[[0.15,0.15],[0.15,-0.15],[-0.15,-0.15],[-0.15,0.15]]", planner.footprint_spec_);
+    planner.cfg_->trajectory.enable_occupied_goal_stop = true;
+    planner.cfg_->trajectory.enable_occupied_goal_standoff_search = true;
+    planner.cfg_->trajectory.transform_global_plan_costmap_span_scale = 0.0;
+    planner.cfg_->trajectory.theta_threshold = 120;
+    planner.cfg_->trajectory.transform_global_plan_closest_search_max_accum_dist = 100.0;
+    planner.cfg_->trajectory.transformed_plan_collision_pose_to_end_distance = 0.0;
+    planner.cfg_->trajectory.transformed_plan_collision_pose_safe_distance_front = 0.5;
+    planner.cfg_->trajectory.transformed_plan_collision_pose_safe_distance_back = 0.5;
+    planner.cfg_->obstacles.min_obstacle_dist = 0.05;
+    planner.cfg_->trajectory.last_occupied_goal_hold_timeout = 10.0;
+    planner.cfg_->robot.acc_lim_x = 0.3;
+    planner.control_duration_ = 0.1;
+  }
+
+  static bool occupiedWindow(TebLocalPlannerROS & planner,
+    const std::vector<geometry_msgs::msg::PoseStamped> & plan, double horizon,
+    std::vector<geometry_msgs::msg::PoseStamped> & local)
+  {
+    int goal = -1;
+    return planner.transformGlobalPlan(plan, plan.front(), *planner.costmap_, "map",
+      horizon, local, &goal);
+  }
+  static bool occupiedActive(const TebLocalPlannerROS & planner)
+  {return planner.occupied_goal_active_;}
+  static bool standoffBlocked(const TebLocalPlannerROS & planner)
+  {return planner.goal_standoff_force_hold_;}
+  static geometry_msgs::msg::PoseStamped standoffPose(const TebLocalPlannerROS & planner)
+  {return planner.goal_standoff_pose_plan_;}
+  static void setGoalClearDuration(TebLocalPlannerROS & planner, double duration)
+  {planner.cfg_->trajectory.occupied_goal_clear_duration = duration;}
+  static void ageGoalClearBy(TebLocalPlannerROS & planner, double seconds)
+  {planner.occupied_goal_near_clear_since_ = planner.clock_->now() - rclcpp::Duration::from_seconds(seconds);}
+  static void setGoalTailDistance(TebLocalPlannerROS & planner, double distance)
+  {planner.cfg_->trajectory.transformed_plan_collision_pose_to_end_distance = distance;}
+  static void disableStandoffClearanceForGeometryTest(TebLocalPlannerROS & planner)
+  {
+    planner.cfg_->trajectory.transformed_plan_collision_pose_safe_distance_front = 0.0;
+    planner.cfg_->trajectory.transformed_plan_collision_pose_safe_distance_back = 0.0;
+  }
+  static bool holdOccupiedGoal(TebLocalPlannerROS & planner,
+    const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & velocity,
+    geometry_msgs::msg::TwistStamped & command)
+  {return planner.tryOccupiedGoalNearHold(pose, velocity, command);}
+  static void stopOccupiedGoal(TebLocalPlannerROS & planner,
+    const geometry_msgs::msg::PoseStamped & pose, geometry_msgs::msg::TwistStamped & command)
+  {planner.stopForOccupiedGoal(pose, geometry_msgs::msg::Twist{}, command);}
+  static void stopOccupiedGoal(TebLocalPlannerROS & planner,
+    const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & velocity,
+    geometry_msgs::msg::TwistStamped & command)
+  {planner.stopForOccupiedGoal(pose, velocity, command);}
+  static const std::string & standoffFailureReason(const TebLocalPlannerROS & planner)
+  {return planner.goal_standoff_failure_reason_;}
+  static const std::string & standoffFailureDetail(const TebLocalPlannerROS & planner)
+  {return planner.goal_standoff_failure_detail_;}
+  static const std::vector<geometry_msgs::msg::PoseStamped> & localPlan(const TebLocalPlannerROS & planner)
+  {return planner.visualization_->lastLocalPlan();}
+  static int standoffIndex(const TebLocalPlannerROS & planner)
+  {return planner.goal_standoff_latched_ ? planner.goal_standoff_plan_idx_ : -1;}
+  static void ageGoalClear(TebLocalPlannerROS & planner)
+  {planner.occupied_goal_near_clear_since_ = planner.clock_->now() - rclcpp::Duration::from_seconds(0.5);}
+  static void checkGoalWait(TebLocalPlannerROS & planner, bool waiting)
+  {planner.checkOccupiedGoalWaitTimeout(waiting);}
+  static void expireGoalWait(TebLocalPlannerROS & planner)
+  {planner.occupied_goal_near_hold_since_ = planner.clock_->now() - rclcpp::Duration::from_seconds(11.0);}
+  static bool goalWaitStarted(const TebLocalPlannerROS & planner)
+  {return planner.occupied_goal_near_hold_active_;}
+  static bool brakingPathSafe(const TebLocalPlannerROS & planner,
+    const std::vector<geometry_msgs::msg::PoseStamped> & plan)
+  {return planner.isOccupiedGoalBrakingPathSafe(plan);}
+  static bool partialFootprintFree(const TebLocalPlannerROS & planner,
+    const geometry_msgs::msg::PoseStamped & pose)
+  {
+    geometry_msgs::msg::TransformStamped identity;
+    identity.transform.rotation.w = 1.0;
+    return planner.globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(pose, identity);
+  }
+  static void setGoalVisualization(TebLocalPlannerROS & planner,
+    const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
+    const std::vector<geometry_msgs::msg::PoseStamped> & plan)
+  {
+    planner.visualization_ = std::make_shared<TebVisualization>(node, *planner.cfg_);
+    planner.visualization_->on_configure();
+    planner.visualization_->on_activate();
+    planner.visualization_->publishLocalPlan(plan);
+    auto braking_path_pub = node->create_publisher<nav_msgs::msg::Path>(
+      "teb_occupied_goal_braking_path", 1);
+    braking_path_pub->on_activate();
+    planner.occupied_goal_braking_path_pub_ = braking_path_pub;
+    auto braking_trajectory_pub = node->create_publisher<teb_msgs::msg::TrajectoryMsg>(
+      "teb_occupied_goal_braking_trajectory", 1);
+    braking_trajectory_pub->on_activate();
+    planner.occupied_goal_braking_trajectory_pub_ = braking_trajectory_pub;
+    planner.goal_standoff_latched_ = true;
+    planner.occupied_goal_active_ = true;
+    planner.goal_standoff_pose_global_ = plan.back();
+  }
+  static void seedLocalPlan(TebLocalPlannerROS & planner,
+    const std::vector<geometry_msgs::msg::PoseStamped> & plan)
+  {planner.visualization_->publishLocalPlan(plan);}
+  static void brakeGoal(TebLocalPlannerROS & planner,
+    const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & velocity,
+    geometry_msgs::msg::TwistStamped & command)
+  {planner.applyGoalStandoffBraking(pose, velocity, command);}
+
   static void setClock(TebLocalPlannerROS & planner)
   {
     planner.clock_ = std::make_shared<rclcpp::Clock>(RCL_ROS_TIME);

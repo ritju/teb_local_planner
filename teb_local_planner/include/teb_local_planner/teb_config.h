@@ -41,6 +41,7 @@
 
 #include <nav2_util/lifecycle_node.hpp>
 #include <memory>
+#include <atomic>
 #include <rclcpp/rclcpp.hpp>
 #include <Eigen/Core>
 #include <Eigen/StdVector>
@@ -62,6 +63,8 @@ class TebConfig
 public:
   using UniquePtr = std::unique_ptr<TebConfig>;
   
+  std::atomic<bool> debug_mode{false}; //!< controller_server 根级日志开关；不改变日志等级
+
   std::string odom_topic; //!< Topic name of the odometry message, provided by the robot driver or simulator
   std::string map_frame; //!< Global planning frame
   std::string node_name; //!< node name used for parameter event callback
@@ -158,13 +161,14 @@ public:
     double transform_global_plan_goal_occupied_tolerance; //!< 末端被占据时，平面偏移搜索半径 [m]
     //!< transformGlobalPlan: 末端位姿微调时的平面网格步长 [m]，与 SMAC Hybrid 等价的 goal_search_resolution
     double transform_global_plan_goal_search_resolution; //!< 末端偏移搜索网格步长 [m]
+    bool enable_occupied_goal_stop; //!< 终点进入窗口且占用时，沿路径退让停车并限时等待
+    bool enable_occupied_goal_standoff_search; //!< 原终点占用时沿全局路径搜索安全替代终点
     //!< 到达路径退让点后进入零速保持的距离容差 [m]
-    double goal_standoff_stop_distance; //!< 兼容参数：终点占用时不再搜索退让点
-    //!< 接近占用终点时按制动距离提前进入零速保持的额外缓冲 [m]
-    double occupied_goal_braking_margin; //!< 兼容参数：终点占用检测后立即停车
-    //!< 终点被占用且沿路径无退让点时，base 到终点小于该距离则发零速度 [m]；<=0 关闭
+    double goal_standoff_stop_distance; //!< 到达替代终点后停车的距离容差
+    double occupied_goal_clear_duration; //!< 原终点图内空闲且已知触障区持续可观测安全的释放防抖时间 [s]；<=0 立即释放
+    //!< 兼容旧配置；不再用于终点占用停车触发距离
     double last_occupied_goal_dist; //!< 兼容参数：不再作为终点占用停车触发距离
-    //!< 上述零速度持续超过该时间则本次控制失败，交给上层恢复 [s]；<=0 不超时
+    //!< 停车等待超过该时间则抛出专用异常，由 controller_server 按成功结束 [s]；<=0 不超时
     double last_occupied_goal_hold_timeout;
     //!< hasReverseSegmentInPlan: 参与倒车判定的路点段最小弦长 [m]；过短则向前扩窗至 i+2, i+3, ...
     double reverse_segment_min_segment_length_m; //!< 倒车判定的最小段弦长 [m]
@@ -589,8 +593,10 @@ public:
     trajectory.transform_global_plan_closest_search_max_accum_dist = 0.0;
     trajectory.transform_global_plan_goal_occupied_tolerance = 1.0;
     trajectory.transform_global_plan_goal_search_resolution = 0.2;
+    trajectory.enable_occupied_goal_stop = false;
+    trajectory.enable_occupied_goal_standoff_search = true;
     trajectory.goal_standoff_stop_distance = 0.08;
-    trajectory.occupied_goal_braking_margin = 0.15;
+    trajectory.occupied_goal_clear_duration = 0.4;
     trajectory.last_occupied_goal_dist = 0.8;
     trajectory.last_occupied_goal_hold_timeout = 15.0;
     trajectory.reverse_segment_min_segment_length_m = 0.05;

@@ -82,6 +82,7 @@ void TebVisualization::publishLocalPlan(const std::vector<geometry_msgs::msg::Po
 {
   if ( printErrorWhenNotInitialized() )
     return;
+  last_local_plan_ = local_plan;
   publishPlan(local_plan, local_plan_pub_.get());
 }
 
@@ -112,7 +113,10 @@ void TebVisualization::publishLocalPlanAndPoses(const TimedElasticBand& teb) con
       teb_path.poses.push_back(pose);
       teb_poses.poses.push_back(pose.pose);
     }
-    local_plan_pub_->publish(teb_path);
+    last_local_plan_ = teb_path.poses;
+    if (!defer_local_plan_publish_) {
+      local_plan_pub_->publish(teb_path);
+    }
     teb_poses_pub_->publish(teb_poses);
 }
 

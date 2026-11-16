@@ -267,7 +267,7 @@ GOAL_OCCUPIED_HOLD
 `last_occupied_goal_dist` 不应成为唯一触发条件。触发距离至少应为：
 
 ```text
-制动距离 + occupied_goal_braking_margin + footprint 安全裕度
+按 `acc_lim_x` 与控制周期计算的制动距离 + 已有停车容差
 ```
 
 如果当前局部窗已经找到安全终点，`occupied_goal_no_standoff_` 和停车距离必须针对这个安全终点更新，不能继续引用原始占用终点的距离。
@@ -793,7 +793,7 @@ transformed_plan 为空检查
 机器人当前点到障碍物的路径弧长
 机器人当前速度对应的制动距离
 footprint 安全裕度
-occupied_goal_braking_margin
+已有停车容差
 ```
 
 停车触发条件应类似于：
@@ -1053,7 +1053,7 @@ PathProgress
 transformed_plan_collision_pose_to_end_distance
 transformed_plan_collision_pose_safe_distance_front
 transformed_plan_collision_pose_safe_distance_back
-occupied_goal_braking_margin
+已有停车容差
 last_occupied_goal_dist
 ```
 

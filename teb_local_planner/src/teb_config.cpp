@@ -47,6 +47,7 @@ namespace teb_local_planner
 
 void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, const std::string name) {
   node_name = name;
+  declare_parameter_if_not_declared(nh, "debug_mode", rclcpp::ParameterValue(false));
 
   declare_parameter_if_not_declared(nh, name + "." + "odom_topic", rclcpp::ParameterValue(odom_topic));
 
@@ -150,11 +151,17 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
     nh, name + "." + "transform_global_plan_goal_search_resolution",
     rclcpp::ParameterValue(trajectory.transform_global_plan_goal_search_resolution));
   declare_parameter_if_not_declared(
+    nh, name + "." + "enable_occupied_goal_stop",
+    rclcpp::ParameterValue(trajectory.enable_occupied_goal_stop));
+  declare_parameter_if_not_declared(
+    nh, name + "." + "enable_occupied_goal_standoff_search",
+    rclcpp::ParameterValue(trajectory.enable_occupied_goal_standoff_search));
+  declare_parameter_if_not_declared(
     nh, name + "." + "goal_standoff_stop_distance",
     rclcpp::ParameterValue(trajectory.goal_standoff_stop_distance));
   declare_parameter_if_not_declared(
-    nh, name + "." + "occupied_goal_braking_margin",
-    rclcpp::ParameterValue(trajectory.occupied_goal_braking_margin));
+    nh, name + "." + "occupied_goal_clear_duration",
+    rclcpp::ParameterValue(trajectory.occupied_goal_clear_duration));
   declare_parameter_if_not_declared(
     nh, name + "." + "last_occupied_goal_dist",
     rclcpp::ParameterValue(trajectory.last_occupied_goal_dist));
@@ -455,6 +462,9 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
 
 void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::SharedPtr nh, const std::string name)
 {
+  bool debug_enabled = false;
+  nh->get_parameter_or("debug_mode", debug_enabled, false);
+  debug_mode.store(debug_enabled, std::memory_order_relaxed);
   nh->get_parameter_or(name + "." + "odom_topic", odom_topic, odom_topic);
   
   // Trajectory
@@ -579,13 +589,21 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
     trajectory.transform_global_plan_goal_search_resolution,
     trajectory.transform_global_plan_goal_search_resolution);
   nh->get_parameter_or(
+    name + "." + "enable_occupied_goal_stop",
+    trajectory.enable_occupied_goal_stop,
+    trajectory.enable_occupied_goal_stop);
+  nh->get_parameter_or(
+    name + "." + "enable_occupied_goal_standoff_search",
+    trajectory.enable_occupied_goal_standoff_search,
+    trajectory.enable_occupied_goal_standoff_search);
+  nh->get_parameter_or(
     name + "." + "goal_standoff_stop_distance",
     trajectory.goal_standoff_stop_distance,
     trajectory.goal_standoff_stop_distance);
   nh->get_parameter_or(
-    name + "." + "occupied_goal_braking_margin",
-    trajectory.occupied_goal_braking_margin,
-    trajectory.occupied_goal_braking_margin);
+    name + "." + "occupied_goal_clear_duration",
+    trajectory.occupied_goal_clear_duration,
+    trajectory.occupied_goal_clear_duration);
   nh->get_parameter_or(
     name + "." + "last_occupied_goal_dist",
     trajectory.last_occupied_goal_dist,
@@ -1049,6 +1067,10 @@ rcl_interfaces::msg::SetParametersResult
     const auto & type = parameter.get_type();
     const auto & name = parameter.get_name();
 
+    if (name == "debug_mode" && type == rcl_interfaces::msg::ParameterType::PARAMETER_BOOL) {
+      debug_mode.store(parameter.as_bool(), std::memory_order_relaxed);
+      continue;
+    }
     if (type == rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE) {
       // Trajectory
       if (name == node_name + ".teb_autosize") {
@@ -1139,10 +1161,14 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.transform_global_plan_goal_occupied_tolerance = parameter.as_double();
       } else if (name == node_name + ".transform_global_plan_goal_search_resolution") {
         trajectory.transform_global_plan_goal_search_resolution = parameter.as_double();
+      } else if (name == node_name + ".enable_occupied_goal_stop") {
+        trajectory.enable_occupied_goal_stop = parameter.as_bool();
+      } else if (name == node_name + ".enable_occupied_goal_standoff_search") {
+        trajectory.enable_occupied_goal_standoff_search = parameter.as_bool();
       } else if (name == node_name + ".goal_standoff_stop_distance") {
         trajectory.goal_standoff_stop_distance = parameter.as_double();
-      } else if (name == node_name + ".occupied_goal_braking_margin") {
-        trajectory.occupied_goal_braking_margin = parameter.as_double();
+      } else if (name == node_name + ".occupied_goal_clear_duration") {
+        trajectory.occupied_goal_clear_duration = parameter.as_double();
       } else if (name == node_name + ".last_occupied_goal_dist") {
         trajectory.last_occupied_goal_dist = parameter.as_double();
       } else if (name == node_name + ".last_occupied_goal_hold_timeout") {

@@ -310,7 +310,7 @@ TF/路径无效           → ERROR，不进入 TEB
 
 ```text
 remaining_arc <= braking_distance
-              + occupied_goal_braking_margin
+              + 已有停车容差
               + footprint_safety_margin
 ```
 

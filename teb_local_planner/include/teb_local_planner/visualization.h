@@ -148,6 +148,10 @@ public:
    * @param local_plan Pose array describing the local plan
    */
   void publishLocalPlan(const std::vector<geometry_msgs::msg::PoseStamped>& local_plan) const;
+  const std::vector<geometry_msgs::msg::PoseStamped>& lastLocalPlan() const
+  {return last_local_plan_;}
+  void clearLastLocalPlan() const {last_local_plan_.clear();}
+  void deferLocalPlanPublish(bool defer) const {defer_local_plan_publish_ = defer;}
   
   /**
    * @brief Publish Timed_Elastic_Band related stuff (local plan, pose sequence).
@@ -309,6 +313,8 @@ protected:
   
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr global_plan_pub_; //!< Publisher for the global plan
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr local_plan_pub_; //!< Publisher for the local plan
+  mutable std::vector<geometry_msgs::msg::PoseStamped> last_local_plan_;
+  mutable bool defer_local_plan_publish_{false};
   rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseArray>::SharedPtr teb_poses_pub_; //!< Publisher for the trajectory pose sequence
   rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::Marker>::SharedPtr teb_marker_pub_; //!< Publisher for visualization markers
   rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr teb_marker_array_pub_; //!< Publisher for visualization marker arrays

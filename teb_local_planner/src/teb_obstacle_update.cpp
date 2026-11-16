@@ -759,10 +759,12 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
      const double age = (clock_->now() - custom_obstacle_receive_time_).seconds();
      if (timeout > 0.0 && age > timeout)
      {
-       RCLCPP_INFO_THROTTLE(
-           logger_, *clock_, 2000,
-           "[NearHorizon] custom obstacles expired (age=%.2fs > timeout=%.2fs); clearing latch",
-           age, timeout);
+       if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
+         RCLCPP_INFO_THROTTLE(
+             logger_, *clock_, 2000,
+             "[NearHorizon] custom obstacles expired (age=%.2fs > timeout=%.2fs); clearing latch",
+             age, timeout);
+       }
        custom_obstacle_msg_.obstacles.clear();
        custom_obstacle_msg_valid_ = false;
      }

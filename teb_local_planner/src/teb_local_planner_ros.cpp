@@ -444,6 +444,11 @@ using detail::normalizeEdgeModeEnv;
 
     transformed_path = node->create_publisher<nav_msgs::msg::Path>("teb_transformed_path", 1);
     global_plan_pub_ = node->create_publisher<nav_msgs::msg::Path>("teb_global_plan", 1);
+    occupied_goal_braking_path_pub_ = node->create_publisher<nav_msgs::msg::Path>(
+      "teb_occupied_goal_braking_path", 1);
+    occupied_goal_braking_trajectory_pub_ =
+      node->create_publisher<teb_msgs::msg::TrajectoryMsg>(
+        "teb_occupied_goal_braking_trajectory", 1);
     safe_terminal_marker_pub_ =
       node->create_publisher<visualization_msgs::msg::Marker>(
       "teb_transformed_plan_safe_terminal", 1);
@@ -620,6 +625,15 @@ void TebLocalPlannerROS::configure(
      return;
    }
  
+   // Preserve a running wait across replans to the same goal, never across a completed abort.
+   const bool preserve_goal_wait = occupied_goal_active_ && !occupied_goal_timed_out_ &&
+     !global_plan_.empty() && !orig_global_plan.poses.empty() &&
+     global_plan_.back().header.frame_id == orig_global_plan.header.frame_id &&
+     std::hypot(global_plan_.back().pose.position.x - orig_global_plan.poses.back().pose.position.x,
+       global_plan_.back().pose.position.y - orig_global_plan.poses.back().pose.position.y) < 0.05 &&
+     std::fabs(angles::shortest_angular_distance(
+       tf2::getYaw(global_plan_.back().pose.orientation),
+       tf2::getYaw(orig_global_plan.poses.back().pose.orientation))) < 0.05;
    // store the global plan
    constexpr double kMinAdjacentSpacing = 1e-5;
    auto orientationIsFinite = [](const geometry_msgs::msg::Quaternion & orientation) -> bool {
@@ -679,15 +693,10 @@ void TebLocalPlannerROS::configure(
      RCLCPP_INFO(logger_, "setPlan：清除优弧锁");
    }
    resetMajorArcLock();
-   goal_standoff_latched_ = false;
-   goal_standoff_plan_idx_ = -1;
-   goal_standoff_force_hold_ = false;
-   goal_standoff_hold_active_ = false;
-   occupied_goal_no_standoff_ = false;
-   occupied_goal_dist_m_ = std::numeric_limits<double>::infinity();
-   occupied_goal_near_hold_active_ = false;
-   occupied_goal_near_hold_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
-   occupied_goal_near_clear_since_ = rclcpp::Time(0, 0, clock_->get_clock_type());
+   if (!preserve_goal_wait) {
+     resetOccupiedGoalState();
+   }
+
  
  
    // we do not clear the local planner here, since setPlan is called frequently whenever the global planner updates the plan.
@@ -709,6 +718,9 @@ void TebLocalPlannerROS::configure(
      );
    }
  
+   if (occupied_goal_timed_out_) {
+     throw nav2_core::OccupiedGoalTimeout("终点占用停车等待超时");
+   }
    geometry_msgs::msg::TwistStamped cmd_vel;
    
    cmd_vel.header.stamp = clock_->now();
@@ -776,6 +788,12 @@ void TebLocalPlannerROS::configure(
      }
    }
    
+  if (cfg_->robot.is_footprint_dynamic) {
+    footprint_spec_ = costmap_ros_->getRobotFootprint();
+    nav2_costmap_2d::calculateMinAndMaxDistances(
+      footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius);
+  }
+
   // prune global plan to cut off parts of the past (spatially before the robot)
   // Coarse pass: remove obviously-passed points using a larger distance threshold and an
   // optionally unlimited search range. This prevents the fine pass from skipping too far
@@ -1071,7 +1089,7 @@ void TebLocalPlannerROS::configure(
     }
     
     // If corner has obstacle, delete all path points before the corner in global_plan_
-    if (corner_has_obstacle)
+    if (corner_has_obstacle && !occupied_goal_active_)
     {
       if (corner_index + 1 >= global_plan_.size()) {
       RCLCPP_DEBUG_THROTTLE(
@@ -1207,26 +1225,17 @@ void TebLocalPlannerROS::configure(
   }
 
   {
+    geometry_msgs::msg::TwistStamped occupied_goal_cmd;
+    if (tryOccupiedGoalNearHold(robot_pose, velocity, occupied_goal_cmd)) {
+      return occupied_goal_cmd;
+    }
+  }
+
+  {
     geometry_msgs::msg::TwistStamped wait_cmd;
     if (tryPathWaitHold(robot_pose, velocity, wait_cmd))
     {
       return wait_cmd;
-    }
-  }
-
-  {
-    geometry_msgs::msg::TwistStamped standoff_cmd;
-    if (tryGoalStandoffHold(robot_pose, velocity, standoff_cmd))
-    {
-      return standoff_cmd;
-    }
-  }
-
-  {
-    geometry_msgs::msg::TwistStamped occupied_goal_cmd;
-    if (tryOccupiedGoalNearHold(velocity, occupied_goal_cmd))
-    {
-      return occupied_goal_cmd;
     }
   }
 
@@ -1362,24 +1371,26 @@ void TebLocalPlannerROS::configure(
      cfg_->near_horizon_runtime.omega_hold_enable = threat.enable_omega_hold;
      cfg_->near_horizon_runtime.omega_ref = robot_vel_.angular.z;
 
-     RCLCPP_INFO_THROTTLE(
-         logger_, *clock_, 2000,
-         "[NearHorizon] 近动态障碍物门控 mode=%d as_static_edges=%d cache=%zu raw_threat=%d enable=%d "
-         "overlap_excl=%d trig_id=%d reason=%s omega_ref=%.3f delta=%.3f "
-         "(roi f/r/l/r=%.2f/%.2f/%.2f/%.2f T_near=%.2f hold=%.2f)",
-         cfg_->obstacles.dynamic_safety_predictable_mode ? 1 : 0,
-         cfg_->obstacles.dynamic_obstacles_as_static_edges ? 1 : 0,
-         dynamic_obstacle_cache_.get().size(),
-         threat.raw_threat ? 1 : 0,
-         threat.enable_omega_hold ? 1 : 0,
-         threat.excluded_overlap ? 1 : 0,
-         threat.trigger_obstacle_id,
-         threat.reason.c_str(),
-         cfg_->near_horizon_runtime.omega_ref,
-         cfg_->obstacles.delta_omega_scale * cfg_->robot.max_vel_theta,
-         cfg_->obstacles.dyn_gate_roi_front, cfg_->obstacles.dyn_gate_roi_rear,
-         cfg_->obstacles.dyn_gate_roi_left, cfg_->obstacles.dyn_gate_roi_right,
-         cfg_->obstacles.dyn_gate_T_near, cfg_->obstacles.dyn_gate_hold_time);
+     if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
+       RCLCPP_INFO_THROTTLE(
+           logger_, *clock_, 2000,
+           "[NearHorizon] 近动态障碍物门控 mode=%d as_static_edges=%d cache=%zu raw_threat=%d enable=%d "
+           "overlap_excl=%d trig_id=%d reason=%s omega_ref=%.3f delta=%.3f "
+           "(roi f/r/l/r=%.2f/%.2f/%.2f/%.2f T_near=%.2f hold=%.2f)",
+           cfg_->obstacles.dynamic_safety_predictable_mode ? 1 : 0,
+           cfg_->obstacles.dynamic_obstacles_as_static_edges ? 1 : 0,
+           dynamic_obstacle_cache_.get().size(),
+           threat.raw_threat ? 1 : 0,
+           threat.enable_omega_hold ? 1 : 0,
+           threat.excluded_overlap ? 1 : 0,
+           threat.trigger_obstacle_id,
+           threat.reason.c_str(),
+           cfg_->near_horizon_runtime.omega_ref,
+           cfg_->obstacles.delta_omega_scale * cfg_->robot.max_vel_theta,
+           cfg_->obstacles.dyn_gate_roi_front, cfg_->obstacles.dyn_gate_roi_rear,
+           cfg_->obstacles.dyn_gate_roi_left, cfg_->obstacles.dyn_gate_roi_right,
+           cfg_->obstacles.dyn_gate_T_near, cfg_->obstacles.dyn_gate_hold_time);
+     }
 
      if (cfg_->obstacles.publish_near_horizon_debug && near_horizon_debug_marker_pub_)
      {
@@ -1651,13 +1662,31 @@ void TebLocalPlannerROS::configure(
    }
    
    // store last command (for recovery analysis etc.)
-   last_cmd_ = cmd_vel.twist;
-   
    // Now visualize everything    
+   visualization_->clearLastLocalPlan();
+   visualization_->deferLocalPlanPublish(goal_standoff_latched_);
    planner_->visualize();
+   applyGoalStandoffBraking(robot_pose, velocity, cmd_vel);
+   visualization_->deferLocalPlanPublish(false);
+   last_cmd_ = cmd_vel.twist;
    visualization_->publishObstacles(obstacles_);
    visualization_->publishViaPoints(via_points_);
    visualization_->publishGlobalPlan(global_plan_);
+   }
+   catch (const nav2_core::OccupiedGoalTimeout &)
+   {
+     throw;
+   }
+   catch (const nav2_core::PlannerException & ex)
+   {
+     if (!occupied_goal_active_) {
+       throw;
+     }
+     RCLCPP_WARN_THROTTLE(logger_, *clock_, 1000,
+       "终点占用停车路径不可行，保持原停车点并零速等待: %s", ex.what());
+     visualization_->deferLocalPlanPublish(false);
+     stopForOccupiedGoal(robot_pose, velocity, cmd_vel);
+     return cmd_vel;
    }
    catch (const TebAssertionFailureException& ex)
    {
@@ -1669,6 +1698,11 @@ void TebLocalPlannerROS::configure(
        logger_, *(clock_), 1000,
        "TEB 数值断言失败: %s，正在重置规划器",
        ex.what());
+     if (occupied_goal_active_) {
+       visualization_->deferLocalPlanPublish(false);
+       stopForOccupiedGoal(robot_pose, velocity, cmd_vel);
+       return cmd_vel;
+     }
      throw nav2_core::PlannerException(
        std::string("TebLocalPlannerROS: TEB numeric failure. Resetting planner..."));
    }
@@ -1950,6 +1984,8 @@ void TebLocalPlannerROS::speedLimitCallback(const std_msgs::msg::Float64::ConstS
    backward_mode_pub_.reset();
    safe_terminal_marker_pub_.reset();
    occupied_goal_stop_marker_pub_.reset();
+   occupied_goal_braking_path_pub_.reset();
+   occupied_goal_braking_trajectory_pub_.reset();
    resetBackwardModePublicationState(false);
    initialized_ = false;
  }

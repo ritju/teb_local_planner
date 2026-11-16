@@ -22,20 +22,19 @@
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer_interface.h>
-#include "dwb_core/exceptions.hpp"
 #include "dwb_critics/obstacle_footprint.hpp"
-#include "dwb_critics/line_iterator.hpp"
 #include "nav2_util/robot_utils.hpp"
 #include "teb_local_planner/misc.h"
 #include <algorithm>
 #include <cmath>
 #include <cctype>
-#include <cstring>
 #include <exception>
 #include <limits>
+#include <utility>
+#include <map>
+#include <sstream>
 
 #include "teb_local_planner/detail/plan_corner_geometry.hpp"
-#include "teb_local_planner/detail/costmap_segment_clip.hpp"
 
 using nav2_util::declare_parameter_if_not_declared;
 
@@ -51,90 +50,93 @@ using detail::findEuclideanClosestPlanIdx;
 using detail::clampClosestIdxBeforeUnprunedCorner;
 using detail::lockedCornerIdx;
 
-using detail::computeCohenSutherlandOutCode;
-using detail::clipWorldSegmentToAlignedRect;
 
 namespace {
-bool footprintAxisAlignedBboxSeparateFromCostmapRect(
-  const std::vector<geometry_msgs::msg::Point> & footprint,
-  double map_x_min,
-  double map_y_min,
-  double map_x_max_ex,
-  double map_y_max_ex)
+bool footprintFullyInsideCostmap(
+  const nav2_costmap_2d::Costmap2D & map,
+  const std::vector<geometry_msgs::msg::Point> & footprint)
 {
-  
-  if (footprint.empty()) {
-    return true;
+  if (footprint.size() < 3) {
+    return false;
   }
-  double fminx = footprint[0].x;
-  double fmaxx = footprint[0].x;
-  double fminy = footprint[0].y;
-  double fmaxy = footprint[0].y;
-  for (unsigned int ii = 1; ii < footprint.size(); ++ii) {
-    fminx = std::min(fminx, footprint[ii].x);
-    fmaxx = std::max(fmaxx, footprint[ii].x);
-    fminy = std::min(fminy, footprint[ii].y);
-    fmaxy = std::max(fmaxy, footprint[ii].y);
+  for (const auto & point : footprint) {
+    unsigned int x, y;
+    if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+        !map.worldToMap(point.x, point.y, x, y)) {
+      return false;
+    }
   }
-  constexpr double tol = 1e-9;
-  return (
-    fmaxx <= map_x_min + tol ||
-    fminx >= map_x_max_ex - tol ||
-    fmaxy <= map_y_min + tol ||
-    fminy >= map_y_max_ex - tol);
+  return true;
 }
 
-bool clippedFootprintOutlineTouchesBlockingCost(
-  const nav2_costmap_2d::Costmap2D & costmap_ref,
-  const std::vector<geometry_msgs::msg::Point> & footprint,
-  double clip_x_min,
-  double clip_y_min,
-  double clip_x_max,
-  double clip_y_max)
+// Rasterize the visible intersection, including the interior, rather than only
+// the outline. Leaving the map is not itself an occupied observation.
+std::vector<nav2_costmap_2d::MapLocation> visibleFootprintCells(
+  nav2_costmap_2d::Costmap2D & map,
+  std::vector<geometry_msgs::msg::Point> polygon)
 {
-  
-  if (footprint.size() < 2) {
-    return false;
+  std::vector<nav2_costmap_2d::MapLocation> cells;
+  if (polygon.size() < 3 || map.getSizeInCellsX() == 0 || map.getSizeInCellsY() == 0) {
+    return cells;
   }
-  if (!(clip_x_max > clip_x_min && clip_y_max > clip_y_min)) {
-    return false;
-  }
-  const unsigned int sx = costmap_ref.getSizeInCellsX();
-  const unsigned int sy = costmap_ref.getSizeInCellsY();
-  const unsigned int n = static_cast<unsigned int>(footprint.size());
-  for (unsigned int i = 0; i < n; ++i) {
-    const unsigned int j = (i + 1) % n;
-    double ax = footprint[i].x;
-    double ay = footprint[i].y;
-    double bx = footprint[j].x;
-    double by = footprint[j].y;
-    if (!clipWorldSegmentToAlignedRect(ax, ay, bx, by,
-      clip_x_min, clip_y_min, clip_x_max, clip_y_max))
-    {
-      continue;
-    }
-    int gx0_int = 0;
-    int gy0_int = 0;
-    int gx1_int = 0;
-    int gy1_int = 0;
-    costmap_ref.worldToMapEnforceBounds(ax, ay, gx0_int, gy0_int);
-    costmap_ref.worldToMapEnforceBounds(bx, by, gx1_int, gy1_int);
-    dwb_critics::LineIterator line(gx0_int, gy0_int, gx1_int, gy1_int);
-    for (; line.isValid(); line.advance()) {
-      const int lx = line.getX();
-      const int ly = line.getY();
-      if (lx < 0 || ly < 0 || lx >= static_cast<int>(sx) || ly >= static_cast<int>(sy)) {
-        continue;
-      }
-      const unsigned char cost = costmap_ref.getCost(
-        static_cast<unsigned int>(lx), static_cast<unsigned int>(ly));
-      if (cost == nav2_costmap_2d::LETHAL_OBSTACLE)
-      {
-        return true;
-      }
+  for (const auto & p : polygon) {
+    if (!std::isfinite(p.x) || !std::isfinite(p.y)) {
+      return cells;
     }
   }
-  return false;
+  const double min_x = map.getOriginX();
+  const double min_y = map.getOriginY();
+  const double max_x = std::nextafter(min_x + map.getSizeInCellsX() * map.getResolution(), min_x);
+  const double max_y = std::nextafter(min_y + map.getSizeInCellsY() * map.getResolution(), min_y);
+  // Sutherland-Hodgman clipping against the four sides of the map rectangle.
+  for (int side = 0; side < 4 && !polygon.empty(); ++side) {
+    const bool use_x = side < 2;
+    const bool lower = side % 2 == 0;
+    const double limit = use_x ? (lower ? min_x : max_x) : (lower ? min_y : max_y);
+    auto coordinate = [use_x](const geometry_msgs::msg::Point & p) {return use_x ? p.x : p.y;};
+    auto inside = [&](const geometry_msgs::msg::Point & p) {
+      return lower ? coordinate(p) >= limit : coordinate(p) <= limit;
+    };
+    std::vector<geometry_msgs::msg::Point> clipped;
+    auto previous = polygon.back();
+    for (const auto & point : polygon) {
+      const bool previous_inside = inside(previous);
+      const bool point_inside = inside(point);
+      if (previous_inside != point_inside) {
+        const double ratio = (limit - coordinate(previous)) /
+          (coordinate(point) - coordinate(previous));
+        auto crossing = previous;
+        crossing.x += ratio * (point.x - previous.x);
+        crossing.y += ratio * (point.y - previous.y);
+        if (use_x) {crossing.x = limit;} else {crossing.y = limit;}
+        clipped.push_back(crossing);
+      }
+      if (point_inside) {clipped.push_back(point);}
+      previous = point;
+    }
+    polygon = std::move(clipped);
+  }
+  if (polygon.size() < 3) {
+    return cells;
+  }
+  std::vector<nav2_costmap_2d::MapLocation> grid_polygon;
+  for (const auto & point : polygon) {
+    nav2_costmap_2d::MapLocation cell;
+    int x, y;
+    map.worldToMapEnforceBounds(point.x, point.y, x, y);
+    // Subtraction/division can round the clipped upper boundary back to size.
+    // Clamp explicitly even after worldToMapEnforceBounds to keep edge cells valid.
+    cell.x = static_cast<unsigned int>(std::clamp(x, 0, static_cast<int>(map.getSizeInCellsX()) - 1));
+    cell.y = static_cast<unsigned int>(std::clamp(y, 0, static_cast<int>(map.getSizeInCellsY()) - 1));
+    grid_polygon.push_back(cell);
+  }
+  map.convexFillCells(grid_polygon, cells);
+  return cells;
+}
+
+bool blockingCost(unsigned char cost)
+{
+  return cost == nav2_costmap_2d::LETHAL_OBSTACLE || cost == nav2_costmap_2d::NO_INFORMATION;
 }
 
 }  // namespace
@@ -345,7 +347,8 @@ std::vector<geometry_msgs::msg::Point> TebLocalPlannerROS::lateralPaddedFootprin
 
 bool TebLocalPlannerROS::globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
   const geometry_msgs::msg::PoseStamped& pose_plan_frame,
-  const geometry_msgs::msg::TransformStamped& plan_to_global_transform) const
+  const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
+  bool require_full_observation) const
 {
   geometry_msgs::msg::PoseStamped pose_global;
   tf2::doTransform(pose_plan_frame, pose_global, plan_to_global_transform);
@@ -355,95 +358,43 @@ bool TebLocalPlannerROS::globalPlanPoseLateralPaddedFootprintFreeInControllerFra
   pose2d.theta = tf2::getYaw(pose_global.pose.orientation);
   const dwb_critics::Footprint oriented_footprint =
     dwb_critics::getOrientedFootprint(pose2d, lateralPaddedFootprintSpec());
+  if (require_full_observation) {
+    return orientedFootprintFullyObservedAndFree(oriented_footprint);
+  }
   return orientedFootprintNavigableOnPartialCostmap(pose2d, oriented_footprint);
+}
+
+bool TebLocalPlannerROS::orientedFootprintFullyObservedAndFree(
+  const std::vector<geometry_msgs::msg::Point> & footprint) const
+{
+  if (!costmap_ || !footprintFullyInsideCostmap(*costmap_, footprint)) {
+    return false;
+  }
+  const auto cells = visibleFootprintCells(*costmap_, footprint);
+  return !cells.empty() && std::none_of(cells.begin(), cells.end(), [&](const auto & cell) {
+    return blockingCost(costmap_->getCost(cell.x, cell.y));
+  });
 }
 
 bool TebLocalPlannerROS::orientedFootprintNavigableOnPartialCostmap(
   const geometry_msgs::msg::Pose2D & pose2d_controller_frame,
   const std::vector<geometry_msgs::msg::Point> & oriented_footprint) const
 {
-  
-  if (costmap_ == nullptr || oriented_footprint.size() < 2) {
+  (void)pose2d_controller_frame;
+  if (!costmap_) {
     return true;
   }
-
-  const unsigned int sx_cells = costmap_->getSizeInCellsX();
-  const unsigned int sy_cells = costmap_->getSizeInCellsY();
-  if (sx_cells < 1 || sy_cells < 1) {
-    return true;
-  }
-
-  const double res = costmap_->getResolution();
-  const double map_x_min = costmap_->getOriginX();
-  const double map_y_min = costmap_->getOriginY();
-  const double map_x_max_ex = map_x_min + static_cast<double>(sx_cells) * res;
-  const double map_y_max_ex = map_y_min + static_cast<double>(sy_cells) * res;
-
-  if (footprintAxisAlignedBboxSeparateFromCostmapRect(
-      oriented_footprint, map_x_min, map_y_min, map_x_max_ex, map_y_max_ex))
-  {
-    return true;
-  }
-
-  constexpr double kClipShrink = 1e-8;
-  double clip_x_min = map_x_min + kClipShrink;
-  double clip_y_min = map_y_min + kClipShrink;
-  double clip_x_max = map_x_max_ex - kClipShrink;
-  double clip_y_max = map_y_max_ex - kClipShrink;
-  if (!(clip_x_max > clip_x_min && clip_y_max > clip_y_min)) {
-    clip_x_min = map_x_min;
-    clip_y_min = map_y_min;
-    clip_x_max = map_x_max_ex - std::numeric_limits<double>::epsilon() *
-      std::max(std::fabs(map_x_max_ex), 1.0);
-    clip_y_max = map_y_max_ex - std::numeric_limits<double>::epsilon() *
-      std::max(std::fabs(map_y_max_ex), 1.0);
-    if (!(clip_x_max > clip_x_min && clip_y_max > clip_y_min)) {
-      return true;
-    }
-  }
-
-  unsigned int verts_in_grid = 0;
-  for (const auto & p : oriented_footprint) {
-    unsigned int mx_dummy = 0;
-    unsigned int my_dummy = 0;
-    if (costmap_->worldToMap(p.x, p.y, mx_dummy, my_dummy)) {
-      ++verts_in_grid;
-    }
-  }
-
-  const auto clipped_outline_ok = [&]()
-    {
-      return !clippedFootprintOutlineTouchesBlockingCost(
-        *costmap_, oriented_footprint, clip_x_min, clip_y_min, clip_x_max,
-        clip_y_max);
-    };
-
-  if (verts_in_grid == oriented_footprint.size()) {
-    try {
-      (void)costmap_model_->scorePose(pose2d_controller_frame, oriented_footprint);
-      return true;
-    } catch (const dwb_core::IllegalTrajectoryException & exc) {
-      const char * em = exc.what();
-      if (!std::strcmp(em, "Trajectory Hits Obstacle.") ||
-        !std::strcmp(em, "Trajectory Hits Unknown Region."))
-      {
-        return false;
-      }
-      if (!std::strcmp(em, "Footprint Goes Off Grid.") ||
-        !std::strcmp(em, "Trajectory Goes Off Grid."))
-      {
-        return clipped_outline_ok();
-      }
-      throw;
-    }
-  }
-
-  return clipped_outline_ok();
+  const auto cells = visibleFootprintCells(*costmap_, oriented_footprint);
+  return std::none_of(cells.begin(), cells.end(), [&](const auto & cell) {
+    return blockingCost(costmap_->getCost(cell.x, cell.y));
+  });
 }
 
 bool TebLocalPlannerROS::selectGoalStandoffAlongPlan(
   const std::vector<geometry_msgs::msg::PoseStamped>& global_plan,
   const geometry_msgs::msg::TransformStamped& plan_to_global_transform,
+  int first_candidate_idx,
+  const std::function<bool(int)> & candidate_is_safe,
   int& standoff_idx_out,
   geometry_msgs::msg::PoseStamped& effective_last_plan_pose) const
 {
@@ -456,36 +407,74 @@ bool TebLocalPlannerROS::selectGoalStandoffAlongPlan(
     return false;
   }
 
-  const geometry_msgs::msg::PoseStamped & original_goal = global_plan.back();
-  effective_last_plan_pose = original_goal;
-  auto footprint_free = [&](const geometry_msgs::msg::PoseStamped & pose) -> bool {
-    return globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
-      pose, plan_to_global_transform);
-  };
-
-  if (footprint_free(original_goal)) {
-    if (goal_standoff_latched_) {
-      RCLCPP_INFO(logger_, "终点退让: 原终点已空闲，解除锁定");
-    }
-    goal_standoff_latched_ = false;
+  effective_last_plan_pose = global_plan.back();
+  // Replans and pruning can change indices, but must never replace the locked
+  // physical parking point. A missing/blocked point means an immediate hold.
+  if (goal_standoff_latched_) {
     goal_standoff_plan_idx_ = -1;
-    return true;
+    for (int idx = first_candidate_idx; idx < static_cast<int>(global_plan.size()); ++idx) {
+      const auto & candidate = global_plan[static_cast<size_t>(idx)];
+      if (candidate.header.frame_id == goal_standoff_pose_plan_.header.frame_id &&
+          std::hypot(candidate.pose.position.x - goal_standoff_pose_plan_.pose.position.x,
+            candidate.pose.position.y - goal_standoff_pose_plan_.pose.position.y) < 1e-3 &&
+          std::fabs(angles::shortest_angular_distance(tf2::getYaw(candidate.pose.orientation),
+            tf2::getYaw(goal_standoff_pose_plan_.pose.orientation))) < 1e-3) {
+        goal_standoff_plan_idx_ = idx;
+        break;
+      }
+    }
+    standoff_idx_out = goal_standoff_plan_idx_;
+    tf2::doTransform(goal_standoff_pose_plan_, goal_standoff_pose_global_, plan_to_global_transform);
+    effective_last_plan_pose = goal_standoff_pose_plan_;
+    if (standoff_idx_out < 0) {
+      goal_standoff_failure_reason_ = "locked_point_missing";
+      std::ostringstream detail;
+      detail << "locked=(" << goal_standoff_pose_global_.pose.position.x << ","
+             << goal_standoff_pose_global_.pose.position.y << ") frame="
+             << goal_standoff_pose_global_.header.frame_id
+             << " first_candidate_idx=" << first_candidate_idx
+             << " position_tol=0.001 yaw_tol=0.001";
+      goal_standoff_failure_detail_ = detail.str();
+      goal_standoff_force_hold_ = true;
+    } else {
+      goal_standoff_force_hold_ = !candidate_is_safe(standoff_idx_out);
+    }
+    return !goal_standoff_force_hold_;
   }
 
-  // 原终点被占用时不再沿全局路径搜索退让点；由
-  // tryOccupiedGoalNearHold() 在本周期直接进入减速/零速保持。
-  goal_standoff_latched_ = false;
+  // One initial search per occupied-goal episode, including the no-result case.
+  if (goal_standoff_search_done_) {
+    return false;
+  }
+  goal_standoff_search_done_ = true;
+  if (cfg_->trajectory.enable_occupied_goal_standoff_search) {
+    for (int idx = static_cast<int>(global_plan.size()) - 2; idx >= first_candidate_idx; --idx) {
+      if (!candidate_is_safe(idx)) {
+        continue;
+      }
+      goal_standoff_latched_ = true;
+      goal_standoff_plan_idx_ = idx;
+      standoff_idx_out = idx;
+      effective_last_plan_pose = global_plan[static_cast<size_t>(idx)];
+      goal_standoff_pose_plan_ = effective_last_plan_pose;
+      tf2::doTransform(effective_last_plan_pose, goal_standoff_pose_global_, plan_to_global_transform);
+      RCLCPP_INFO(logger_, "终点占用: 锁定沿路径停车点 idx=%d", idx);
+      return true;
+    }
+  }
+
   goal_standoff_plan_idx_ = -1;
-  RCLCPP_WARN_THROTTLE(
-    logger_, *(clock_), 1000,
-    "终点占用: 取消沿路径退让点搜索，本周期立即停车等待");
+  goal_standoff_failure_reason_ = cfg_->trajectory.enable_occupied_goal_standoff_search ?
+    "no_safe_candidate" : "search_disabled";
+  RCLCPP_WARN_THROTTLE(logger_, *(clock_), 2000,
+    "终点占用: 未找到安全替代终点");
   return false;
 }
 
 bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::msg::PoseStamped>& global_plan,
                    const geometry_msgs::msg::PoseStamped& global_pose, const nav2_costmap_2d::Costmap2D& costmap, const std::string& global_frame, double max_plan_length,
                    std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan, int* current_goal_idx, geometry_msgs::msg::TransformStamped* tf_plan_to_global,
-                   int* prune_row_from_idx, int* prune_row_to_idx, PathWindowKeyPoints* key_points) const
+                   int* prune_row_from_idx, int* prune_row_to_idx, PathWindowKeyPoints* key_points)
  {
    if (prune_row_from_idx) {
      *prune_row_from_idx = -1;
@@ -499,7 +488,6 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
    
    // this method is a slightly modified version of base_local_planner/goal_functions.h
  
-   const geometry_msgs::msg::PoseStamped& plan_pose = global_plan[0];
  
    transformed_plan.clear();
  
@@ -512,6 +500,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
        return false;
      }
      
+     const geometry_msgs::msg::PoseStamped& plan_pose = global_plan.front();
      geometry_msgs::msg::TransformStamped plan_to_global_transform;
      try {
        plan_to_global_transform = tf_->lookupTransform(
@@ -578,6 +567,8 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
        );
      }
  
+     std::lock_guard<nav2_costmap_2d::Costmap2D::mutex_t> map_lock(*costmap_->getMutex());
+
      //we'll discard points on the plan that are outside the local costmap
      double dist_threshold = std::max(costmap.getSizeInCellsX() * costmap.getResolution() / 2.0,
                                       costmap.getSizeInCellsY() * costmap.getResolution() / 2.0);
@@ -600,20 +591,6 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
     const int global_goal_idx = n_plan - 1;
     geometry_msgs::msg::PoseStamped effective_last_plan_pose = global_plan.back();
     int standoff_idx = -1;
-    // 仅检查原始终点占用状态；占用时由停车保持逻辑立即处理，不再沿路径搜索退让点。
-    const bool standoff_selected = selectGoalStandoffAlongPlan(
-      global_plan, plan_to_global_transform, standoff_idx, effective_last_plan_pose);
-    if (standoff_idx >= 0 && i > standoff_idx) {
-      goal_standoff_force_hold_ = true;
-    }
-    occupied_goal_no_standoff_ = !standoff_selected;
-    if (occupied_goal_no_standoff_) {
-      occupied_goal_dist_m_ = std::hypot(
-        robot_pose.pose.position.x - global_plan.back().pose.position.x,
-        robot_pose.pose.position.y - global_plan.back().pose.position.y);
-    } else {
-      occupied_goal_dist_m_ = std::numeric_limits<double>::infinity();
-    }
     auto planPoseAt = [&](int idx) -> const geometry_msgs::msg::PoseStamped & {
       return global_plan[static_cast<size_t>(idx)];
     };
@@ -695,10 +672,37 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
           global_plan[static_cast<size_t>(j - 1)].pose.position,
           global_plan[static_cast<size_t>(j)].pose.position);
     }
+    bool goal_scanned = false;
+    bool goal_has_visible_footprint = false;
+    std::vector<geometry_msgs::msg::Point> goal_blocking_cells;
+    auto scan_goal = [&]() {
+      geometry_msgs::msg::PoseStamped goal;
+      tf2::doTransform(global_plan.back(), goal, plan_to_global_transform);
+      geometry_msgs::msg::Pose2D pose;
+      pose.x = goal.pose.position.x;
+      pose.y = goal.pose.position.y;
+      pose.theta = tf2::getYaw(goal.pose.orientation);
+      const auto footprint = dwb_critics::getOrientedFootprint(pose, lateralPaddedFootprintSpec());
+      const auto cells = visibleFootprintCells(*costmap_, footprint);
+      goal_has_visible_footprint = !cells.empty();
+      for (const auto & cell : cells) {
+        if (blockingCost(costmap_->getCost(cell.x, cell.y))) {
+          geometry_msgs::msg::Point point;
+          costmap_->mapToWorld(cell.x, cell.y, point.x, point.y);
+          goal_blocking_cells.push_back(point);
+        }
+      }
+      goal_scanned = true;
+    };
     for (int j = segment_start_idx; j <= row_end_idx; ++j) {
-      occupied[static_cast<size_t>(j - segment_start_idx)] =
-        globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
-          planPoseAt(j), plan_to_global_transform) ? 0 : 1;
+      if (j == global_goal_idx) {
+        scan_goal();
+        occupied[static_cast<size_t>(j - segment_start_idx)] = goal_blocking_cells.empty() ? 0 : 1;
+      } else {
+        occupied[static_cast<size_t>(j - segment_start_idx)] =
+          globalPlanPoseLateralPaddedFootprintFreeInControllerFrame(
+            planPoseAt(j), plan_to_global_transform) ? 0 : 1;
+      }
     }
     auto row_pose_free = [&](const int idx) -> bool {
       if (idx < segment_start_idx || idx > row_end_idx) {
@@ -728,11 +732,8 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
         arc_from_start[static_cast<size_t>(last_occ_in_window - segment_start_idx)]) +
         1e-9 < to_end_dist;
 
-    auto candidate_is_safe = [&](const int k) -> bool {
+    auto candidate_clearances = [&](const int k) {
       const int ki = k - segment_start_idx;
-      if (occupied[static_cast<size_t>(ki)]) {
-        return false;
-      }
       const double arc_k = arc_from_start[static_cast<size_t>(ki)];
       double front_clear = std::numeric_limits<double>::infinity();
       double back_clear = std::numeric_limits<double>::infinity();
@@ -748,14 +749,17 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
           back_clear = std::min(back_clear, arc_k - arc_j);
         }
       }
-      if (front_dist > 1e-9 && front_clear + 1e-9 < front_dist) {
-        return false;
-      }
-      if (back_dist > 1e-9 && back_clear + 1e-9 < back_dist) {
-        return false;
-      }
-      return true;
+      return std::make_pair(front_clear, back_clear);
     };
+    auto candidate_is_safe = [&](const int k) -> bool {
+      if (occupied[static_cast<size_t>(k - segment_start_idx)]) {
+        return false;
+      }
+      const auto clearances = candidate_clearances(k);
+      return !(front_dist > 1e-9 && clearances.first + 1e-9 < front_dist) &&
+             !(back_dist > 1e-9 && clearances.second + 1e-9 < back_dist);
+    };
+
 
     if (occ_near_tail) {
       lock_mode = 2;
@@ -870,16 +874,175 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
       }
     }
 
-    // 原始终点被占用时，本周期立即停车等待，不提交当前行裁剪，
-    // 保留完整 global_plan_ 以便终点释放后继续执行原路径。
-    if (occupied_goal_no_standoff_) {
+    // Include any forward extension made by ordinary row/window logic. Gate
+    // before the occupied-goal retreat, so shrinking to a stop cannot disable it.
+    const int candidate_window_end = std::max(lookahead_idx, end_idx);
+    const bool window_contains_global_goal = candidate_window_end == global_goal_idx ||
+      (corner_in_horizon && corner_idx == global_goal_idx);
+    if (cfg_->trajectory.enable_occupied_goal_stop &&
+        (window_contains_global_goal || occupied_goal_active_)) {
+      if (!goal_scanned) {scan_goal();}
+      const bool original_goal_free = goal_blocking_cells.empty();
+      if (!original_goal_free) {
+        occupied_goal_active_ = true;
+        occupied_goal_clear_active_ = false;
+        // Remember observed blockers, not the entire goal footprint. A blocker
+        // leaving the rolling map must not masquerade as a cleared obstacle.
+        occupied_goal_blocking_cells_.insert(occupied_goal_blocking_cells_.end(),
+          goal_blocking_cells.begin(), goal_blocking_cells.end());
+        auto key = [](const geometry_msgs::msg::Point & point) {
+          return std::make_pair(std::llround(point.x * 1e6), std::llround(point.y * 1e6));
+        };
+        std::sort(occupied_goal_blocking_cells_.begin(), occupied_goal_blocking_cells_.end(),
+          [&](const auto & a, const auto & b) {return key(a) < key(b);});
+        auto end = std::unique(occupied_goal_blocking_cells_.begin(), occupied_goal_blocking_cells_.end(),
+          [&](const auto & a, const auto & b) {return key(a) == key(b);});
+        occupied_goal_blocking_cells_.erase(end, occupied_goal_blocking_cells_.end());
+      } else if (occupied_goal_active_) {
+        const bool observed_blockers_clear = goal_has_visible_footprint &&
+          !occupied_goal_blocking_cells_.empty() && std::all_of(
+            occupied_goal_blocking_cells_.begin(), occupied_goal_blocking_cells_.end(),
+            [&](const auto & point) {
+              unsigned int x, y;
+              return costmap_->worldToMap(point.x, point.y, x, y) &&
+                     !blockingCost(costmap_->getCost(x, y));
+            });
+        if (!observed_blockers_clear) {
+          occupied_goal_clear_active_ = false;
+        } else {
+          const auto now = clock_->now();
+          if (!occupied_goal_clear_active_) {
+            occupied_goal_clear_active_ = true;
+            occupied_goal_near_clear_since_ = now;
+          }
+          const double clear_duration = std::max(0.0,
+            cfg_->trajectory.occupied_goal_clear_duration);
+          if ((now - occupied_goal_near_clear_since_).seconds() >= clear_duration) {
+            resetOccupiedGoalState();
+            if (planner_) {
+              planner_->clearPlanner();
+            }
+            RCLCPP_INFO(logger_, "原终点连续安全 %.3fs，取消停车等待计时并恢复原终点", clear_duration);
+          }
+        }
+      }
+      if (occupied_goal_active_) {
+        std::map<std::string, int> rejected_candidates;
+        auto safe_standoff = [&](int idx) {
+          auto reject = [&](const char * reason, const std::string & detail) {
+            goal_standoff_failure_reason_ = reason;
+            goal_standoff_failure_detail_ = detail;
+            ++rejected_candidates[reason];
+            return false;
+          };
+          // An existing terminal may be outside a temporarily shortened horizon;
+          // keep its identity and only plan the current visible prefix to it.
+          if (idx < segment_start_idx || idx > row_end_idx ||
+              (!goal_standoff_latched_ && idx > candidate_window_end)) {
+            return reject("outside_candidate_range", "idx=" + std::to_string(idx) +
+              " row_start=" + std::to_string(segment_start_idx) +
+              " row_end=" + std::to_string(row_end_idx) +
+              " window_end=" + std::to_string(candidate_window_end));
+          }
+          geometry_msgs::msg::PoseStamped candidate;
+          tf2::doTransform(planPoseAt(idx), candidate, plan_to_global_transform);
+          geometry_msgs::msg::Pose2D pose;
+          pose.x = candidate.pose.position.x;
+          pose.y = candidate.pose.position.y;
+          pose.theta = tf2::getYaw(candidate.pose.orientation);
+          const auto footprint = dwb_critics::getOrientedFootprint(pose, lateralPaddedFootprintSpec());
+          std::ostringstream detail;
+          detail << "candidate=(" << pose.x << "," << pose.y << "," << pose.theta << ")"
+                 << " frame=" << global_frame;
+          if (!footprintFullyInsideCostmap(*costmap_, footprint)) {
+            detail << " map_origin=(" << costmap_->getOriginX() << "," << costmap_->getOriginY()
+                   << ") map_size=(" << costmap_->getSizeInCellsX() * costmap_->getResolution()
+                   << "," << costmap_->getSizeInCellsY() * costmap_->getResolution() << ")";
+            return reject("footprint_outside_costmap", detail.str());
+          }
+          const auto clearances = candidate_clearances(idx);
+          detail << " front_clear=" << clearances.first << "/" << front_dist
+                 << " back_clear=" << clearances.second << "/" << back_dist;
+          const auto cells = visibleFootprintCells(*costmap_, footprint);
+          if (cells.empty()) {
+            return reject("footprint_unobservable", detail.str());
+          }
+          for (const auto & cell : cells) {
+            const auto cost = costmap_->getCost(cell.x, cell.y);
+            if (blockingCost(cost)) {
+              double wx, wy;
+              costmap_->mapToWorld(cell.x, cell.y, wx, wy);
+              detail << " blocking_cell=(" << wx << "," << wy << ") cost=" << int(cost);
+              return reject(cost == nav2_costmap_2d::NO_INFORMATION ?
+                "footprint_unknown" : "footprint_collision", detail.str());
+            }
+          }
+          if (idx == segment_start_idx && idx + 1 < n_plan) {
+            const auto & point = planPoseAt(idx).pose.position;
+            const auto & next = planPoseAt(idx + 1).pose.position;
+            const double projection = (robot_pose.pose.position.x - point.x) * (next.x - point.x) +
+              (robot_pose.pose.position.y - point.y) * (next.y - point.y);
+            const double stop_dist = std::max(0.05, cfg_->trajectory.goal_standoff_stop_distance);
+            if (projection > 1e-6 && std::hypot(robot_pose.pose.position.x - point.x,
+                robot_pose.pose.position.y - point.y) > stop_dist) {
+              return reject("locked_point_passed", detail.str());
+            }
+          }
+          if (front_dist > 1e-9 && clearances.first + 1e-9 < front_dist) {
+            return reject("front_clearance_insufficient", detail.str());
+          }
+          if (back_dist > 1e-9 && clearances.second + 1e-9 < back_dist) {
+            return reject("back_clearance_insufficient", detail.str());
+          }
+          goal_standoff_failure_reason_ = "valid";
+          goal_standoff_failure_detail_ = detail.str();
+          return true;
+        };
+        selectGoalStandoffAlongPlan(global_plan, plan_to_global_transform,
+          segment_start_idx, safe_standoff, standoff_idx, effective_last_plan_pose);
+        if (!goal_standoff_latched_ && !rejected_candidates.empty()) {
+          std::ostringstream summary;
+          summary << "rejected_candidates:";
+          for (const auto & rejection : rejected_candidates) {
+            summary << " " << rejection.first << "=" << rejection.second;
+          }
+          summary << "; last_candidate: " << goal_standoff_failure_detail_;
+          goal_standoff_failure_detail_ = summary.str();
+        }
+        if (goal_standoff_last_logged_reason_ != goal_standoff_failure_reason_) {
+          if (goal_standoff_failure_reason_ == "valid") {
+            RCLCPP_INFO(logger_, "终点占用停车点校验通过: idx=%d reason=valid %s",
+              standoff_idx, goal_standoff_failure_detail_.c_str());
+          } else {
+            RCLCPP_WARN(logger_, "终点占用停车点校验失败: idx=%d reason=%s %s",
+              standoff_idx, goal_standoff_failure_reason_.c_str(),
+              goal_standoff_failure_detail_.c_str());
+          }
+          goal_standoff_last_logged_reason_ = goal_standoff_failure_reason_;
+        }
+      }
+    } else {
+      resetOccupiedGoalState();
+    }
+    occupied_goal_no_standoff_ = occupied_goal_active_ &&
+      (!goal_standoff_latched_ || goal_standoff_force_hold_);
+    occupied_goal_dist_m_ = occupied_goal_active_ ? std::hypot(
+      robot_pose.pose.position.x - global_plan.back().pose.position.x,
+      robot_pose.pose.position.y - global_plan.back().pose.position.y) :
+      std::numeric_limits<double>::infinity();
+
+    // 停车等待期间保留完整 global_plan_，终点释放后可继续原路径。
+    if (occupied_goal_active_) {
       need_prune_remaining_row = false;
       prune_include_start = false;
       safe_distance_terminal_idx = -1;
     }
 
     if (standoff_idx >= 0) {
-      end_idx = std::min(end_idx, standoff_idx);
+      end_idx = std::min(candidate_window_end, standoff_idx);
+      if (!goal_standoff_force_hold_) {
+        safe_distance_terminal_idx = standoff_idx;
+      }
       if (prune_row_from_idx && prune_row_to_idx &&
           *prune_row_from_idx >= 0 && *prune_row_to_idx >= standoff_idx)
       {
@@ -970,11 +1133,12 @@ bool TebLocalPlannerROS::transformGlobalPlan(const std::vector<geometry_msgs::ms
       RCLCPP_INFO_THROTTLE(
         logger_, *(clock_), 2000,
         "终点占用立即停车 marker: goal_dist=%.3f m "
-        "pose=(%.3f, %.3f) frame=%s",
+        "pose=(%.3f, %.3f) frame=%s reason=%s %s",
         occupied_goal_dist_m_,
         occupied_goal_stop_global.pose.position.x,
         occupied_goal_stop_global.pose.position.y,
-        occupied_goal_stop_global.header.frame_id.c_str());
+        occupied_goal_stop_global.header.frame_id.c_str(),
+        goal_standoff_failure_reason_.c_str(), goal_standoff_failure_detail_.c_str());
     } else {
       publish_decision_marker(
         occupied_goal_stop_marker_pub_, "last_occupied_goal_stop", nullptr,
