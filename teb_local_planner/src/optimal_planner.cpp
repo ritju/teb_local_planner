@@ -42,6 +42,7 @@
 #include "teb_local_planner/optimal_planner.h"
 
 #include <map>
+#include <sstream>
 // g2o custom edges and vertices for the TEB planner
 #include <teb_local_planner/g2o_types/edge_velocity.h>
 #include <teb_local_planner/g2o_types/edge_velocity_obstacle_ratio.h>
@@ -562,10 +563,10 @@ void TebOptimalPlanner::AddEdgesObstacles(double weight_multiplier)
           continue;
 
           // calculate distance to robot model
-          double dist = cfg_->robot_model->calculateDistance(teb_.Pose(i), obst.get());
+          double dist = cfg_->robot_model->optimizationDistance(teb_.Pose(i), obst.get()).signed_distance;
           
           // force considering obstacle if really close to the current pose
-        if (dist < cfg_->obstacles.min_obstacle_dist*cfg_->obstacles.obstacle_association_force_inclusion_factor)
+        if (dist <= 0.0 || dist < cfg_->obstacles.min_obstacle_dist*cfg_->obstacles.obstacle_association_force_inclusion_factor)
           {
               iter_obstacle->push_back(obst);
               continue;
@@ -1673,6 +1674,94 @@ void TebOptimalPlanner::getFullTrajectory(std::vector<teb_msgs::msg::TrajectoryP
 }
 
 
+void TebOptimalPlanner::logTrajectoryClearanceIfDue(
+  bool feasible, const char * reason, int checked_until,
+  const std::vector<geometry_msgs::msg::Point> & costmap_footprint)
+{
+  if (!cfg_ || !node_ || !obstacles_ || !cfg_->robot_model ||
+    !cfg_->debug_mode.load(std::memory_order_relaxed)) {return;}
+  const auto now = node_->now();
+  double minimum = std::numeric_limits<double>::infinity();
+  double minimum_free = minimum;
+  int worst_pose = -1, worst_obstacle = -1;
+  size_t penetrating = 0, inside_margin = 0, invalid = 0, guides = 0;
+  size_t associated_pairs = 0;
+  for (const auto & obstacle : *obstacles_) {if (obstacle && obstacle->isWallGuide()) {++guides;}}
+  for (int i = 0; i < teb_.sizePoses(); ++i) {
+    for (size_t j = 0; j < obstacles_->size(); ++j) {
+      const auto & obstacle = obstacles_->at(j);
+      if (!obstacle || obstacle->isWallGuide()) {continue;}
+      double distance;
+      try {
+        distance = cfg_->robot_model->optimizationDistance(teb_.Pose(i), obstacle.get()).signed_distance;
+      } catch (...) {++invalid; continue;}
+      if (!std::isfinite(distance)) {++invalid; continue;}
+      if (distance < 0.0) {++penetrating;}
+      if (distance < cfg_->obstacles.min_obstacle_dist) {++inside_margin;}
+      if (!teb_.PoseVertex(i)->fixed()) {minimum_free = std::min(minimum_free, distance);}
+      if (distance < minimum) {minimum = distance; worst_pose = i; worst_obstacle = j;}
+      if (i > 0 && i+1 < teb_.sizePoses() && static_cast<size_t>(i) < obstacles_per_vertex_.size() &&
+        std::find(obstacles_per_vertex_[i].begin(), obstacles_per_vertex_[i].end(), obstacle) !=
+        obstacles_per_vertex_[i].end()) {++associated_pairs;}
+    }
+  }
+  const int state = feasible ? (minimum < 0.0 ? 2 : (invalid ? 3 : 1)) : 0;
+  if (state == last_clearance_log_state_ && now >= last_clearance_log_time_ &&
+    (now-last_clearance_log_time_).seconds() < 1.0) {return;}
+  last_clearance_log_time_ = now;
+  last_clearance_log_state_ = state;
+  std::ostringstream detail;
+  detail << "[TEB Clearance] candidate=" << this << " time_ns=" << now.nanoseconds()
+         << " frame=" << cfg_->map_frame << " feasible=" << feasible << " reason=" << reason
+         << " checked_until=" << checked_until << " poses=" << teb_.sizePoses()
+         << " obstacles=" << obstacles_->size() << " wall_guides_excluded=" << guides
+         << " min_signed=" << minimum << " min_free_signed=" << minimum_free
+         << " penetrating_pairs=" << penetrating << " below_min_pairs=" << inside_margin
+         << " invalid_pairs=" << invalid << " static_associated_pairs=" << associated_pairs
+         << " min_dist=" << cfg_->obstacles.min_obstacle_dist
+         << " epsilon=" << cfg_->optim.penalty_epsilon
+         << " weight=" << cfg_->optim.weight_obstacle
+         << " legacy_assoc=" << cfg_->obstacles.legacy_obstacle_association
+         << " opt_inscribed=" << cfg_->robot_model->getInscribedRadius()
+         << " iterations=" << cfg_->optim.no_inner_iterations << "/" << cfg_->optim.no_outer_iterations
+         << " contour_check=" << cfg_->trajectory.feasibility_check_obstacle_contours;
+  if (worst_pose >= 0) {
+    const auto & pose = teb_.Pose(worst_pose);
+    const auto & obstacle = obstacles_->at(worst_obstacle);
+    const bool associated = worst_pose > 0 && worst_pose+1 < teb_.sizePoses() &&
+      static_cast<size_t>(worst_pose) < obstacles_per_vertex_.size() &&
+      std::find(obstacles_per_vertex_[worst_pose].begin(), obstacles_per_vertex_[worst_pose].end(),
+        obstacle) != obstacles_per_vertex_[worst_pose].end();
+    const char * type = dynamic_cast<PointObstacle *>(obstacle.get()) ? "point" :
+      dynamic_cast<CircularObstacle *>(obstacle.get()) ? "circle" :
+      dynamic_cast<LineObstacle *>(obstacle.get()) ? "line" :
+      dynamic_cast<PillObstacle *>(obstacle.get()) ? "pill" : "polygon";
+    detail << " worst_pose=" << worst_pose << " fixed=" << teb_.PoseVertex(worst_pose)->fixed()
+           << " in_checked_range=" << (worst_pose <= checked_until)
+           << " pose=(" << pose.x() << "," << pose.y() << "," << pose.theta() << ")"
+           << " worst_obstacle=" << worst_obstacle << " type=" << type
+           << " dynamic=" << obstacle->isDynamic() << " static_associated=" << associated
+           << " centroid=(" << obstacle->getCentroid().x() << "," << obstacle->getCentroid().y() << ")";
+    geometry_msgs::msg::Polygon polygon;
+    obstacle->toPolygonMsg(polygon);
+    detail << " obstacle_vertices=" << polygon.points.size() << " geometry=[";
+    for (size_t j = 0; j < std::min<size_t>(polygon.points.size(),16); ++j) {
+      detail << "(" << polygon.points[j].x << "," << polygon.points[j].y << ")";
+    }
+    detail << "]";
+  }
+  detail << " costmap_footprint=[";
+  for (const auto & p : costmap_footprint) {detail << "(" << p.x << "," << p.y << ")";}
+  detail << "] model=" << (dynamic_cast<PolygonRobotFootprint *>(cfg_->robot_model.get()) ? "polygon" : "other");
+  if (feasible && minimum < 0.0) {
+    RCLCPP_WARN(node_->get_logger(), "%s PASS_WITH_PENETRATION", detail.str().c_str());
+  } else if (feasible && invalid) {
+    RCLCPP_WARN(node_->get_logger(), "%s PASS_WITH_INVALID_DISTANCE", detail.str().c_str());
+  } else {
+    RCLCPP_INFO(node_->get_logger(), "%s", detail.str().c_str());
+  }
+}
+
 bool TebOptimalPlanner::isTrajectoryFeasible(dwb_critics::ObstacleFootprintCritic* costmap_model, const std::vector<geometry_msgs::msg::Point>& footprint_spec,
                                              double inscribed_radius, double circumscribed_radius, int look_ahead_idx, double feasibility_check_lookahead_distance)
 {
@@ -1694,6 +1783,7 @@ bool TebOptimalPlanner::isTrajectoryFeasible(dwb_critics::ObstacleFootprintCriti
   {
     teb().Pose(i).toPoseMsg(pose2d);
     if (!isPoseValid(pose2d, costmap_model, footprint_spec)){
+      logTrajectoryClearanceIfDue(false, "costmap_pose_rejected", i, footprint_spec);
       if (visualization_)
       {
         visualization_->publishInfeasibleRobotPose(teb().Pose(i), *cfg_->robot_model);
@@ -1721,6 +1811,7 @@ bool TebOptimalPlanner::isTrajectoryFeasible(dwb_critics::ObstacleFootprintCriti
           intermediate_pose.toPoseMsg(pose2d);
 
           if (!isPoseValid(pose2d, costmap_model, footprint_spec)){
+            logTrajectoryClearanceIfDue(false, "costmap_interpolation_rejected", i, footprint_spec);
             if (visualization_)
             {
               visualization_->publishInfeasibleRobotPose(intermediate_pose, *cfg_->robot_model);
@@ -1735,8 +1826,10 @@ bool TebOptimalPlanner::isTrajectoryFeasible(dwb_critics::ObstacleFootprintCriti
   // Contour hard veto against obstacles_ (static + dynamic current; gated prediction)
   if (!isTrajectoryContourFeasible(inscribed_radius))
   {
+    logTrajectoryClearanceIfDue(false, "contour_rejected", look_ahead_idx, footprint_spec);
     return false;
   }
+  logTrajectoryClearanceIfDue(true, "checks_passed", look_ahead_idx, footprint_spec);
   return true;
 }
 
@@ -1943,12 +2036,23 @@ bool TebOptimalPlanner::isPoseValid(geometry_msgs::msg::Pose2D pose2d, dwb_criti
       return false;
     }
   } catch(const dwb_core::IllegalTrajectoryException& e){
+    if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
+      RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
+        "[TEB GridCheck] pose=(%.3f,%.3f,%.3f) exception=%s rejected=%d",
+        pose2d.x, pose2d.y, pose2d.theta, e.what(),
+        !std::strcmp(e.what(), "Trajectory Hits Obstacle."));
+    }
     if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
     {
       return false;
     }
   }
   catch (...) {
+    if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
+      RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
+        "[TEB GridCheck] pose=(%.3f,%.3f,%.3f) unexpected_exception preserved_as_valid=1",
+        pose2d.x, pose2d.y, pose2d.theta);
+    }
     return true;
   }
   return true;

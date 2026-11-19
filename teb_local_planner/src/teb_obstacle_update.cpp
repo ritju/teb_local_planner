@@ -664,11 +664,21 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
   }
 
   // --- Add obstacles; edge mode clips shallow wall-band geometry instead of skipping ---
+  size_t input_points = 0, input_circles = 0, input_lines = 0, input_polygons = 0;
+  size_t clipped_count = 0, skipped_count = 0;
+  const size_t before_converter = obstacles_.size();
+  geometry_msgs::msg::Point32 first_skipped_point;
   if (obstacles) {
   for (std::size_t i=0; i<obstacles->obstacles.size(); ++i)
   {
     const costmap_converter_msgs::msg::ObstacleMsg* obstacle = &obstacles->obstacles.at(i);
     const geometry_msgs::msg::Polygon* polygon = &obstacle->polygon;
+    if (polygon->points.size() == 1) {
+      if (obstacle->radius > 0.0) {++input_circles;}
+      else {++input_points; if (input_points == 1) {first_skipped_point = polygon->points.front();}}
+    } else if (polygon->points.size() == 2) {++input_lines;}
+    else if (polygon->points.size() > 2) {++input_polygons;}
+    const size_t before_one = obstacles_.size();
 
     WallPolygonClipResult wall_result;
     if (polygon->points.size() > 2) {
@@ -689,6 +699,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
     }
 
     if (wall_result.use_processed_vertices && !wall_result.vertices.empty()) {
+      ++clipped_count;
       pushObstacleFromPolygonPoints(obstacles_, wall_result.vertices);
     } else if (polygon->points.size()==1 && obstacle->radius > 0) // Circle
     {
@@ -711,10 +722,39 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
       obstacles_.push_back(ObstaclePtr(polyobst));
     }
 
+    if (obstacles_.size() == before_one) {++skipped_count;}
     // Set velocity, if obstacle is moving
     if(!obstacles_.empty())
       obstacles_.back()->setCentroidVelocity(obstacles->obstacles[i].velocities, obstacles->obstacles[i].orientation);
   }
+  }
+
+  if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
+    const bool stamp_valid = obstacles &&
+      (obstacles->header.stamp.sec != 0 || obstacles->header.stamp.nanosec != 0);
+    const double age = stamp_valid ? (clock_->now()-rclcpp::Time(
+      obstacles->header.stamp, clock_->get_clock_type())).seconds() : -1.0;
+    RCLCPP_INFO_THROTTLE(logger_, *clock_, 1000,
+      "[TEB ObstacleInput] input=%zu points_r0=%zu circles=%zu lines=%zu polygons=%zu "
+      "added=%zu skipped=%zu wall_clipped=%zu edge_mode=%d wall_filter=%d "
+      "input_frame=%s effective_frame=%s target_frame=%s stamp_valid=%d age=%.3f "
+      "first_skipped_point=(%.3f,%.3f)",
+      obstacles ? obstacles->obstacles.size() : 0, input_points, input_circles, input_lines,
+      input_polygons, obstacles_.size()-before_converter, skipped_count, clipped_count,
+      is_edge_following_mode_, use_wall_line_filter,
+      obstacles ? obstacles->header.frame_id.c_str() : "<none>", obstacles_frame.c_str(),
+      cfg_->map_frame.c_str(), stamp_valid, age, first_skipped_point.x, first_skipped_point.y);
+    if (input_points > 0) {
+      RCLCPP_WARN_THROTTLE(logger_, *clock_, 1000,
+        "[TEB ObstacleInput] DROPPED_ZERO_RADIUS_POINTS count=%zu first=(%.3f,%.3f)，"
+        "当前 converter 接入没有零半径 PointObstacle 分支",
+        input_points, first_skipped_point.x, first_skipped_point.y);
+    }
+    if (obstacles_frame != cfg_->map_frame) {
+      RCLCPP_WARN_THROTTLE(logger_, *clock_, 1000,
+        "[TEB ObstacleInput] FRAME_MISMATCH input=%s target=%s coordinates_used_without_tf=1",
+        obstacles_frame.c_str(), cfg_->map_frame.c_str());
+    }
   }
 
   checkFrontScanProtrusionExit(

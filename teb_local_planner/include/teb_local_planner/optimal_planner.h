@@ -759,6 +759,8 @@ protected:
    * @brief 按 debug_wall_obstacle_cost_interval 节流，汇总打印贴边与障碍边代价（需在 clearGraph 前调用）
    */
   void logWallAndObstacleCostsIfDue();
+  void logTrajectoryClearanceIfDue(bool feasible, const char * reason, int checked_until,
+    const std::vector<geometry_msgs::msg::Point> & costmap_footprint);
 
   /**
    * @brief 数值断言失败时打印 ΔT / 位姿间距，便于复现 EdgeVelocity NaN 等问题。
@@ -795,6 +797,8 @@ protected:
   //!< Fallback wall-guide LineObstacle when obstacles_ has no isWallGuide() entry
   std::shared_ptr<LineObstacle> wall_side_clearance_fallback_;
   rclcpp::Time last_wall_obstacle_cost_log_time_{0, 0, RCL_ROS_TIME}; //!< 贴边/障碍代价日志节流时间戳
+  rclcpp::Time last_clearance_log_time_{0, 0, RCL_ROS_TIME};
+  int last_clearance_log_state_{-1};
   bool enable_wall_obstacle_cost_log_{true}; //!< false 时跳过 logWallAndObstacleCostsIfDue（HCP 非 best）
 
   bool initialized_; //!< Keeps track about the correct initialization of this class

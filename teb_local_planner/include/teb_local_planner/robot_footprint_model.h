@@ -42,6 +42,7 @@
 
 #include "teb_local_planner/pose_se2.h"
 #include "teb_local_planner/obstacles.h"
+#include "teb_local_planner/optimization_distance.hpp"
 #include <visualization_msgs/msg/marker.hpp>
 
 namespace teb_local_planner
@@ -81,6 +82,22 @@ public:
     * @return Euclidean distance to the robot
     */
   virtual double calculateDistance(const PoseSE2& current_pose, const Obstacle* obstacle) const = 0;
+
+  // Explicit optimization-only semantics. Legacy distance callers are unchanged.
+  virtual OptimizationDistance optimizationDistance(
+    const PoseSE2 & pose, const Obstacle * obstacle) const
+  {
+    OptimizationDistance result;
+    result.signed_distance = calculateDistance(pose, obstacle);
+    const double step = 1e-5;
+    PoseSE2 plus = pose, minus = pose;
+    plus.x() += step; minus.x() -= step;
+    result.escape_normal.x() = (calculateDistance(plus, obstacle)-calculateDistance(minus, obstacle))/(2*step);
+    plus = pose; minus = pose;
+    plus.y() += step; minus.y() -= step;
+    result.escape_normal.y() = (calculateDistance(plus, obstacle)-calculateDistance(minus, obstacle))/(2*step);
+    return result;
+  }
 
   /**
     * @brief Estimate the distance between the robot and the predicted location of an obstacle at time t
@@ -572,6 +589,30 @@ public:
     Point2dContainer polygon_world(vertices_.size());
     transformToWorld(current_pose, polygon_world);
     return obstacle->getMinimumDistance(polygon_world);
+  }
+
+  OptimizationDistance optimizationDistance(
+    const PoseSE2 & pose, const Obstacle * obstacle) const override
+  {
+    Point2dContainer body(vertices_.size());
+    transformToWorld(pose, body);
+    Point2dContainer shape;
+    double radius = 0.0;
+    if (const auto * point = dynamic_cast<const PointObstacle *>(obstacle)) {
+      shape.push_back(point->position());
+    } else if (const auto * circle = dynamic_cast<const CircularObstacle *>(obstacle)) {
+      shape.push_back(circle->position()); radius = circle->radius();
+    } else if (const auto * line = dynamic_cast<const LineObstacle *>(obstacle)) {
+      shape = {line->start(), line->end()};
+    } else if (const auto * pill = dynamic_cast<const PillObstacle *>(obstacle)) {
+      shape = {pill->start(), pill->end()};
+      radius = -pill->getMinimumDistance(pill->start());
+    } else if (const auto * polygon = dynamic_cast<const PolygonObstacle *>(obstacle)) {
+      shape = polygon->vertices();
+    } else {
+      throw std::invalid_argument("Unsupported obstacle for polygon optimization distance");
+    }
+    return optimization_distance::between(body, shape, radius);
   }
 
   /**

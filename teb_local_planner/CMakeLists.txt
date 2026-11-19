@@ -242,6 +242,7 @@ if(BUILD_TESTING)
     teb_narrow_backward_test
     teb_costmap_params_test
     teb_path_hold_test
+    teb_signed_distance_test
     teb_rotation_test
     teb_corner_collision_debug_test
     teb_main_flow_test

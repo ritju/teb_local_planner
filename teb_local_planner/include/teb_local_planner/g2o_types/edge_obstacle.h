@@ -55,6 +55,32 @@
 namespace teb_local_planner
 {
 
+// Translation uses a selected subgradient, so symmetric penetration does not
+// become a false stationary point. Yaw keeps numerical differentiation.
+inline Eigen::Vector3d obstacleDistanceGradient(const BaseRobotFootprintModel & model,
+  const PoseSE2 & pose, const Obstacle * obstacle, const OptimizationDistance & result)
+{
+  const double step = 1e-5;
+  PoseSE2 plus = pose, minus = pose;
+  plus.theta() += step; minus.theta() -= step;
+  Eigen::Vector3d gradient;
+  gradient << result.escape_normal.x(), result.escape_normal.y(),
+    (model.optimizationDistance(plus, obstacle).signed_distance -
+     model.optimizationDistance(minus, obstacle).signed_distance)/(2*step);
+  TEB_ASSERT_MSG(gradient.allFinite(), "Invalid obstacle distance gradient");
+  return gradient;
+}
+
+inline double obstaclePenaltySlope(double error, const TebConfig & cfg)
+{
+  if (error <= 0.0) {return 0.0;}
+  if (cfg.optim.obstacle_cost_exponent == 1.0 || cfg.obstacles.min_obstacle_dist <= 0.0) {
+    return -1.0;
+  }
+  return -cfg.optim.obstacle_cost_exponent * std::pow(
+    error/cfg.obstacles.min_obstacle_dist, cfg.optim.obstacle_cost_exponent-1.0);
+}
+
 /**
  * @class EdgeObstacle
  * @brief Edge defining the cost function for keeping a minimum distance from obstacles.
@@ -87,7 +113,7 @@ public:
     TEB_ASSERT_MSG(cfg_ && _measurement && robot_model_, "You must call setTebConfig(), setObstacle() and setRobotModel() on EdgeObstacle()");
     const VertexPose* bandpt = static_cast<const VertexPose*>(_vertices[0]);
 
-    double dist = robot_model_->calculateDistance(bandpt->pose(), _measurement);
+    double dist = robot_model_->optimizationDistance(bandpt->pose(), _measurement).signed_distance;
 
     // Original obstacle cost.
     _error[0] = penaltyBoundFromBelow(dist, cfg_->obstacles.min_obstacle_dist, cfg_->optim.penalty_epsilon);
@@ -105,51 +131,16 @@ public:
     TEB_ASSERT_MSG(std::isfinite(_error[0]), "EdgeObstacle::computeError() _error[0]=%f\n",_error[0]);
   }
 
-#ifdef USE_ANALYTIC_JACOBI
-#if 0
-
-  /**
-   * @brief Jacobi matrix of the cost function specified in computeError().
-   */
-  void linearizeOplus()
+  void linearizeOplus() override
   {
-    TEB_ASSERT_MSG(cfg_, "You must call setTebConfig on EdgePointObstacle()");
-    const VertexPose* bandpt = static_cast<const VertexPose*>(_vertices[0]);
-    
-    Eigen::Vector2d deltaS = *_measurement - bandpt->position(); 
-    double angdiff = atan2(deltaS[1],deltaS[0])-bandpt->theta();
-    
-    double dist_squared = deltaS.squaredNorm();
-    double dist = sqrt(dist_squared);
-    
-    double aux0 = sin(angdiff);
-    double dev_left_border = penaltyBoundFromBelowDerivative(dist*fabs(aux0),cfg_->obstacles.min_obstacle_dist,cfg_->optim.penalty_epsilon);
-
-    if (dev_left_border==0)
-    {
-      _jacobianOplusXi( 0 , 0 ) = 0;
-      _jacobianOplusXi( 0 , 1 ) = 0;
-      _jacobianOplusXi( 0 , 2 ) = 0;
-      return;
-    }
-    
-    double aux1 = -fabs(aux0) / dist;
-    double dev_norm_x = deltaS[0]*aux1;
-    double dev_norm_y = deltaS[1]*aux1;
-    
-    double aux2 = cos(angdiff) * g2o::sign(aux0);
-    double aux3 = aux2 / dist_squared;
-    double dev_proj_x = aux3 * deltaS[1] * dist;
-    double dev_proj_y = -aux3 * deltaS[0] * dist;
-    double dev_proj_angle = -aux2;
-    
-    _jacobianOplusXi( 0 , 0 ) = dev_left_border * ( dev_norm_x + dev_proj_x );
-    _jacobianOplusXi( 0 , 1 ) = dev_left_border * ( dev_norm_y + dev_proj_y );
-    _jacobianOplusXi( 0 , 2 ) = dev_left_border * dev_proj_angle;
+    const auto * vertex = static_cast<const VertexPose *>(_vertices[0]);
+    const auto result = robot_model_->optimizationDistance(vertex->pose(), _measurement);
+    const auto gradient = obstacleDistanceGradient(*robot_model_, vertex->pose(), _measurement, result);
+    const double error = penaltyBoundFromBelow(result.signed_distance,
+      cfg_->obstacles.min_obstacle_dist, cfg_->optim.penalty_epsilon);
+    this->_jacobianOplusXi.row(0) = obstaclePenaltySlope(error, *cfg_) * gradient.transpose();
   }
-#endif
-#endif
-  
+
   /**
    * @brief Set pointer to associated obstacle for the underlying cost function 
    * @param obstacle 2D position vector containing the position of the obstacle
@@ -226,7 +217,7 @@ public:
     TEB_ASSERT_MSG(cfg_ && _measurement && robot_model_, "You must call setTebConfig(), setObstacle() and setRobotModel() on EdgeInflatedObstacle()");
     const VertexPose* bandpt = static_cast<const VertexPose*>(_vertices[0]);
 
-    double dist = robot_model_->calculateDistance(bandpt->pose(), _measurement);
+    double dist = robot_model_->optimizationDistance(bandpt->pose(), _measurement).signed_distance;
 
     // Original "straight line" obstacle cost. The max possible value
     // before weighting is min_obstacle_dist
@@ -247,6 +238,18 @@ public:
 
 
     TEB_ASSERT_MSG(std::isfinite(_error[0]) && std::isfinite(_error[1]), "EdgeInflatedObstacle::computeError() _error[0]=%f, _error[1]=%f\n",_error[0], _error[1]);
+  }
+
+  void linearizeOplus() override
+  {
+    const auto * vertex = static_cast<const VertexPose *>(_vertices[0]);
+    const auto result = robot_model_->optimizationDistance(vertex->pose(), _measurement);
+    const auto gradient = obstacleDistanceGradient(*robot_model_, vertex->pose(), _measurement, result);
+    const double error = penaltyBoundFromBelow(result.signed_distance,
+      cfg_->obstacles.min_obstacle_dist, cfg_->optim.penalty_epsilon);
+    this->_jacobianOplusXi.row(0) = obstaclePenaltySlope(error, *cfg_) * gradient.transpose();
+    this->_jacobianOplusXi.row(1) = penaltyBoundFromBelowDerivative(
+      result.signed_distance, cfg_->obstacles.inflation_dist, 0.0) * gradient.transpose();
   }
 
   /**
