@@ -252,6 +252,7 @@ public:
     double path_wait_timeout; //!< 每个未锁 ID 挡路后最多等待 [s]（须 > 检测 t_settle）
     double path_wait_clear_time; //!< 走廊清空 / 单 ID 离开后去抖 [s]
     double path_wait_msg_timeout; //!< 动态话题断流超时 [s]
+    double path_wait_brake_response_time; //!< 感知、控制和底盘合计的保守响应时间 [s]
     bool publish_path_wait_debug; //!< 发布 teb_path_wait_debug MarkerArray
     bool include_costmap_obstacles; //!< Specify whether the obstacles in the costmap should be taken into account directly
     double costmap_obstacles_behind_robot_dist; //!< Limit the occupied local costmap obstacles taken into account for planning behind the robot (specify distance in meters)
@@ -662,6 +663,7 @@ public:
     obstacles.path_wait_timeout = 6.0;
     obstacles.path_wait_clear_time = 0.5;
     obstacles.path_wait_msg_timeout = 0.5;
+    obstacles.path_wait_brake_response_time = 0.7;
     obstacles.publish_path_wait_debug = true;
     obstacles.include_costmap_obstacles = true;
     obstacles.costmap_obstacles_behind_robot_dist = 1.5;

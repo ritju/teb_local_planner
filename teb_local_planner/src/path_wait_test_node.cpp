@@ -78,6 +78,8 @@ teb_local_planner::PathWaitObstacle toGateObstacle(
     dst.center = acc / static_cast<double>(dst.polygon.size());
   }
   dst.radius = src.radius;
+  dst.velocity = Eigen::Vector2d(src.velocities.twist.linear.x,
+                                 src.velocities.twist.linear.y);
   return dst;
 }
 
@@ -485,9 +487,18 @@ private:
     {
       gate_obsts.push_back(toGateObstacle(o));
     }
+    std::vector<geometry_msgs::msg::Point> gate_footprint;
+    for (int i = 0; i < 16; ++i)
+    {
+      const double angle = 2.0 * M_PI * static_cast<double>(i) / 16.0;
+      geometry_msgs::msg::Point point;
+      point.x = footprint_radius_ * std::cos(angle);
+      point.y = footprint_radius_ * std::sin(angle);
+      gate_footprint.push_back(point);
+    }
     const teb_local_planner::PathWaitResult result = gate_.evaluate(
       global_plan_, Eigen::Vector2d(0.0, 0.0), gate_obsts,
-      footprint_radius_, min_obstacle_dist_, cfg_, stamp, true);
+      footprint_radius_, min_obstacle_dist_, cfg_, stamp, true, 0.0, gate_footprint);
 
     visualization_msgs::msg::MarkerArray debug;
     teb_local_planner::buildPathWaitDebugMarkers(debug, map_frame_, stamp, result);
@@ -571,10 +582,10 @@ private:
 
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 1000,
-      "[PathWaitTest] gate=%s reason=%s dyn=%zu block=[%s] waiting=[%s] "
-      "latch=[%s] elapsed=%.1fs rem=%.1fs | gated_dev=%.2f(%s) naive_dev=%.2f(%s)",
-      teb_local_planner::pathWaitModeName(result.mode),
-      result.reason.c_str(),
+      "[路径等待测试] 状态=%s 原因=%s 动态障碍数=%zu 阻挡=[%s] 等待=[%s] "
+      "已锁定=[%s] 已等待=%.1f秒 剩余=%.1f秒 | 门控偏差=%.2f(%s) 普通规划偏差=%.2f(%s)",
+      teb_local_planner::pathWaitModeChinese(result.mode),
+      teb_local_planner::pathWaitReasonChinese(result.reason),
       dyn_msgs.size(),
       teb_local_planner::joinPathWaitIds(result.blocking_ids).c_str(),
       teb_local_planner::joinPathWaitIds(result.waiting_ids).c_str(),

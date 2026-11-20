@@ -882,6 +882,7 @@
    costmap_converter_msgs::msg::ObstacleArrayMsg path_wait_obstacle_msg_;
    rclcpp::Time path_wait_receive_time_{0, 0, RCL_ROS_TIME};
    bool path_wait_msg_valid_ = false;
+   bool path_wait_obstacle_tf_failed_ = false;
    PathDynamicWaitGate path_dynamic_wait_gate_;
    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr path_wait_debug_marker_pub_;
    int last_published_protruding_obstacle_marker_count_{0};

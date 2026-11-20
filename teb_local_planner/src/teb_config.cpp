@@ -232,6 +232,7 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "path_wait_timeout", rclcpp::ParameterValue(obstacles.path_wait_timeout));
   declare_parameter_if_not_declared(nh, name + "." + "path_wait_clear_time", rclcpp::ParameterValue(obstacles.path_wait_clear_time));
   declare_parameter_if_not_declared(nh, name + "." + "path_wait_msg_timeout", rclcpp::ParameterValue(obstacles.path_wait_msg_timeout));
+  declare_parameter_if_not_declared(nh, name + "." + "path_wait_brake_response_time", rclcpp::ParameterValue(obstacles.path_wait_brake_response_time));
   declare_parameter_if_not_declared(nh, name + "." + "publish_path_wait_debug", rclcpp::ParameterValue(obstacles.publish_path_wait_debug));
   declare_parameter_if_not_declared(nh, name + "." + "include_costmap_obstacles", rclcpp::ParameterValue(obstacles.include_costmap_obstacles));
   declare_parameter_if_not_declared(nh, name + "." + "costmap_obstacles_behind_robot_dist", rclcpp::ParameterValue(obstacles.costmap_obstacles_behind_robot_dist));
@@ -682,6 +683,7 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   nh->get_parameter_or(name + "." + "path_wait_timeout", obstacles.path_wait_timeout, obstacles.path_wait_timeout);
   nh->get_parameter_or(name + "." + "path_wait_clear_time", obstacles.path_wait_clear_time, obstacles.path_wait_clear_time);
   nh->get_parameter_or(name + "." + "path_wait_msg_timeout", obstacles.path_wait_msg_timeout, obstacles.path_wait_msg_timeout);
+  nh->get_parameter_or(name + "." + "path_wait_brake_response_time", obstacles.path_wait_brake_response_time, obstacles.path_wait_brake_response_time);
   nh->get_parameter_or(name + "." + "publish_path_wait_debug", obstacles.publish_path_wait_debug, obstacles.publish_path_wait_debug);
   nh->get_parameter_or(name + "." + "include_costmap_obstacles", obstacles.include_costmap_obstacles, obstacles.include_costmap_obstacles);
   nh->get_parameter_or(name + "." + "costmap_obstacles_behind_robot_dist", obstacles.costmap_obstacles_behind_robot_dist, obstacles.costmap_obstacles_behind_robot_dist);
@@ -1697,6 +1699,8 @@ rcl_interfaces::msg::SetParametersResult
         obstacles.path_wait_clear_time = parameter.as_double();
       } else if (name == node_name + ".path_wait_msg_timeout") {
         obstacles.path_wait_msg_timeout = parameter.as_double();
+      } else if (name == node_name + ".path_wait_brake_response_time") {
+        obstacles.path_wait_brake_response_time = parameter.as_double();
       } else if (name == node_name + ".publish_path_wait_debug") {
         obstacles.publish_path_wait_debug = parameter.as_bool();
       } else if (name == node_name + ".include_costmap_obstacles") {

@@ -221,6 +221,7 @@
         path_wait_timeout: 6.0  # per-ID wait before latch/detour
         path_wait_clear_time: 0.5  # corridor empty and per-ID leave debounce
         path_wait_msg_timeout: 0.5
+        path_wait_brake_response_time: 0.7  # 感知、控制、通信和底盘响应的保守总时间 [s]
         publish_path_wait_debug: True
 
         # 允许后退参数

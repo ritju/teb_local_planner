@@ -56,6 +56,7 @@ bool TebLocalPlannerROS::collectPathWaitObstacles(
 {
   out.clear();
   message_valid = false;
+  path_wait_obstacle_tf_failed_ = false;
   costmap_converter_msgs::msg::ObstacleArrayMsg msg;
   rclcpp::Time recv;
   {
@@ -87,6 +88,7 @@ bool TebLocalPlannerROS::collectPathWaitObstacles(
     }
     catch (const tf2::TransformException & ex)
     {
+      path_wait_obstacle_tf_failed_ = true;
       RCLCPP_WARN_THROTTLE(
         logger_, *clock_, 2000,
         "PATH 停车门控: 动态障碍 TF %s→%s 失败: %s",
@@ -100,6 +102,9 @@ bool TebLocalPlannerROS::collectPathWaitObstacles(
   {
     PathWaitObstacle dst;
     dst.id = static_cast<int>(src.id);
+    const Eigen::Vector3d source_velocity(src.velocities.twist.linear.x,
+                                          src.velocities.twist.linear.y, 0.0);
+    dst.velocity = (obstacle_to_map.linear() * source_velocity).head<2>();
     auto toMap = [&](const geometry_msgs::msg::Point32 & p) {
       Eigen::Vector3d v(p.x, p.y, p.z);
       return (obstacle_to_map * v).head<2>();
@@ -149,43 +154,127 @@ bool TebLocalPlannerROS::tryPathWaitHold(
   std::vector<PathWaitObstacle> obsts;
   bool message_valid = false;
   collectPathWaitObstacles(obsts, message_valid);
+  if (path_wait_obstacle_tf_failed_)
+  {
+    cmd_vel.header.stamp = clock_->now();
+    cmd_vel.header.frame_id = costmap_ros_->getBaseFrameID();
+    cmd_vel.twist = geometry_msgs::msg::Twist();
+    RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000,
+      "路径等待动态障碍坐标变换失败，已请求停车");
+    return true;
+  }
 
   const double inscribed = cfg_->robot_model ? cfg_->robot_model->getInscribedRadius()
                                             : robot_inscribed_radius_;
   const double r_foot = computePathWaitFootprintHalfWidth(footprint_spec_, inscribed);
+  std::vector<geometry_msgs::msg::Point> collision_footprint = footprint_spec_;
+  if (collision_footprint.size() < 3)
+  {
+    const double radius = std::max(0.01, std::max(inscribed, robot_inscribed_radius_));
+    for (int i = 0; i < 16; ++i)
+    {
+      const double angle = 2.0 * M_PI * static_cast<double>(i) / 16.0;
+      geometry_msgs::msg::Point p;
+      p.x = radius * std::cos(angle);
+      p.y = radius * std::sin(angle);
+      collision_footprint.push_back(p);
+    }
+  }
   const double min_obs = std::max(cfg_->obstacles.min_obstacle_dist, normal_min_obstacle_dist_);
-  const Eigen::Vector2d robot_xy(robot_pose.pose.position.x, robot_pose.pose.position.y);
+  geometry_msgs::msg::PoseStamped robot_map = robot_pose;
+  std::vector<geometry_msgs::msg::PoseStamped> path_map = global_plan_;
+  try
+  {
+    if (robot_map.header.frame_id != cfg_->map_frame)
+    {
+      const auto transform = tf_->lookupTransform(cfg_->map_frame, robot_map.header.frame_id,
+        tf2::TimePointZero, tf2::durationFromSec(0.1));
+      geometry_msgs::msg::PoseStamped converted;
+      tf2::doTransform(robot_map, converted, transform);
+      robot_map = converted;
+    }
+    if (!path_map.empty() && path_map.front().header.frame_id != cfg_->map_frame)
+    {
+      const auto transform = tf_->lookupTransform(cfg_->map_frame, path_map.front().header.frame_id,
+        tf2::TimePointZero, tf2::durationFromSec(0.1));
+      for (auto & p : path_map)
+      {
+        geometry_msgs::msg::PoseStamped converted;
+        tf2::doTransform(p, converted, transform);
+        p = converted;
+      }
+    }
+  }
+  catch (const tf2::TransformException & ex)
+  {
+    cmd_vel.header.stamp = clock_->now();
+    cmd_vel.header.frame_id = costmap_ros_->getBaseFrameID();
+    cmd_vel.twist = geometry_msgs::msg::Twist();
+    RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000,
+      "路径等待坐标变换失败，已请求停车：%s", ex.what());
+    return true;
+  }
+  const Eigen::Vector2d robot_xy(robot_map.pose.position.x, robot_map.pose.position.y);
 
-  const PathWaitResult result = path_dynamic_wait_gate_.evaluate(
-    global_plan_, robot_xy, obsts, r_foot, min_obs, *cfg_, clock_->now(), message_valid);
+  PathWaitResult result = path_dynamic_wait_gate_.evaluate(
+    path_map, robot_xy, obsts, r_foot, min_obs, *cfg_, clock_->now(), message_valid,
+    tf2::getYaw(robot_map.pose.orientation), collision_footprint);
+
+  const double measured_speed = std::hypot(velocity.linear.x, velocity.linear.y);
+  const double decel = cfg_->robot.acc_lim_x;
+  const double response = cfg_->obstacles.path_wait_brake_response_time;
+  if (result.has_collision && decel > 0.0 && std::isfinite(decel) &&
+      response >= 0.0 && std::isfinite(response))
+  {
+    result.stopping_distance = occupiedGoalStoppingDistance(measured_speed, decel, response);
+    result.safe_speed = occupiedGoalSafeSpeed(result.available_distance, decel, response);
+    result.braking_limited = result.stopping_distance > result.available_distance;
+  }
 
   if (cfg_->obstacles.publish_path_wait_debug && path_wait_debug_marker_pub_)
   {
     visualization_msgs::msg::MarkerArray ma;
-    const std::string frame_id = costmap_ros_ ? costmap_ros_->getGlobalFrameID() : cfg_->map_frame;
+    const std::string frame_id = cfg_->map_frame;
     buildPathWaitDebugMarkers(ma, frame_id, clock_->now(), result);
     path_wait_debug_marker_pub_->publish(ma);
   }
 
   if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
+    for (const auto& event : result.clock_events) {
+      RCLCPP_INFO(logger_, "[路径等待计时] 仿真时刻=%.3f %s",
+        clock_->now().seconds(), event.c_str());
+    }
     RCLCPP_INFO_THROTTLE(
       logger_, *clock_, 1000,
-      "[PathWait] mode=%s reason=%s hw=%.3f n_dyn=%zu blocking=%s waiting=%s "
-      "latched=%s wait=%.2fs rem=%.2fs msg_valid=%d",
-      pathWaitModeName(result.mode),
-      result.reason.c_str(),
+      "[路径等待] 状态=%s 原因=%s 投影段=%d 投影=(%.3f,%.3f) 接触障碍=%d "
+      "可用距离=%.3f 制动距离=%.3f 安全速度=%.3f 轮廓半宽=%.3f 动态障碍数=%zu "
+      "预测阻挡=%s 当前阻挡=%s 等待=%s 已锁定=%s 待返回=%s 已等待=%.2f秒 剩余=%.2f秒 消息有效=%d "
+      "采样终点=(%.3f,%.3f) 障碍中心=(%.3f,%.3f)",
+      pathWaitModeChinese(result.mode),
+      pathWaitReasonChinese(result.reason),
+      result.projection_segment, result.projection.x(), result.projection.y(),
+      result.collision_id, result.available_distance, result.stopping_distance,
+      result.safe_speed,
       result.half_width,
       obsts.size(),
       joinPathWaitIds(result.blocking_ids).c_str(),
+      joinPathWaitIds(result.observed_ids).c_str(),
       joinPathWaitIds(result.waiting_ids).c_str(),
       joinPathWaitIds(result.latched_ids).c_str(),
+      joinPathWaitIds(result.awaiting_return_ids).c_str(),
       result.elapsed_wait_s,
       result.remaining_wait_s,
-      message_valid ? 1 : 0);
+      message_valid ? 1 : 0,
+      result.centerline.empty() ? robot_xy.x() : result.centerline.back().x(),
+      result.centerline.empty() ? robot_xy.y() : result.centerline.back().y(),
+      obsts.empty() ? std::numeric_limits<double>::quiet_NaN() : static_cast<double>(obsts.front().center.x()),
+      obsts.empty() ? std::numeric_limits<double>::quiet_NaN() : static_cast<double>(obsts.front().center.y()));
   }
 
   if (result.mode != PathWaitMode::Wait)
   {
+    // 接触弧长针对原 PATH。绕行时必须交给 TEB 的候选轨迹和碰撞监控判断，
+    // 否则原 PATH 的 s_hit=0 会在每次刚起步时重新输出零速，形成停走振荡。
     return false;
   }
 
@@ -209,6 +298,27 @@ bool TebLocalPlannerROS::tryPathWaitHold(
   cmd_vel.twist.linear.x = approach_zero(velocity.linear.x, cfg_->robot.acc_lim_x);
   cmd_vel.twist.linear.y = approach_zero(velocity.linear.y, cfg_->robot.acc_lim_y);
   cmd_vel.twist.angular.z = approach_zero(velocity.angular.z, cfg_->robot.acc_lim_theta);
+  if (result.has_collision)
+  {
+    if (!(decel > 0.0) || !std::isfinite(decel) || !(response >= 0.0) || !std::isfinite(response) ||
+        result.braking_limited)
+    {
+      cmd_vel.twist = geometry_msgs::msg::Twist();
+      RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000,
+        "路径等待制动距离不足：障碍编号=%d，可用距离=%.3f米，所需距离=%.3f米，当前速度=%.3f米每秒；请求立即制动",
+        result.collision_id, result.available_distance, result.stopping_distance, measured_speed);
+    }
+    else
+    {
+      const double commanded = std::hypot(cmd_vel.twist.linear.x, cmd_vel.twist.linear.y);
+      if (commanded > result.safe_speed && commanded > 1e-9)
+      {
+        const double ratio = result.safe_speed / commanded;
+        cmd_vel.twist.linear.x *= ratio;
+        cmd_vel.twist.linear.y *= ratio;
+      }
+    }
+  }
   last_cmd_ = cmd_vel.twist;
 
   if (visualization_)

@@ -463,6 +463,8 @@ inline std::vector<FlowItem> runMainFlow(TebLocalPlannerROS & planner, std::uint
   for (std::size_t i = 1; i < centerline.size(); ++i) {
     arc += (centerline[i] - centerline[i - 1]).norm();
   }
+  const auto hold_projection = projectPathWaitPose(
+    hold.plan, Eigen::Vector2d(hold.robot_x, hold.robot_y));
   TebConfig & config = followPathConfig();
   PathDynamicWaitGate gate;
   rclcpp::Clock clock(RCL_ROS_TIME);
@@ -482,7 +484,8 @@ inline std::vector<FlowItem> runMainFlow(TebLocalPlannerROS & planner, std::uint
     now + rclcpp::Duration::from_seconds(2.0), true);
   push(
     "路径停车",
-    centerline.size() >= 2 && arc <= hold.lookahead_m + 1e-3 &&
+    centerline.size() >= 2 && arc <= hold.lookahead_m +
+      (hold_projection.point - Eigen::Vector2d(hold.robot_x, hold.robot_y)).norm() + 1e-3 &&
     clear.blocking_ids.empty() &&
     (config.obstacles.path_wait_enable ? !blocked.blocking_ids.empty() :
     blocked.blocking_ids.empty()),

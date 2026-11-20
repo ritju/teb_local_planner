@@ -17,9 +17,315 @@ TEST(PathWaitGeometry, samplesCenterlineAlongPlan)
     for (std::size_t i = 1; i < centerline.size(); ++i) {
       arc += (centerline[i] - centerline[i - 1]).norm();
     }
-    EXPECT_LE(arc, data.lookahead_m + 1e-3) << "seed " << seed;
+    const auto projection = teb_local_planner::projectPathWaitPose(
+      data.plan, Eigen::Vector2d(data.robot_x, data.robot_y));
+    EXPECT_LE(arc, data.lookahead_m +
+      (projection.point - Eigen::Vector2d(data.robot_x, data.robot_y)).norm() + 1e-3) << "seed " << seed;
     EXPECT_GT(arc, 0.5);
   }
+}
+
+TEST(PathWaitGeometry, sparsePathStartsAtProjectionAndChecksConnector)
+{
+  const std::vector<geometry_msgs::msg::PoseStamped> path = {
+    makePose(0.0, 0.0), makePose(10.0, 0.0)};
+  const auto projection = teb_local_planner::projectPathWaitPose(path, Eigen::Vector2d(6.0, 0.0));
+  ASSERT_EQ(projection.segment, 0);
+  EXPECT_NEAR(projection.point.x(), 6.0, 1e-9);
+  auto line = teb_local_planner::samplePathWaitCenterline(path, Eigen::Vector2d(6.0, 0.0), 3.0);
+  ASSERT_GE(line.size(), 2u);
+  EXPECT_NEAR(line.front().x(), 6.0, 1e-9);
+  EXPECT_NEAR(line.back().x(), 9.0, 1e-9);
+  line = teb_local_planner::samplePathWaitCenterline(path, Eigen::Vector2d(6.0, 0.5), 3.0);
+  ASSERT_GE(line.size(), 3u);
+  EXPECT_NEAR(line.front().y(), 0.5, 1e-9);
+  EXPECT_NEAR(line[1].y(), 0.0, 1e-9);
+}
+
+TEST(PathWaitGeometry, footprintDetectsLineObstacleBeforeItsCenter)
+{
+  const std::vector<geometry_msgs::msg::PoseStamped> path = {
+    makePose(0.0, 0.0), makePose(10.0, 0.0)};
+  teb_local_planner::PathWaitObstacle obstacle;
+  obstacle.id = 7;
+  obstacle.polygon.push_back(Eigen::Vector2d(7.0, -0.3));
+  obstacle.polygon.push_back(Eigen::Vector2d(7.0, 0.3));
+  std::vector<geometry_msgs::msg::Point> footprint(4);
+  footprint[0].x = 0.3; footprint[0].y = 0.2;
+  footprint[1].x = 0.3; footprint[1].y = -0.2;
+  footprint[2].x = -0.3; footprint[2].y = -0.2;
+  footprint[3].x = -0.3; footprint[3].y = 0.2;
+  auto& config = teb_local_planner::test_data::followPathConfig();
+  config.obstacles.path_wait_enable = true;
+  teb_local_planner::PathDynamicWaitGate gate;
+  rclcpp::Clock clock(RCL_ROS_TIME);
+  const auto result = gate.evaluate(path, Eigen::Vector2d(6.0, 0.0), {obstacle},
+    0.2, 0.1, config, clock.now(), true, 0.0, footprint);
+  EXPECT_EQ(result.mode, teb_local_planner::PathWaitMode::Wait);
+  EXPECT_TRUE(result.has_collision);
+  EXPECT_EQ(result.collision_id, 7);
+  EXPECT_GT(result.collision_arc, 0.5);
+  EXPECT_LT(result.collision_arc, 0.8);
+  visualization_msgs::msg::MarkerArray markers;
+  teb_local_planner::buildPathWaitDebugMarkers(markers, "map", clock.now(), result);
+  auto has_marker = [&markers](const std::string& name) {
+    for (const auto& marker : markers.markers) {
+      if (marker.ns == name) return true;
+    }
+    return false;
+  };
+  EXPECT_TRUE(has_marker("path_projection"));
+  EXPECT_TRUE(has_marker("path_connector"));
+  EXPECT_TRUE(has_marker("path_first_collision"));
+}
+
+TEST(PathWaitGeometry, reverseHeadingUsesActualRearFootprint)
+{
+  const std::vector<geometry_msgs::msg::PoseStamped> forward = {
+    makePose(0.0, 0.0, 0.0), makePose(10.0, 0.0, 0.0)};
+  const std::vector<geometry_msgs::msg::PoseStamped> reverse = {
+    makePose(0.0, 0.0, M_PI), makePose(10.0, 0.0, M_PI)};
+  std::vector<geometry_msgs::msg::Point> footprint(4);
+  footprint[0].x = 0.5; footprint[0].y = 0.2;
+  footprint[1].x = 0.5; footprint[1].y = -0.2;
+  footprint[2].x = -0.1; footprint[2].y = -0.2;
+  footprint[3].x = -0.1; footprint[3].y = 0.2;
+  teb_local_planner::PathWaitObstacle obstacle;
+  obstacle.id = 8;
+  obstacle.center = Eigen::Vector2d(7.0, 0.0);
+  obstacle.radius = 0.01;
+  auto& config = teb_local_planner::test_data::followPathConfig();
+  config.obstacles.path_wait_enable = true;
+  rclcpp::Clock clock(RCL_ROS_TIME);
+  teb_local_planner::PathDynamicWaitGate forward_gate, reverse_gate;
+  const auto forward_hit = forward_gate.evaluate(forward, Eigen::Vector2d(6.0, 0.0),
+    {obstacle}, 0.2, 0.1, config, clock.now(), true, 0.0, footprint);
+  const auto reverse_hit = reverse_gate.evaluate(reverse, Eigen::Vector2d(6.0, 0.0),
+    {obstacle}, 0.2, 0.1, config, clock.now(), true, M_PI, footprint);
+  ASSERT_TRUE(forward_hit.has_collision);
+  ASSERT_TRUE(reverse_hit.has_collision);
+  EXPECT_GT(reverse_hit.collision_arc, forward_hit.collision_arc + 0.3);
+}
+
+TEST(PathWaitGeometry, movingObstacleEnvelopeDoesNotCoverAllDirections)
+{
+  const std::vector<geometry_msgs::msg::PoseStamped> path = {
+    makePose(0.0, 0.0), makePose(10.0, 0.0)};
+  std::vector<geometry_msgs::msg::Point> footprint(4);
+  footprint[0].x = 1.16; footprint[0].y = 0.66;
+  footprint[1].x = 1.16; footprint[1].y = -0.66;
+  footprint[2].x = -0.69; footprint[2].y = -0.66;
+  footprint[3].x = -0.69; footprint[3].y = 0.66;
+  teb_local_planner::PathWaitObstacle obstacle;
+  obstacle.id = 0;
+  obstacle.center = Eigen::Vector2d(3.0, -1.7);
+  obstacle.velocity = Eigen::Vector2d(0.5, 0.3);
+  for (const Eigen::Vector2d& corner : {
+      Eigen::Vector2d(2.5, -2.2), Eigen::Vector2d(3.5, -2.2),
+      Eigen::Vector2d(3.5, -1.2), Eigen::Vector2d(2.5, -1.2)})
+    obstacle.polygon.push_back(corner);
+  teb_local_planner::TebConfig config;
+  config.obstacles.path_wait_enable = true;
+  config.obstacles.path_wait_lookahead_dist = 6.0;
+  config.obstacles.path_wait_brake_response_time = 1.0;
+  config.robot.max_vel_x = 0.5;
+  config.robot.acc_lim_x = 0.3;
+  teb_local_planner::PathDynamicWaitGate gate;
+  rclcpp::Clock clock(RCL_ROS_TIME);
+  const auto now = clock.now();
+  const auto wait = gate.evaluate(path, Eigen::Vector2d(0.2, 0.0), {obstacle},
+    0.66, 0.075, config, now, true, 0.0, footprint);
+  ASSERT_TRUE(wait.has_collision);
+  EXPECT_GT(wait.collision_arc, 0.2);
+  EXPECT_EQ(wait.mode, teb_local_planner::PathWaitMode::Wait);
+  ASSERT_EQ(wait.predicted_blocking_obstacles.size(), 1u);
+  visualization_msgs::msg::MarkerArray markers;
+  teb_local_planner::buildPathWaitDebugMarkers(markers, "map", now, wait);
+  bool has_envelope = false;
+  bool has_timer = false;
+  for (const auto& marker : markers.markers)
+  {
+    has_envelope |= marker.ns == "blocking_motion_envelope";
+    has_timer |= marker.ns == "wait_timer" && marker.text.find("WAIT ID") != std::string::npos;
+  }
+  EXPECT_TRUE(has_envelope);
+  EXPECT_TRUE(has_timer);
+
+  const auto detour = gate.evaluate(path, Eigen::Vector2d(0.2, 0.0), {obstacle},
+    0.66, 0.075, config, now + rclcpp::Duration::from_seconds(7.0),
+    true, 0.0, footprint);
+  EXPECT_EQ(detour.mode, teb_local_planner::PathWaitMode::Detour);
+}
+
+TEST(PathWaitGate, sameIdRearmsAfterCurrentOutlineLeavesWhilePredictionStillBlocks)
+{
+  const std::vector<geometry_msgs::msg::PoseStamped> path = {
+    makePose(0.0, 0.0), makePose(10.0, 0.0)};
+  std::vector<geometry_msgs::msg::Point> footprint(4);
+  footprint[0].x = 0.3; footprint[0].y = 0.2;
+  footprint[1].x = 0.3; footprint[1].y = -0.2;
+  footprint[2].x = -0.3; footprint[2].y = -0.2;
+  footprint[3].x = -0.3; footprint[3].y = 0.2;
+  teb_local_planner::TebConfig config;
+  config.obstacles.path_wait_enable = true;
+  config.obstacles.path_wait_clear_time = 0.5;
+  config.obstacles.path_wait_timeout = 6.0;
+  config.obstacles.path_wait_brake_response_time = 1.0;
+  config.obstacles.path_wait_lookahead_dist = 6.0;
+  config.robot.max_vel_x = 0.5;
+  config.robot.acc_lim_x = 0.3;
+  teb_local_planner::PathWaitObstacle obstacle;
+  obstacle.id = 0;
+  obstacle.center = Eigen::Vector2d(3.0, 0.0);
+  obstacle.radius = 0.2;
+  teb_local_planner::PathDynamicWaitGate gate;
+  rclcpp::Clock clock(RCL_ROS_TIME);
+  const auto now = clock.now();
+  auto evaluate = [&](double seconds) {
+    return gate.evaluate(path, Eigen::Vector2d(0.0, 0.0), {obstacle},
+      0.2, 0.1, config, now + rclcpp::Duration::from_seconds(seconds),
+      true, 0.0, footprint);
+  };
+  const auto first = evaluate(0.0);
+  EXPECT_EQ(first.mode, teb_local_planner::PathWaitMode::Wait);
+  EXPECT_EQ(first.observed_ids, std::vector<int>({0}));
+  obstacle.center.y() = 2.0;
+  obstacle.velocity.y() = -1.0;
+  EXPECT_EQ(evaluate(2.0).mode, teb_local_planner::PathWaitMode::Wait);
+  obstacle.center.y() = 0.0;
+  obstacle.velocity.y() = 0.0;
+  const auto short_return = evaluate(2.3);
+  EXPECT_EQ(short_return.mode, teb_local_planner::PathWaitMode::Wait);
+  EXPECT_NEAR(short_return.elapsed_wait_s, 2.3, 1e-6);
+  const auto timed_out = evaluate(7.0);
+  EXPECT_EQ(timed_out.mode, teb_local_planner::PathWaitMode::Detour);
+
+  obstacle.center.y() = 2.0;
+  obstacle.velocity.y() = -1.0;
+  const auto leaving = evaluate(7.1);
+  EXPECT_EQ(leaving.mode, teb_local_planner::PathWaitMode::Detour);
+  EXPECT_EQ(leaving.blocking_ids, std::vector<int>({0}));
+  EXPECT_TRUE(leaving.observed_ids.empty());
+  const auto outside = evaluate(7.7);
+  EXPECT_EQ(outside.mode, teb_local_planner::PathWaitMode::Wait);
+  EXPECT_EQ(outside.waiting_ids, std::vector<int>({0}));
+  EXPECT_EQ(outside.latched_ids, std::vector<int>({0}));
+  EXPECT_DOUBLE_EQ(outside.elapsed_wait_s, 0.0);
+  visualization_msgs::msg::MarkerArray outside_markers;
+  teb_local_planner::buildPathWaitDebugMarkers(outside_markers, "map", now, outside);
+  bool shows_pending = false;
+  for (const auto& marker : outside_markers.markers)
+    shows_pending |= marker.ns == "wait_timer" &&
+      marker.text.find("RETURN PENDING") != std::string::npos;
+  EXPECT_TRUE(shows_pending);
+
+  obstacle.center.y() = 0.0;
+  obstacle.velocity.y() = 0.0;
+  const auto returned = evaluate(7.8);
+  EXPECT_EQ(returned.mode, teb_local_planner::PathWaitMode::Wait);
+  EXPECT_EQ(returned.observed_ids, std::vector<int>({0}));
+  EXPECT_DOUBLE_EQ(returned.elapsed_wait_s, 0.0);
+  EXPECT_EQ(evaluate(13.7).mode, teb_local_planner::PathWaitMode::Wait);
+  EXPECT_EQ(evaluate(13.9).mode, teb_local_planner::PathWaitMode::Detour);
+
+  // 回归现场日志：全局走廊清空进入 FOLLOW 后，同一 ID 的预测扫掠先于当前轮廓返回。
+  obstacle.center.y() = 2.0;
+  obstacle.velocity.y() = -1.0;
+  EXPECT_EQ(evaluate(14.0).mode, teb_local_planner::PathWaitMode::Detour);
+  EXPECT_EQ(evaluate(14.6).awaiting_return_ids, std::vector<int>({0}));
+  obstacle.velocity.y() = 0.0;
+  EXPECT_EQ(evaluate(14.7).mode, teb_local_planner::PathWaitMode::Wait);
+  const auto globally_clear = evaluate(15.3);
+  EXPECT_EQ(globally_clear.mode, teb_local_planner::PathWaitMode::Follow);
+  EXPECT_EQ(globally_clear.awaiting_return_ids, std::vector<int>({0}));
+  obstacle.velocity.y() = -1.0;
+  const auto predicted_return = evaluate(15.4);
+  EXPECT_TRUE(predicted_return.observed_ids.empty());
+  EXPECT_EQ(predicted_return.awaiting_return_ids, std::vector<int>({0}));
+  EXPECT_EQ(predicted_return.waiting_ids, std::vector<int>({0}));
+  EXPECT_EQ(predicted_return.reason, "awaiting_current_return");
+  EXPECT_EQ(predicted_return.mode, teb_local_planner::PathWaitMode::Wait);
+  EXPECT_DOUBLE_EQ(predicted_return.elapsed_wait_s, 0.0);
+  const auto still_waiting_return = evaluate(20.0);
+  EXPECT_EQ(still_waiting_return.mode, teb_local_planner::PathWaitMode::Wait);
+  EXPECT_DOUBLE_EQ(still_waiting_return.elapsed_wait_s, 0.0);
+  obstacle.center.y() = 0.0;
+  obstacle.velocity.y() = 0.0;
+  const auto actual_return = evaluate(20.1);
+  EXPECT_EQ(actual_return.mode, teb_local_planner::PathWaitMode::Wait);
+  EXPECT_DOUBLE_EQ(actual_return.elapsed_wait_s, 0.0);
+  EXPECT_TRUE(actual_return.awaiting_return_ids.empty());
+  EXPECT_EQ(evaluate(26.0).mode, teb_local_planner::PathWaitMode::Wait);
+  EXPECT_EQ(evaluate(26.2).mode, teb_local_planner::PathWaitMode::Detour);
+}
+
+TEST(PathWaitGate, predictedOnlyBoundaryFlickerKeepsOneWaitClock)
+{
+  const std::vector<geometry_msgs::msg::PoseStamped> path = {
+    makePose(0.0, 0.0), makePose(10.0, 0.0)};
+  teb_local_planner::TebConfig config;
+  config.obstacles.path_wait_enable = true;
+  config.obstacles.path_wait_clear_time = 0.5;
+  config.obstacles.path_wait_timeout = 6.0;
+  config.obstacles.path_wait_brake_response_time = 1.0;
+  config.obstacles.path_wait_lookahead_dist = 6.0;
+  config.robot.max_vel_x = 0.5;
+  config.robot.acc_lim_x = 0.3;
+  teb_local_planner::PathWaitObstacle obstacle;
+  obstacle.id = 0;
+  obstacle.center = Eigen::Vector2d(3.0, 2.0);
+  obstacle.velocity = Eigen::Vector2d(0.0, -1.0);
+  obstacle.radius = 0.2;
+  teb_local_planner::PathDynamicWaitGate gate;
+  rclcpp::Clock clock(RCL_ROS_TIME);
+  const auto now = clock.now();
+  auto evaluate = [&](double seconds) {
+    return gate.evaluate(path, Eigen::Vector2d(0.0, 0.0), {obstacle},
+      0.2, 0.1, config, now + rclcpp::Duration::from_seconds(seconds), true);
+  };
+  EXPECT_EQ(evaluate(0.0).mode, teb_local_planner::PathWaitMode::Wait);
+  obstacle.velocity.y() = 0.0;
+  EXPECT_EQ(evaluate(3.0).reason, "clear_hold");
+  obstacle.velocity.y() = -1.0;
+  const auto flicker_return = evaluate(3.3);
+  EXPECT_EQ(flicker_return.mode, teb_local_planner::PathWaitMode::Wait);
+  EXPECT_NEAR(flicker_return.elapsed_wait_s, 3.3, 1e-6);
+  obstacle.velocity.y() = 0.0;
+  EXPECT_EQ(evaluate(3.4).reason, "clear_hold");
+  obstacle.velocity.y() = -1.0;
+  const auto unsampled_return = evaluate(4.0);
+  EXPECT_EQ(unsampled_return.mode, teb_local_planner::PathWaitMode::Wait);
+  EXPECT_NEAR(unsampled_return.elapsed_wait_s, 4.0, 1e-6);
+  EXPECT_EQ(evaluate(6.0).mode, teb_local_planner::PathWaitMode::Detour);
+
+  obstacle.velocity.y() = 0.0;
+  EXPECT_EQ(evaluate(6.1).mode, teb_local_planner::PathWaitMode::Detour);
+  EXPECT_EQ(evaluate(6.7).mode, teb_local_planner::PathWaitMode::Follow);
+  obstacle.velocity.y() = -1.0;
+  const auto new_episode = evaluate(6.8);
+  EXPECT_EQ(new_episode.mode, teb_local_planner::PathWaitMode::Wait);
+  EXPECT_DOUBLE_EQ(new_episode.elapsed_wait_s, 0.0);
+}
+
+TEST(PathWaitGate, publishedSquareAheadIntersectsForwardCorridor)
+{
+  const std::vector<geometry_msgs::msg::PoseStamped> path = {
+    makePose(0.0, 0.0), makePose(10.0, 0.0)};
+  teb_local_planner::TebConfig config;
+  config.obstacles.path_wait_enable = true;
+  config.obstacles.path_wait_lookahead_dist = 6.0;
+  teb_local_planner::PathWaitObstacle obstacle;
+  obstacle.id = 0;
+  obstacle.center = Eigen::Vector2d(5.36, -0.28);
+  obstacle.polygon = {Eigen::Vector2d(4.86, -0.78), Eigen::Vector2d(5.86, -0.78),
+                      Eigen::Vector2d(5.86, 0.22), Eigen::Vector2d(4.86, 0.22)};
+  teb_local_planner::PathDynamicWaitGate gate;
+  rclcpp::Clock clock(RCL_ROS_TIME);
+  const auto result = gate.evaluate(path, Eigen::Vector2d(3.63, -0.15), {obstacle},
+    0.66, 0.075, config, clock.now(), true);
+  EXPECT_EQ(result.observed_ids, std::vector<int>({0}));
+  EXPECT_EQ(result.blocking_ids, std::vector<int>({0}));
+  EXPECT_EQ(result.mode, teb_local_planner::PathWaitMode::Wait);
 }
 
 TEST(OccupiedGoalBraking, speedLimitAccountsForResponseDelay)
