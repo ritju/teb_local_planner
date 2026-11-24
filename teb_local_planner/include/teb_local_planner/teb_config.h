@@ -64,6 +64,7 @@ public:
   using UniquePtr = std::unique_ptr<TebConfig>;
   
   std::atomic<bool> debug_mode{false}; //!< controller_server 根级日志开关；不改变日志等级
+  mutable std::atomic<int> swept_repair_tokens{1}; //!< 每个控制周期共享的一次修复机会
 
   std::string odom_topic; //!< Topic name of the odometry message, provided by the robot driver or simulator
   std::string map_frame; //!< Global planning frame
@@ -116,6 +117,14 @@ public:
     int dynamic_obstacle_debug_pose_stride; //!< Publish every N-th dynamic-obstacle edge pose (1 = all); must be >= 1
     double dynamic_obstacle_debug_time_z_scale; //!< Lift same-time footprint+obstacle to z=scale*t so pairs share height in RViz (0 = flat xy)
     double min_resolution_collision_check_angular; //! Min angular resolution used during the costmap collision check. If not respected, intermediate samples are added. [rad]
+    bool swept_obstacle_enable; //!< 在相邻位姿之间建立多边形扫掠障碍边
+    double swept_obstacle_margin; //!< 扫掠候选包围盒的附加裕度 [m]
+    double swept_obstacle_trigger_dist; //!< 小于此轮廓距离才添加段内边 [m]
+    int swept_obstacle_max_edges_per_segment; //!< 每段最多新增的扫掠边数
+    int swept_check_max_evals; //!< 每段每障碍最多的连续包络验证次数
+    int swept_repair_max_attempts; //!< 可行性失败后定点修复次数，当前仅支持 0 或 1
+    int swept_repair_inner_iterations; //!< 修复时的 g2o 迭代次数
+    double swept_repair_budget_ms; //!< 修复耗时预算 [ms]
     int control_look_ahead_poses; //! Index of the pose used to extract the velocity command
     int theta_threshold; //!< 折线急弯判定 [deg]，夹角小于该值视为角点/段尾（切段与贴边共用）
     double corner_dist_threshold; //!< Distance threshold to consider a point a corner
@@ -584,6 +593,14 @@ public:
     trajectory.dynamic_obstacle_debug_pose_stride = 1;
     trajectory.dynamic_obstacle_debug_time_z_scale = 1.0;
     trajectory.min_resolution_collision_check_angular = M_PI;
+    trajectory.swept_obstacle_enable = false;
+    trajectory.swept_obstacle_margin = 0.05;
+    trajectory.swept_obstacle_trigger_dist = 0.35;
+    trajectory.swept_obstacle_max_edges_per_segment = 3;
+    trajectory.swept_check_max_evals = 128;
+    trajectory.swept_repair_max_attempts = 1;
+    trajectory.swept_repair_inner_iterations = 3;
+    trajectory.swept_repair_budget_ms = 20.0;
     trajectory.control_look_ahead_poses = 1;
     trajectory.max_plan_length_extend_on_trajectory_obstacle_m = 3.0;
     trajectory.transformed_plan_collision_pose_to_end_distance = 1.0;

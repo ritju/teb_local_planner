@@ -744,17 +744,16 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmapConverter()
       is_edge_following_mode_, use_wall_line_filter,
       obstacles ? obstacles->header.frame_id.c_str() : "<none>", obstacles_frame.c_str(),
       cfg_->map_frame.c_str(), stamp_valid, age, first_skipped_point.x, first_skipped_point.y);
-    if (input_points > 0) {
-      RCLCPP_WARN_THROTTLE(logger_, *clock_, 1000,
-        "[TEB ObstacleInput] DROPPED_ZERO_RADIUS_POINTS count=%zu first=(%.3f,%.3f)，"
-        "当前 converter 接入没有零半径 PointObstacle 分支",
-        input_points, first_skipped_point.x, first_skipped_point.y);
-    }
-    if (obstacles_frame != cfg_->map_frame) {
-      RCLCPP_WARN_THROTTLE(logger_, *clock_, 1000,
-        "[TEB ObstacleInput] FRAME_MISMATCH input=%s target=%s coordinates_used_without_tf=1",
-        obstacles_frame.c_str(), cfg_->map_frame.c_str());
-    }
+  }
+  if (input_points > 0) {
+    RCLCPP_WARN_THROTTLE(logger_, *clock_, 1000,
+      "[TEB 障碍输入] 丢弃零半径点障碍=%zu，首个=(%.3f,%.3f)；转换器未生成对应点障碍",
+      input_points, first_skipped_point.x, first_skipped_point.y);
+  }
+  if (obstacles_frame != cfg_->map_frame) {
+    RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000,
+      "[TEB 障碍输入] 坐标系不一致：输入=%s，规划=%s；障碍坐标未转换，碰撞判断可能失准",
+      obstacles_frame.c_str(), cfg_->map_frame.c_str());
   }
 
   checkFrontScanProtrusionExit(

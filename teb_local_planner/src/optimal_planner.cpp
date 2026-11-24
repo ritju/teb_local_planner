@@ -57,8 +57,11 @@
 #include <teb_local_planner/g2o_types/edge_prefer_rotdir.h>
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <limits>
 #include "dwb_core/exceptions.hpp"
@@ -143,6 +146,30 @@ void TebOptimalPlanner::visualize()
   }
 }
 
+void TebOptimalPlanner::captureSamplingDebug(
+  std::vector<geometry_msgs::msg::Pose2D> & out) const
+{
+  out.clear();
+  out.reserve(teb_.sizePoses());
+  for (int i = 0; i < teb_.sizePoses(); ++i) {
+    geometry_msgs::msg::Pose2D pose;
+    teb_.Pose(i).toPoseMsg(pose);
+    out.push_back(pose);
+  }
+}
+
+void TebOptimalPlanner::publishSamplingDebug(const char * result) const
+{
+  if (!visualization_ || !cfg_ ||
+      !cfg_->debug_mode.load(std::memory_order_relaxed)) {return;}
+  std::vector<geometry_msgs::msg::Pose2D> optimized;
+  captureSamplingDebug(optimized);
+  visualization_->publishTrajectorySamplingStages(
+    sampling_initial_, sampling_after_resize_, optimized,
+    sampling_resize_outer_iteration_, cfg_->trajectory.teb_autosize,
+    this, result);
+}
+
 /*
  * registers custom vertices and edges in g2o framework
  */
@@ -208,6 +235,15 @@ bool TebOptimalPlanner::optimizeTEB(int iterations_innerloop, int iterations_out
   
   bool success = false;
   optimized_ = false;
+  swept_repair_obstacles_.clear();
+  forced_swept_segment_ = -1;
+  swept_repair_active_ = false;
+  sampling_initial_.clear();
+  sampling_after_resize_.clear();
+  sampling_resize_outer_iteration_ = 0;
+  if (visualization_ && cfg_->debug_mode.load(std::memory_order_relaxed)) {
+    captureSamplingDebug(sampling_initial_);
+  }
   
   double weight_multiplier = 1.0;
 
@@ -230,16 +266,22 @@ bool TebOptimalPlanner::optimizeTEB(int iterations_innerloop, int iterations_out
       teb_.autoResize(cfg_->trajectory.dt_ref, cfg_->trajectory.dt_hysteresis, cfg_->trajectory.min_samples, cfg_->trajectory.max_samples, fast_mode);
       teb_.clampAllTimeDiffs();
     }
+    if (!sampling_initial_.empty()) {
+      captureSamplingDebug(sampling_after_resize_);
+      sampling_resize_outer_iteration_ = i + 1;
+    }
 
     success = buildGraph(weight_multiplier);
     if (!success) 
     {
+        publishSamplingDebug("建图失败");
         clearGraph();
         return false;
     }
     success = optimizeGraph(iterations_innerloop, false);
     if (!success) 
     {
+        publishSamplingDebug("优化失败");
         clearGraph();
         return false;
     }
@@ -260,6 +302,7 @@ bool TebOptimalPlanner::optimizeTEB(int iterations_innerloop, int iterations_out
   catch (const TebAssertionFailureException& ex)
   {
     logTebNumericFailure("optimizeTEB", ex);
+    publishSamplingDebug("数值断言失败");
     clearGraph();
     teb_.clearTimedElasticBand();
     optimized_ = false;
@@ -377,6 +420,7 @@ bool TebOptimalPlanner::buildGraph(double weight_multiplier)
     AddEdgesObstaclesLegacy(weight_multiplier);
   else
     AddEdgesObstacles(weight_multiplier);
+  AddEdgesSweptObstacles(weight_multiplier);
 
   // Dynamic obstacle edges:
   // - safety predictable mode: do NOT use AddEdgesDynamicObstacles as the main path;
@@ -613,6 +657,187 @@ void TebOptimalPlanner::AddEdgesObstacles(double weight_multiplier)
         create_edge(i, obst.get());
       ++iter_obstacle;
   }
+}
+
+
+namespace
+{
+struct SweptAabb
+{
+  double xmin, ymin, xmax, ymax;
+};
+
+bool sweptAabbForObstacle(const Obstacle * obst, SweptAabb & box)
+{
+  double radius = 0.0;
+  std::vector<Eigen::Vector2d> points;
+  if (const auto * p = dynamic_cast<const PointObstacle *>(obst)) {
+    points.push_back(p->position());
+  } else if (const auto * c = dynamic_cast<const CircularObstacle *>(obst)) {
+    points.push_back(c->position()); radius = c->radius();
+  } else if (const auto * l = dynamic_cast<const LineObstacle *>(obst)) {
+    points = {l->start(), l->end()};
+  } else if (const auto * pill = dynamic_cast<const PillObstacle *>(obst)) {
+    points = {pill->start(), pill->end()};
+    radius = std::max(0.0, -pill->getMinimumDistance(pill->start()));
+  } else if (const auto * poly = dynamic_cast<const PolygonObstacle *>(obst)) {
+    points.assign(poly->vertices().begin(), poly->vertices().end());
+  } else {
+    return false;  // 未知障碍不能被包围盒过滤
+  }
+  if (points.empty() || !std::isfinite(radius)) {return false;}
+  box = {points.front().x(), points.front().y(), points.front().x(), points.front().y()};
+  for (const auto & point : points) {
+    if (!point.allFinite()) {return false;}
+    box.xmin = std::min(box.xmin, point.x());
+    box.ymin = std::min(box.ymin, point.y());
+    box.xmax = std::max(box.xmax, point.x());
+    box.ymax = std::max(box.ymax, point.y());
+  }
+  box.xmin -= radius; box.ymin -= radius;
+  box.xmax += radius; box.ymax += radius;
+  return true;
+}
+
+bool sweptAabbOverlap(const SweptAabb & a, const SweptAabb & b)
+{
+  return a.xmin <= b.xmax && b.xmin <= a.xmax &&
+         a.ymin <= b.ymax && b.ymin <= a.ymax;
+}
+
+PoseSE2 sweptInterpolate(const PoseSE2 & a, const PoseSE2 & b, double fraction)
+{
+  return PoseSE2(
+    a.position() + fraction * (b.position() - a.position()),
+    g2o::normalize_theta(a.theta() + fraction * g2o::normalize_theta(b.theta() - a.theta())));
+}
+}  // namespace
+
+void TebOptimalPlanner::AddEdgesSweptObstacles(double weight_multiplier)
+{
+  const auto started = std::chrono::steady_clock::now();
+  swept_danger_segments_.clear();
+  swept_sample_poses_.clear();
+  swept_candidate_obstacles_.clear();
+  if (!cfg_->trajectory.swept_obstacle_enable || !obstacles_ ||
+      cfg_->optim.weight_obstacle <= 0.0 || teb_.sizePoses() < 2) {return;}
+  const auto * polygon = dynamic_cast<const PolygonRobotFootprint *>(cfg_->robot_model.get());
+  if (!polygon || polygon->vertices().size() < 3) {
+    RCLCPP_ERROR_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
+      "[TEB 扫掠约束] 优化 footprint 不是有效多边形，无法约束前角；请与代价图 footprint 对齐");
+    return;
+  }
+  double radius = 0.0;
+  for (const auto & vertex : polygon->vertices()) {radius = std::max(radius, vertex.norm());}
+  const double pad = radius + std::max(cfg_->obstacles.inflation_dist,
+    cfg_->obstacles.min_obstacle_dist) + std::max(0.0, cfg_->trajectory.swept_obstacle_margin);
+  const int limit = std::max(1, cfg_->trajectory.swept_obstacle_max_edges_per_segment);
+  const double trigger = std::max(cfg_->obstacles.min_obstacle_dist,
+    cfg_->trajectory.swept_obstacle_trigger_dist);
+  const double max_check = cfg_->trajectory.feasibility_check_lookahead_distance;
+  size_t broadphase_pairs = 0, edge_count = 0, truncated = 0;
+  double min_signed = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < teb_.sizePoses() - 1; ++i) {
+    const auto & a = teb_.Pose(i);
+    const auto & b = teb_.Pose(i + 1);
+    if (max_check > 0.0 && (a.position() - teb_.Pose(0).position()).norm() > max_check) {
+      break;
+    }
+    const SweptAabb sweep{
+      std::min(a.x(), b.x()) - pad, std::min(a.y(), b.y()) - pad,
+      std::max(a.x(), b.x()) + pad, std::max(a.y(), b.y()) + pad};
+    struct Candidate {const Obstacle * obstacle; double fraction; double distance; bool repair_cell;};
+    std::vector<Candidate> candidates;
+    auto consider = [&](const ObstaclePtr & obst, bool repair_cell) {
+      if (!obst || obst->isWallGuide() ||
+          (obst->isDynamic() && cfg_->obstacles.include_dynamic_obstacles &&
+           !cfg_->obstacles.dynamic_obstacles_as_static_edges)) {return;}
+      SweptAabb obstacle_box;
+      if (sweptAabbForObstacle(obst.get(), obstacle_box) &&
+          !sweptAabbOverlap(sweep, obstacle_box)) {return;}
+      ++broadphase_pairs;
+      const bool forced = i == forced_swept_segment_;
+      std::array<double, 3> fractions{{0.25, 0.5, 0.75}};
+      double best_distance = std::numeric_limits<double>::infinity();
+      double best_fraction = 0.5;
+      for (const double fraction : fractions) {
+        const double distance = cfg_->robot_model->optimizationDistance(
+          sweptInterpolate(a, b, fraction), obst.get()).signed_distance;
+        if (distance < best_distance) {
+          best_distance = distance;
+          best_fraction = fraction;
+        }
+      }
+      if (forced) {
+        // 修复边必须落在硬检查实际失败的位置，不能被其他试探点取代。
+        best_fraction = forced_swept_fraction_;
+        best_distance = cfg_->robot_model->optimizationDistance(
+          sweptInterpolate(a, b, best_fraction), obst.get()).signed_distance;
+      }
+      if (best_distance <= trigger || forced) {
+        min_signed = std::min(min_signed, best_distance);
+        candidates.push_back({obst.get(), best_fraction, best_distance, repair_cell});
+      }
+    };
+    for (const auto & obst : *obstacles_) {consider(obst, false);}
+    if (i == forced_swept_segment_) {
+      for (const auto & obst : swept_repair_obstacles_) {consider(obst, true);}
+    }
+    if (candidates.empty()) {continue;}
+    std::sort(candidates.begin(), candidates.end(), [](const Candidate & lhs, const Candidate & rhs) {
+      return lhs.distance < rhs.distance;
+    });
+    swept_danger_segments_.push_back(i);
+    // 穿透项全部保留。预算只限制额外的接近项；最终硬检查仍负责拒绝未解决的碰撞。
+    std::vector<int> selected_indices;
+    for (int k = 0; k < static_cast<int>(candidates.size()); ++k) {
+      if (candidates[k].distance <= 0.0) {selected_indices.push_back(k);}
+    }
+    // 代价图独有障碍至少补入一个；否则普通障碍可能耗尽该段预算。
+    if (!swept_repair_obstacles_.empty() && i == forced_swept_segment_ &&
+        std::none_of(selected_indices.begin(), selected_indices.end(), [&](int k) {
+          return candidates[k].repair_cell;
+        })) {
+      const auto cell = std::find_if(candidates.begin(), candidates.end(),
+        [](const Candidate & candidate) {return candidate.repair_cell;});
+      if (cell != candidates.end()) {
+        selected_indices.push_back(static_cast<int>(cell - candidates.begin()));
+      }
+    }
+    for (int k = 0; k < static_cast<int>(candidates.size()) &&
+         static_cast<int>(selected_indices.size()) < limit; ++k) {
+      if (std::find(selected_indices.begin(), selected_indices.end(), k) == selected_indices.end()) {
+        selected_indices.push_back(k);
+      }
+    }
+    if (selected_indices.size() < candidates.size()) {
+      truncated += candidates.size() - selected_indices.size();
+    }
+    for (const int k : selected_indices) {
+      auto * edge = new EdgeSweptObstacle;
+      edge->setVertex(0, teb_.PoseVertex(i));
+      edge->setVertex(1, teb_.PoseVertex(i + 1));
+      Eigen::Matrix<double, 1, 1> information;
+      information[0] = cfg_->optim.weight_obstacle * weight_multiplier / selected_indices.size();
+      edge->setInformation(information);
+      edge->setParameters(*cfg_, cfg_->robot_model.get(), candidates[k].obstacle,
+        candidates[k].fraction);
+      optimizer_->addEdge(edge);
+      swept_sample_poses_.push_back(sweptInterpolate(a, b, candidates[k].fraction));
+      geometry_msgs::msg::Point centroid;
+      centroid.x = candidates[k].obstacle->getCentroid().x();
+      centroid.y = candidates[k].obstacle->getCentroid().y();
+      swept_candidate_obstacles_.push_back(centroid);
+      ++edge_count;
+    }
+  }
+  const double elapsed_ms = std::chrono::duration<double, std::milli>(
+    std::chrono::steady_clock::now() - started).count();
+  RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000,
+    "[TEB 扫掠建边] 候选=%p 包围盒命中=%zu 危险段=%zu 新增边=%zu 截断=%zu 最小距离=%.3f 半径=%.3f 裕度=%.3f 耗时=%.1f ms",
+    static_cast<const void*>(this), broadphase_pairs, swept_danger_segments_.size(),
+    edge_count, truncated, std::isfinite(min_signed) ? min_signed : -1.0,
+    radius, pad - radius, elapsed_ms);
 }
 
 
@@ -1678,9 +1903,55 @@ void TebOptimalPlanner::logTrajectoryClearanceIfDue(
   bool feasible, const char * reason, int checked_until,
   const std::vector<geometry_msgs::msg::Point> & costmap_footprint)
 {
-  if (!cfg_ || !node_ || !obstacles_ || !cfg_->robot_model ||
-    !cfg_->debug_mode.load(std::memory_order_relaxed)) {return;}
+  if (!cfg_ || !node_) {return;}
   const auto now = node_->now();
+  const std::string current_reason = reason ? reason : "unknown";
+  const char * reason_cn = current_reason == "checks_passed" ? "检查通过" :
+    current_reason == "costmap_pose_rejected" ? "代价地图位姿碰撞" :
+    current_reason == "costmap_interpolation_rejected" ? "代价地图段内插值碰撞" :
+    current_reason == "contour_rejected" ? "障碍轮廓检查拒绝" : "其他原因";
+  const bool changed = current_reason != last_feasibility_event_reason_ ||
+    (!feasible && checked_until != last_feasibility_event_index_);
+  const bool summary_due = now < last_feasibility_event_time_ ||
+    (now - last_feasibility_event_time_).seconds() >= 2.0;
+  if (changed || (!feasible && summary_due)) {
+    if (feasible) {
+      if (!last_feasibility_event_reason_.empty()) {
+        RCLCPP_INFO(node_->get_logger(),
+          "[TEB 可行性事件] 候选=%p 已恢复通过，前次原因=%s，前次重复省略=%zu次",
+          static_cast<const void *>(this), last_feasibility_event_reason_.c_str(),
+          suppressed_feasibility_events_);
+      }
+    } else {
+      const PoseSE2 * pose = checked_until >= 0 && checked_until < teb_.sizePoses() ?
+        &teb_.Pose(checked_until) : nullptr;
+      std::ostringstream footprint_text;
+      for (const auto & vertex : costmap_footprint) {
+        footprint_text << "(" << vertex.x << "," << vertex.y << ")";
+      }
+      RCLCPP_WARN(node_->get_logger(),
+        "[TEB 可行性事件] 候选=%p 轨迹拒绝，原因=%s，段/位姿=%d，参考位姿=(%.3f,%.3f,%.3f)，"
+        "障碍数=%zu，车体轮廓=%s，前次重复省略=%zu次",
+        static_cast<const void *>(this), reason_cn, checked_until,
+        pose ? pose->x() : std::numeric_limits<double>::quiet_NaN(),
+        pose ? pose->y() : std::numeric_limits<double>::quiet_NaN(),
+        pose ? pose->theta() : std::numeric_limits<double>::quiet_NaN(),
+        obstacles_ ? obstacles_->size() : 0, footprint_text.str().c_str(),
+        suppressed_feasibility_events_);
+    }
+    suppressed_feasibility_events_ = 0;
+    last_feasibility_event_time_ = now;
+  } else if (!feasible) {
+    ++suppressed_feasibility_events_;
+  }
+  last_feasibility_event_reason_ = current_reason;
+  last_feasibility_event_index_ = checked_until;
+
+  if (!obstacles_ || !cfg_->robot_model ||
+    !cfg_->debug_mode.load(std::memory_order_relaxed)) {return;}
+  // 节流判定必须在全轨迹 × 全障碍轮廓扫描之前。
+  if (current_reason == last_clearance_detail_reason_ && now >= last_clearance_log_time_ &&
+    (now-last_clearance_log_time_).seconds() < 1.0) {return;}
   double minimum = std::numeric_limits<double>::infinity();
   double minimum_free = minimum;
   int worst_pose = -1, worst_obstacle = -1;
@@ -1705,26 +1976,31 @@ void TebOptimalPlanner::logTrajectoryClearanceIfDue(
         obstacles_per_vertex_[i].end()) {++associated_pairs;}
     }
   }
-  const int state = feasible ? (minimum < 0.0 ? 2 : (invalid ? 3 : 1)) : 0;
-  if (state == last_clearance_log_state_ && now >= last_clearance_log_time_ &&
-    (now-last_clearance_log_time_).seconds() < 1.0) {return;}
   last_clearance_log_time_ = now;
-  last_clearance_log_state_ = state;
-  std::ostringstream detail;
-  detail << "[TEB Clearance] candidate=" << this << " time_ns=" << now.nanoseconds()
-         << " frame=" << cfg_->map_frame << " feasible=" << feasible << " reason=" << reason
-         << " checked_until=" << checked_until << " poses=" << teb_.sizePoses()
-         << " obstacles=" << obstacles_->size() << " wall_guides_excluded=" << guides
-         << " min_signed=" << minimum << " min_free_signed=" << minimum_free
-         << " penetrating_pairs=" << penetrating << " below_min_pairs=" << inside_margin
-         << " invalid_pairs=" << invalid << " static_associated_pairs=" << associated_pairs
-         << " min_dist=" << cfg_->obstacles.min_obstacle_dist
-         << " epsilon=" << cfg_->optim.penalty_epsilon
-         << " weight=" << cfg_->optim.weight_obstacle
-         << " legacy_assoc=" << cfg_->obstacles.legacy_obstacle_association
-         << " opt_inscribed=" << cfg_->robot_model->getInscribedRadius()
-         << " iterations=" << cfg_->optim.no_inner_iterations << "/" << cfg_->optim.no_outer_iterations
-         << " contour_check=" << cfg_->trajectory.feasibility_check_obstacle_contours;
+  last_clearance_detail_reason_ = current_reason;
+  const bool pass_with_penetration = feasible && minimum < 0.0;
+  const bool pass_with_invalid = feasible && !pass_with_penetration && invalid != 0;
+  std::ostringstream summary;
+  summary << "[TEB Clearance] 轨迹检查 候选=" << this
+          << " ROS时刻=" << now.seconds() << "秒 坐标系=" << cfg_->map_frame
+          << " 结果=" << (feasible ? "通过" : "拒绝")
+          << " 原因=" << reason_cn << "(" << reason << ")"
+          << " 检查至位姿/段=" << checked_until << " 全轨迹位姿=" << teb_.sizePoses()
+          << " 优化障碍=" << obstacles_->size() << " 排除墙线引导=" << guides
+          << " 轮廓硬检查=" << (cfg_->trajectory.feasibility_check_obstacle_contours ? "开启" : "关闭");
+  std::ostringstream clearance;
+  clearance << "[TEB Clearance] 全轨迹轮廓诊断 候选=" << this
+            << " 最小有符号距离=" << minimum << "米 自由位姿最小距离=" << minimum_free << "米"
+            << " 侵入对=" << penetrating << " 小于最小间距的对=" << inside_margin
+            << " 距离无效对=" << invalid << " 静态关联缓存对=" << associated_pairs
+            << " 最小间距=" << cfg_->obstacles.min_obstacle_dist << "米"
+            << " 代价缓冲=" << cfg_->optim.penalty_epsilon << "米"
+            << " 障碍权重=" << cfg_->optim.weight_obstacle
+            << " 障碍模型内切半径=" << cfg_->robot_model->getInscribedRadius() << "米"
+            << " 内/外迭代=" << cfg_->optim.no_inner_iterations << "/" << cfg_->optim.no_outer_iterations
+            << " 旧版关联=" << (cfg_->obstacles.legacy_obstacle_association ? "是" : "否");
+  std::ostringstream geometry;
+  geometry << "[TEB Clearance] 最危险几何 候选=" << this;
   if (worst_pose >= 0) {
     const auto & pose = teb_.Pose(worst_pose);
     const auto & obstacle = obstacles_->at(worst_obstacle);
@@ -1732,39 +2008,161 @@ void TebOptimalPlanner::logTrajectoryClearanceIfDue(
       static_cast<size_t>(worst_pose) < obstacles_per_vertex_.size() &&
       std::find(obstacles_per_vertex_[worst_pose].begin(), obstacles_per_vertex_[worst_pose].end(),
         obstacle) != obstacles_per_vertex_[worst_pose].end();
-    const char * type = dynamic_cast<PointObstacle *>(obstacle.get()) ? "point" :
-      dynamic_cast<CircularObstacle *>(obstacle.get()) ? "circle" :
-      dynamic_cast<LineObstacle *>(obstacle.get()) ? "line" :
-      dynamic_cast<PillObstacle *>(obstacle.get()) ? "pill" : "polygon";
-    detail << " worst_pose=" << worst_pose << " fixed=" << teb_.PoseVertex(worst_pose)->fixed()
-           << " in_checked_range=" << (worst_pose <= checked_until)
-           << " pose=(" << pose.x() << "," << pose.y() << "," << pose.theta() << ")"
-           << " worst_obstacle=" << worst_obstacle << " type=" << type
-           << " dynamic=" << obstacle->isDynamic() << " static_associated=" << associated
-           << " centroid=(" << obstacle->getCentroid().x() << "," << obstacle->getCentroid().y() << ")";
+    const char * type = dynamic_cast<PointObstacle *>(obstacle.get()) ? "点" :
+      dynamic_cast<CircularObstacle *>(obstacle.get()) ? "圆" :
+      dynamic_cast<LineObstacle *>(obstacle.get()) ? "线段" :
+      dynamic_cast<PillObstacle *>(obstacle.get()) ? "胶囊" : "多边形";
+    geometry << " 位姿序号=" << worst_pose
+             << " 固定=" << (teb_.PoseVertex(worst_pose)->fixed() ? "是" : "否")
+             << " 属于本次检查范围=" << (worst_pose <= checked_until ? "是" : "否")
+             << " 位姿=(" << pose.x() << "," << pose.y() << "," << pose.theta() << "弧度)"
+             << " 障碍容器序号=" << worst_obstacle << " 类型=" << type
+             << " 动态标记=" << (obstacle->isDynamic() ? "是" : "否")
+             << " 静态关联缓存=" << (associated ? "已关联" : "未关联")
+             << " 障碍质心=(" << obstacle->getCentroid().x() << "," << obstacle->getCentroid().y() << ")";
+    if (worst_pose > checked_until) {
+      geometry << "（全轨迹诊断点，非本次拒绝位置）";
+    }
     geometry_msgs::msg::Polygon polygon;
     obstacle->toPolygonMsg(polygon);
-    detail << " obstacle_vertices=" << polygon.points.size() << " geometry=[";
+    geometry << " 障碍顶点数=" << polygon.points.size() << " 顶点=[";
     for (size_t j = 0; j < std::min<size_t>(polygon.points.size(),16); ++j) {
-      detail << "(" << polygon.points[j].x << "," << polygon.points[j].y << ")";
+      geometry << "(" << polygon.points[j].x << "," << polygon.points[j].y << ")";
     }
-    detail << "]";
-  }
-  detail << " costmap_footprint=[";
-  for (const auto & p : costmap_footprint) {detail << "(" << p.x << "," << p.y << ")";}
-  detail << "] model=" << (dynamic_cast<PolygonRobotFootprint *>(cfg_->robot_model.get()) ? "polygon" : "other");
-  if (feasible && minimum < 0.0) {
-    RCLCPP_WARN(node_->get_logger(), "%s PASS_WITH_PENETRATION", detail.str().c_str());
-  } else if (feasible && invalid) {
-    RCLCPP_WARN(node_->get_logger(), "%s PASS_WITH_INVALID_DISTANCE", detail.str().c_str());
+    geometry << "]";
   } else {
-    RCLCPP_INFO(node_->get_logger(), "%s", detail.str().c_str());
+    geometry << " 无可计算的位姿/障碍对";
+  }
+  geometry << " 代价地图车体轮廓=[";
+  for (const auto & p : costmap_footprint) {geometry << "(" << p.x << "," << p.y << ")";}
+  geometry << "] 优化车体模型=" <<
+    (dynamic_cast<PolygonRobotFootprint *>(cfg_->robot_model.get()) ? "多边形" : "其他");
+  if (pass_with_penetration || pass_with_invalid) {
+    const char * warning = pass_with_penetration ?
+      "检查虽通过，但全轨迹诊断发现轮廓侵入；未改变原检查结果" :
+      "检查虽通过，但全轨迹诊断存在无效距离；未改变原检查结果";
+    RCLCPP_WARN(node_->get_logger(), "%s 警告=%s", summary.str().c_str(), warning);
+    RCLCPP_WARN(node_->get_logger(), "%s", clearance.str().c_str());
+    RCLCPP_WARN(node_->get_logger(), "%s", geometry.str().c_str());
+  } else {
+    RCLCPP_INFO(node_->get_logger(), "%s", summary.str().c_str());
+    RCLCPP_INFO(node_->get_logger(), "%s", clearance.str().c_str());
+    RCLCPP_INFO(node_->get_logger(), "%s", geometry.str().c_str());
   }
 }
 
-bool TebOptimalPlanner::isTrajectoryFeasible(dwb_critics::ObstacleFootprintCritic* costmap_model, const std::vector<geometry_msgs::msg::Point>& footprint_spec,
-                                             double inscribed_radius, double circumscribed_radius, int look_ahead_idx, double feasibility_check_lookahead_distance)
+void TebOptimalPlanner::recordSweptFailure(
+  int segment, double fraction, const PoseSE2 & pose, const char * reason)
 {
+  swept_failure_.segment = segment;
+  swept_failure_.fraction = fraction;
+  swept_failure_.pose = pose;
+  swept_failure_.reason = reason;
+  RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 500,
+    "[TEB 扫掠失败] 段=%d s=%.3f 位姿=(%.3f,%.3f,%.3f) 原因=%s",
+    segment, fraction, pose.x(), pose.y(), pose.theta(), reason);
+  if (visualization_) {
+    visualization_->publishSweptObstacleDebug(teb_, swept_danger_segments_,
+      swept_sample_poses_, swept_candidate_obstacles_, *cfg_->robot_model,
+      segment, fraction, &pose, reason);
+  }
+}
+
+bool TebOptimalPlanner::repairSweptFailure(const nav2_costmap_2d::Costmap2D * costmap)
+{
+  if (cfg_->swept_repair_tokens.fetch_sub(1, std::memory_order_relaxed) <= 0) {
+    cfg_->swept_repair_tokens.store(0, std::memory_order_relaxed);
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
+      "[TEB 扫掠修复] 本控制周期修复次数已用完，拒绝候选");
+    return false;
+  }
+  const auto start = std::chrono::steady_clock::now();
+  const int segment = swept_failure_.segment;
+  if (segment < 0 || segment >= teb_.sizePoses() - 1) {return false;}
+  forced_swept_segment_ = segment;
+  forced_swept_fraction_ = swept_failure_.fraction;
+  swept_repair_obstacles_.clear();
+  const auto * polygon = dynamic_cast<const PolygonRobotFootprint *>(cfg_->robot_model.get());
+  if (!polygon || polygon->vertices().size() < 3) {return false;}
+
+  // costmap 检查可能发现 converter 尚未写入 obstacles_ 的障碍；只取失败区域的单元。
+  if (costmap && swept_failure_.reason.find("costmap_") == 0) {
+    double radius = 0.0;
+    for (const auto & vertex : polygon->vertices()) {radius = std::max(radius, vertex.norm());}
+    const auto & center = swept_failure_.pose.position();
+    const double reach = radius + costmap->getResolution() +
+      cfg_->obstacles.min_obstacle_dist;
+    int mx0, my0, mx1, my1;
+    costmap->worldToMapEnforceBounds(center.x() - reach, center.y() - reach, mx0, my0);
+    costmap->worldToMapEnforceBounds(center.x() + reach, center.y() + reach, mx1, my1);
+    struct Cell {double distance; double x; double y;};
+    std::vector<Cell> cells;
+    for (int my = my0; my <= my1; ++my) {
+      for (int mx = mx0; mx <= mx1; ++mx) {
+        const unsigned char cost = costmap->getCost(mx, my);
+        if (cost < 253 || cost == 255) {continue;}
+        double x, y;
+        costmap->mapToWorld(mx, my, x, y);
+        CircularObstacle cell(x, y, costmap->getResolution() * 0.707107);
+        cells.push_back({cfg_->robot_model->optimizationDistance(
+          swept_failure_.pose, &cell).signed_distance, x, y});
+      }
+    }
+    std::sort(cells.begin(), cells.end(), [](const Cell & a, const Cell & b) {
+      return a.distance < b.distance;
+    });
+    for (size_t i = 0; i < std::min<size_t>(12, cells.size()); ++i) {
+      swept_repair_obstacles_.push_back(std::make_shared<CircularObstacle>(
+        cells[i].x, cells[i].y, costmap->getResolution() * 0.707107));
+    }
+  }
+  size_t nearby = 0;
+  for (const auto & obst : *obstacles_) {
+    if (obst && !obst->isWallGuide() && !obst->isDynamic() &&
+        cfg_->robot_model->optimizationDistance(swept_failure_.pose, obst.get()).signed_distance <
+        cfg_->trajectory.swept_obstacle_trigger_dist + cfg_->trajectory.swept_obstacle_margin)
+    {
+      ++nearby;
+    }
+  }
+  if (nearby == 0 && swept_repair_obstacles_.empty()) {
+    RCLCPP_WARN(node_->get_logger(), "[TEB 扫掠修复] 失败区域没有可用障碍几何，拒绝无效重试");
+    return false;
+  }
+  swept_repair_active_ = true;
+  const bool built = buildGraph();
+  const bool optimized = built && optimizeGraph(
+    std::max(1, cfg_->trajectory.swept_repair_inner_iterations), false);
+  clearGraph();
+  swept_repair_active_ = false;
+  const double elapsed_ms = std::chrono::duration<double, std::milli>(
+    std::chrono::steady_clock::now() - start).count();
+  RCLCPP_WARN(node_->get_logger(),
+    "[TEB 扫掠修复] 段=%d s=%.3f 原有近邻=%zu 代价图补点=%zu 建图=%d 优化=%d 耗时=%.1f ms 预算=%.1f ms",
+    segment, forced_swept_fraction_, nearby, swept_repair_obstacles_.size(), built, optimized,
+    elapsed_ms, cfg_->trajectory.swept_repair_budget_ms);
+  return optimized && elapsed_ms <= cfg_->trajectory.swept_repair_budget_ms;
+}
+
+bool TebOptimalPlanner::isTrajectoryFeasible(dwb_critics::ObstacleFootprintCritic* costmap_model, const std::vector<geometry_msgs::msg::Point>& footprint_spec,
+                                             double inscribed_radius, double circumscribed_radius, int look_ahead_idx, double feasibility_check_lookahead_distance,
+                                             const nav2_costmap_2d::Costmap2D* repair_costmap)
+{
+  auto reject = [&](int segment, double fraction, const PoseSE2 & pose, const char * reason) {
+    recordSweptFailure(segment, fraction, pose, reason);
+    if (!cfg_->trajectory.swept_obstacle_enable || swept_recheck_ ||
+        cfg_->trajectory.swept_repair_max_attempts < 1 || segment < 0 ||
+        std::string(reason) == "swept_check_budget_exhausted" ||
+        !repairSweptFailure(repair_costmap)) {return false;}
+    swept_recheck_ = true;
+    const bool repaired = isTrajectoryFeasible(
+      costmap_model, footprint_spec, inscribed_radius, circumscribed_radius,
+      look_ahead_idx, feasibility_check_lookahead_distance, repair_costmap);
+    swept_recheck_ = false;
+    RCLCPP_WARN(node_->get_logger(), "[TEB 扫掠修复] 段=%d s=%.3f 复查=%s",
+      segment, fraction, repaired ? "通过" : "仍碰撞");
+    return repaired;
+  };
   if (look_ahead_idx < 0 || look_ahead_idx >= teb().sizePoses())
     look_ahead_idx = teb().sizePoses() - 1;
 
@@ -1784,11 +2182,12 @@ bool TebOptimalPlanner::isTrajectoryFeasible(dwb_critics::ObstacleFootprintCriti
     teb().Pose(i).toPoseMsg(pose2d);
     if (!isPoseValid(pose2d, costmap_model, footprint_spec)){
       logTrajectoryClearanceIfDue(false, "costmap_pose_rejected", i, footprint_spec);
+      publishSamplingDebug("离散位姿碰撞");
       if (visualization_)
       {
         visualization_->publishInfeasibleRobotPose(teb().Pose(i), *cfg_->robot_model);
       }
-      return false;
+      return reject(i > 0 ? i - 1 : -1, i > 0 ? 1.0 : 0.0, teb().Pose(i), "costmap_pose_rejected");
     }
     // Checks if the distance between two poses is higher than the robot radius or the orientation diff is bigger than the specified threshold
     // and interpolates in that case.
@@ -1812,12 +2211,67 @@ bool TebOptimalPlanner::isTrajectoryFeasible(dwb_critics::ObstacleFootprintCriti
 
           if (!isPoseValid(pose2d, costmap_model, footprint_spec)){
             logTrajectoryClearanceIfDue(false, "costmap_interpolation_rejected", i, footprint_spec);
+            publishSamplingDebug("段内插值碰撞");
             if (visualization_)
             {
               visualization_->publishInfeasibleRobotPose(intermediate_pose, *cfg_->robot_model);
             }
+            return reject(i, static_cast<double>(step + 1) / (n_additional_samples + 1),
+              intermediate_pose, "costmap_interpolation_rejected");
+          }
+        }
+      }
+    }
+  }
+
+  // 轮廓段内检查：只处理扫掠包围盒相交的静态障碍，避免全路径全障碍密采样。
+  if (cfg_->trajectory.swept_obstacle_enable && obstacles_ && cfg_->robot_model &&
+      dynamic_cast<const PolygonRobotFootprint *>(cfg_->robot_model.get()))
+  {
+    const auto * polygon = static_cast<const PolygonRobotFootprint *>(cfg_->robot_model.get());
+    double radius = 0.0;
+    for (const auto & v : polygon->vertices()) {radius = std::max(radius, v.norm());}
+    const double pad = radius + std::max(0.0, cfg_->trajectory.feas_contour_margin);
+    for (int i = 0; i < look_ahead_idx; ++i) {
+      const auto & a = teb().Pose(i);
+      const auto & b = teb().Pose(i + 1);
+      const SweptAabb box{std::min(a.x(), b.x()) - pad, std::min(a.y(), b.y()) - pad,
+        std::max(a.x(), b.x()) + pad, std::max(a.y(), b.y()) + pad};
+      for (const auto & obstacle : *obstacles_) {
+        if (!obstacle || obstacle->isWallGuide() || obstacle->isDynamic()) {continue;}
+        SweptAabb obstacle_box;
+        if (sweptAabbForObstacle(obstacle.get(), obstacle_box) &&
+            !sweptAabbOverlap(box, obstacle_box)) {continue;}
+        // 距离函数对刚体平移/旋转的变化不超过 L*ds；中点距离足够大时可证明整段安全。
+        const double motion_bound = (b.position() - a.position()).norm() +
+          radius * std::abs(g2o::normalize_theta(b.theta() - a.theta()));
+        int evaluations = 0;
+        double failed_fraction = 0.5;
+        const char * failed_reason = "swept_contour_rejected";
+        std::function<bool(double, double)> verify = [&](double left, double right) {
+          const double mid = 0.5 * (left + right);
+          failed_fraction = mid;
+          if (++evaluations > std::max(1, cfg_->trajectory.swept_check_max_evals)) {
+            failed_reason = "swept_check_budget_exhausted";
             return false;
           }
+          const auto pose = sweptInterpolate(a, b, mid);
+          const double distance = cfg_->robot_model->optimizationDistance(
+            pose, obstacle.get()).signed_distance;
+          if (distance <= cfg_->trajectory.feas_contour_margin) {
+            failed_reason = "swept_contour_rejected";
+            return false;
+          }
+          if (distance > cfg_->trajectory.feas_contour_margin +
+              0.5 * motion_bound * (right - left)) {return true;}
+          return verify(left, mid) && verify(mid, right);
+        };
+        if (!verify(0.0, 1.0)) {
+          const auto pose = sweptInterpolate(a, b, failed_fraction);
+          RCLCPP_ERROR(node_->get_logger(),
+            "[TEB 扫掠复查] 段=%d s=%.4f 原因=%s 检查次数=%d",
+            i, failed_fraction, failed_reason, evaluations);
+          return reject(i, failed_fraction, pose, failed_reason);
         }
       }
     }
@@ -1827,9 +2281,16 @@ bool TebOptimalPlanner::isTrajectoryFeasible(dwb_critics::ObstacleFootprintCriti
   if (!isTrajectoryContourFeasible(inscribed_radius))
   {
     logTrajectoryClearanceIfDue(false, "contour_rejected", look_ahead_idx, footprint_spec);
+    publishSamplingDebug("轮廓碰撞");
     return false;
   }
   logTrajectoryClearanceIfDue(true, "checks_passed", look_ahead_idx, footprint_spec);
+  publishSamplingDebug("检查通过");
+  if (visualization_ && cfg_->trajectory.swept_obstacle_enable) {
+    visualization_->publishSweptObstacleDebug(teb_, swept_danger_segments_,
+      swept_sample_poses_, swept_candidate_obstacles_, *cfg_->robot_model,
+      -1, 0.0, nullptr, "检查通过");
+  }
   return true;
 }
 
@@ -2036,24 +2497,20 @@ bool TebOptimalPlanner::isPoseValid(geometry_msgs::msg::Pose2D pose2d, dwb_criti
       return false;
     }
   } catch(const dwb_core::IllegalTrajectoryException& e){
-    if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
-      RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
-        "[TEB GridCheck] pose=(%.3f,%.3f,%.3f) exception=%s rejected=%d",
-        pose2d.x, pose2d.y, pose2d.theta, e.what(),
-        !std::strcmp(e.what(), "Trajectory Hits Obstacle."));
-    }
-    if (!std::strcmp(e.what(), "Trajectory Hits Obstacle."))
-    {
-      return false;
-    }
-  }
-  catch (...) {
-    if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
-      RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
-        "[TEB GridCheck] pose=(%.3f,%.3f,%.3f) unexpected_exception preserved_as_valid=1",
-        pose2d.x, pose2d.y, pose2d.theta);
-    }
-    return true;
+    RCLCPP_ERROR_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
+      "[TEB 栅格碰撞检查] 非法轨迹异常，拒绝候选；位姿=(%.3f,%.3f,%.3f)，异常=%s",
+      pose2d.x, pose2d.y, pose2d.theta, e.what());
+    return false;
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
+      "[TEB 栅格碰撞检查] 检查异常，拒绝候选；位姿=(%.3f,%.3f,%.3f)，异常=%s",
+      pose2d.x, pose2d.y, pose2d.theta, e.what());
+    return false;
+  } catch (...) {
+    RCLCPP_ERROR_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
+      "[TEB 栅格碰撞检查] 未知异常，拒绝候选；位姿=(%.3f,%.3f,%.3f)",
+      pose2d.x, pose2d.y, pose2d.theta);
+    return false;
   }
   return true;
 }

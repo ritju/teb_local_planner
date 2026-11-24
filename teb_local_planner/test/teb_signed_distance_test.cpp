@@ -1,6 +1,7 @@
 #include "split_module_fixture.hpp"
 #include "teb_local_planner/optimal_planner.h"
 #include "teb_local_planner/g2o_types/edge_obstacle.h"
+#include "teb_local_planner/g2o_types/edge_swept_obstacle.h"
 
 using namespace teb_local_planner;
 
@@ -15,6 +16,22 @@ std::shared_ptr<PolygonObstacle> polygon(const Point2dContainer & points)
   for (const auto & v : points) {p->pushBackVertex(v);}
   p->finalizePolygon();
   return p;
+}
+
+TEST(SweptObstacleEdge, frontCornerCrossesObstacleBetweenSafeEndpointPoses)
+{
+  TebConfig config;
+  PolygonRobotFootprint body(rectangle(-0.68, -0.65, 1.15, 0.65));
+  PointObstacle obstacle(1.05, 0.62);
+  VertexPose start(0.0, 0.0, -0.433);
+  VertexPose goal(0.0, 0.0, 0.433);
+  EXPECT_GT(body.optimizationDistance(start.pose(), &obstacle).signed_distance, 0.0);
+  EXPECT_GT(body.optimizationDistance(goal.pose(), &obstacle).signed_distance, 0.0);
+  EdgeSweptObstacle edge;
+  edge.setVertex(0, &start);
+  edge.setVertex(1, &goal);
+  edge.setParameters(config, &body, &obstacle, 0.5);
+  EXPECT_GT(edge.getError()[0], 0.0);
 }
 
 TEST(SignedOptimizationDistance, pointPenetrationIncreasesCostAndLegacyDistanceIsUnchanged)

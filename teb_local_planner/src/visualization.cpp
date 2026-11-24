@@ -43,6 +43,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -118,6 +119,216 @@ void TebVisualization::publishLocalPlanAndPoses(const TimedElasticBand& teb) con
       local_plan_pub_->publish(teb_path);
     }
     teb_poses_pub_->publish(teb_poses);
+}
+
+void TebVisualization::publishSweptObstacleDebug(
+  const TimedElasticBand& teb, const std::vector<int>& dangerous_segments,
+  const std::vector<PoseSE2>& build_samples,
+  const std::vector<geometry_msgs::msg::Point>& candidate_obstacles,
+  const BaseRobotFootprintModel& robot_model,
+  int failure_segment, double failure_fraction, const PoseSE2* failure_pose,
+  const std::string& failure_reason) const
+{
+  if (printErrorWhenNotInitialized() || !teb_swept_debug_pub_ ||
+      !cfg_->debug_mode.load(std::memory_order_relaxed)) {return;}
+  visualization_msgs::msg::MarkerArray array;
+  const auto stamp = nh_->now();
+  visualization_msgs::msg::Marker clear;
+  clear.header.frame_id = cfg_->map_frame;
+  clear.header.stamp = stamp;
+  clear.action = visualization_msgs::msg::Marker::DELETEALL;
+  array.markers.push_back(clear);
+
+  visualization_msgs::msg::Marker segments;
+  segments.header = clear.header;
+  segments.ns = "swept_danger_segments";
+  segments.id = 1;
+  segments.type = visualization_msgs::msg::Marker::LINE_LIST;
+  segments.action = visualization_msgs::msg::Marker::ADD;
+  segments.pose.orientation.w = 1.0;
+  segments.scale.x = 0.06;
+  segments.color = toColorMsg(0.9, 0.95, 0.55, 0.05);
+  for (int index : dangerous_segments) {
+    if (index < 0 || index + 1 >= teb.sizePoses()) {continue;}
+    geometry_msgs::msg::Point p, q;
+    p.x = teb.Pose(index).x(); p.y = teb.Pose(index).y();
+    q.x = teb.Pose(index + 1).x(); q.y = teb.Pose(index + 1).y();
+    segments.points.push_back(p);
+    segments.points.push_back(q);
+  }
+  array.markers.push_back(segments);
+
+  visualization_msgs::msg::Marker samples;
+  samples.header = clear.header;
+  samples.ns = "swept_edge_build_samples";
+  samples.id = 2;
+  samples.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+  samples.action = visualization_msgs::msg::Marker::ADD;
+  samples.pose.orientation.w = 1.0;
+  samples.scale.x = samples.scale.y = samples.scale.z = 0.10;
+  samples.color = toColorMsg(0.9, 0.0, 0.8, 0.9);
+  for (const auto& pose : build_samples) {
+    geometry_msgs::msg::Point p;
+    p.x = pose.x(); p.y = pose.y();
+    samples.points.push_back(p);
+  }
+  array.markers.push_back(samples);
+
+  visualization_msgs::msg::Marker obstacles;
+  obstacles.header = clear.header;
+  obstacles.ns = "swept_candidate_obstacles";
+  obstacles.id = 5;
+  obstacles.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+  obstacles.action = visualization_msgs::msg::Marker::ADD;
+  obstacles.pose.orientation.w = 1.0;
+  obstacles.scale.x = obstacles.scale.y = obstacles.scale.z = 0.13;
+  obstacles.color = toColorMsg(0.9, 1.0, 0.9, 0.0);
+  obstacles.points = candidate_obstacles;
+  array.markers.push_back(obstacles);
+
+  if (failure_pose) {
+    std::vector<visualization_msgs::msg::Marker> outlines;
+    robot_model.visualizeRobot(*failure_pose, outlines, toColorMsg(1.0, 1.0, 0.0, 0.0));
+    for (auto& marker : outlines) {
+      marker.header = clear.header;
+      marker.ns = "swept_failure_footprint";
+      marker.id = 3 + static_cast<int>(array.markers.size());
+      marker.action = visualization_msgs::msg::Marker::ADD;
+      marker.scale.x = 0.08;
+      array.markers.push_back(marker);
+    }
+    visualization_msgs::msg::Marker label;
+    label.header = clear.header;
+    label.ns = "swept_failure_label";
+    label.id = 4 + static_cast<int>(array.markers.size());
+    label.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+    label.action = visualization_msgs::msg::Marker::ADD;
+    label.pose.orientation.w = 1.0;
+    label.pose.position.x = failure_pose->x();
+    label.pose.position.y = failure_pose->y();
+    label.pose.position.z = 0.45;
+    label.scale.z = 0.25;
+    label.color = toColorMsg(1.0, 1.0, 0.1, 0.1);
+    label.text = "段 " + std::to_string(failure_segment) + " s=" +
+      std::to_string(failure_fraction) + " " + failure_reason;
+    array.markers.push_back(label);
+  }
+  teb_swept_debug_pub_->publish(array);
+}
+
+void TebVisualization::publishTrajectorySamplingStages(
+  const std::vector<geometry_msgs::msg::Pose2D> & initial,
+  const std::vector<geometry_msgs::msg::Pose2D> & after_resize,
+  const std::vector<geometry_msgs::msg::Pose2D> & optimized,
+  int resize_outer_iteration, bool autosize_enabled,
+  const void * candidate, const char * result) const
+{
+  if (printErrorWhenNotInitialized() || !teb_sampling_debug_pub_ ||
+      !cfg_->debug_mode.load(std::memory_order_relaxed)) {return;}
+
+  visualization_msgs::msg::MarkerArray markers;
+  const auto stamp = nh_->now();
+  visualization_msgs::msg::Marker clear;
+  clear.header.frame_id = cfg_->map_frame;
+  clear.header.stamp = stamp;
+  clear.action = visualization_msgs::msg::Marker::DELETEALL;
+  markers.markers.push_back(clear);
+
+  auto append_stage = [&](const std::vector<geometry_msgs::msg::Pose2D> & poses,
+                          const std::string & ns, const std::string & title,
+                          const std_msgs::msg::ColorRGBA & color, double z) {
+    if (poses.empty()) {return;}
+    auto make_marker = [&](int id, int type, double scale) {
+      visualization_msgs::msg::Marker marker;
+      marker.header.frame_id = cfg_->map_frame;
+      marker.header.stamp = stamp;
+      marker.ns = ns;
+      marker.id = id;
+      marker.type = type;
+      marker.action = visualization_msgs::msg::Marker::ADD;
+      marker.pose.orientation.w = 1.0;
+      marker.scale.x = scale;
+      marker.scale.y = scale;
+      marker.scale.z = scale;
+      marker.color = color;
+      marker.lifetime = rclcpp::Duration::from_seconds(2.0);
+      return marker;
+    };
+    auto point_at = [z](double x, double y) {
+      geometry_msgs::msg::Point point;
+      point.x = x;
+      point.y = y;
+      point.z = z;
+      return point;
+    };
+    auto path = make_marker(0, visualization_msgs::msg::Marker::LINE_STRIP, 0.025);
+    auto points = make_marker(1, visualization_msgs::msg::Marker::SPHERE_LIST, 0.065);
+    auto headings = make_marker(2, visualization_msgs::msg::Marker::LINE_LIST, 0.014);
+    double largest_turn = 0.0;
+    size_t largest_segment = 0;
+    for (size_t i = 0; i < poses.size(); ++i) {
+      const auto & pose = poses[i];
+      const auto origin = point_at(pose.x, pose.y);
+      path.points.push_back(origin);
+      points.points.push_back(origin);
+      headings.points.push_back(origin);
+      headings.points.push_back(point_at(
+        pose.x + 0.16 * std::cos(pose.theta),
+        pose.y + 0.16 * std::sin(pose.theta)));
+      if (i + 1 < poses.size()) {
+        const double delta = std::abs(std::atan2(
+          std::sin(poses[i + 1].theta - pose.theta),
+          std::cos(poses[i + 1].theta - pose.theta)));
+        if (delta > largest_turn) {
+          largest_turn = delta;
+          largest_segment = i;
+        }
+      }
+    }
+    markers.markers.push_back(std::move(path));
+    markers.markers.push_back(std::move(points));
+    markers.markers.push_back(std::move(headings));
+
+    auto label = make_marker(3, visualization_msgs::msg::Marker::TEXT_VIEW_FACING, 0.20);
+    label.pose.position = point_at(poses.front().x, poses.front().y);
+    label.pose.position.z = 0.20 + z * 6.0;
+    std::ostringstream label_text;
+    label_text << title << " n=" << poses.size() << " max_dyaw="
+      << largest_turn * 180.0 / M_PI << "deg";
+    label.text = label_text.str();
+    markers.markers.push_back(std::move(label));
+
+    if (poses.size() > 1) {
+      auto turn = make_marker(4, visualization_msgs::msg::Marker::LINE_LIST, 0.07);
+      turn.points.push_back(point_at(
+        poses[largest_segment].x, poses[largest_segment].y));
+      turn.points.push_back(point_at(
+        poses[largest_segment + 1].x, poses[largest_segment + 1].y));
+      markers.markers.push_back(std::move(turn));
+      auto turn_label = make_marker(5, visualization_msgs::msg::Marker::TEXT_VIEW_FACING, 0.18);
+      turn_label.pose.position = point_at(
+        0.5 * (poses[largest_segment].x + poses[largest_segment + 1].x),
+        0.5 * (poses[largest_segment].y + poses[largest_segment + 1].y));
+      turn_label.pose.position.z = 0.08 + z * 6.0;
+      turn_label.text = "max turn " + std::to_string(largest_segment) + "->" +
+        std::to_string(largest_segment + 1);
+      markers.markers.push_back(std::move(turn_label));
+    }
+  };
+
+  append_stage(initial, "teb_sampling_initial", "initial", toColorMsg(0.95, 0.1, 0.45, 1.0), 0.04);
+  append_stage(after_resize, "teb_sampling_after_autosize",
+    autosize_enabled ? "autoResize outer=" + std::to_string(resize_outer_iteration) : "autoResize off",
+    toColorMsg(0.95, 1.0, 0.55, 0.05), 0.08);
+  std::ostringstream optimized_title;
+  optimized_title << "optimized " << (result ? result : "未知") << " @" << candidate;
+  append_stage(optimized, "teb_sampling_optimized", optimized_title.str(),
+    toColorMsg(0.95, 0.15, 0.95, 0.30), 0.12);
+  teb_sampling_debug_pub_->publish(markers);
+  RCLCPP_INFO_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 1000,
+    "[TEB 位姿采样可视化] 候选=%p 结果=%s 初始=%zu autoResize后=%zu(外层第%d轮) 优化后=%zu；话题=teb_sampling_debug",
+    candidate, result ? result : "未知", initial.size(), after_resize.size(),
+    resize_outer_iteration, optimized.size());
 }
 
 
@@ -958,6 +1169,8 @@ nav2_util::CallbackReturn TebVisualization::on_configure()
   teb_marker_pub_ = nh_->create_publisher<visualization_msgs::msg::Marker>("teb_markers", 1);
   teb_marker_array_pub_ = nh_->create_publisher<visualization_msgs::msg::MarkerArray>("teb_marker_array", 1);
   teb_dyn_obst_debug_pub_ = nh_->create_publisher<visualization_msgs::msg::MarkerArray>("teb_dynamic_obstacle_debug", 1);
+  teb_sampling_debug_pub_ = nh_->create_publisher<visualization_msgs::msg::MarkerArray>("teb_sampling_debug", 1);
+  teb_swept_debug_pub_ = nh_->create_publisher<visualization_msgs::msg::MarkerArray>("teb_swept_debug", 1);
   feedback_pub_ = nh_->create_publisher<teb_msgs::msg::FeedbackMsg>("teb_feedback", 1);
 
   initialized_ = true;
@@ -973,6 +1186,8 @@ TebVisualization::on_activate()
   teb_marker_pub_->on_activate();
   teb_marker_array_pub_->on_activate();
   teb_dyn_obst_debug_pub_->on_activate();
+  teb_sampling_debug_pub_->on_activate();
+  teb_swept_debug_pub_->on_activate();
   feedback_pub_->on_activate();
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -986,6 +1201,8 @@ TebVisualization::on_deactivate()
   teb_marker_pub_->on_deactivate();
   teb_marker_array_pub_->on_deactivate();
   teb_dyn_obst_debug_pub_->on_deactivate();
+  teb_sampling_debug_pub_->on_deactivate();
+  teb_swept_debug_pub_->on_deactivate();
   feedback_pub_->on_deactivate();
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -999,6 +1216,8 @@ TebVisualization::on_cleanup()
   teb_marker_pub_.reset();
   teb_marker_array_pub_.reset();
   teb_dyn_obst_debug_pub_.reset();
+  teb_sampling_debug_pub_.reset();
+  teb_swept_debug_pub_.reset();
   feedback_pub_.reset();
 
   return nav2_util::CallbackReturn::SUCCESS;

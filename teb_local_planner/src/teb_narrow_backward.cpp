@@ -261,8 +261,9 @@ void TebLocalPlannerROS::updateNarrowPassageLatch(
     if (!prev_latched) {
       RCLCPP_INFO(
         logger_,
-        "狭窄通道: TEB base_link (%.2f, %.2f) 进入窄通道，Latch 置 true",
-        robot_pose.pose.position.x, robot_pose.pose.position.y);
+        "[窄通道事件] base_link=(%.2f,%.2f,%.3f) 进入窄通道，锁定=是，车体顶点=%zu",
+        robot_pose.pose.position.x, robot_pose.pose.position.y,
+        tf2::getYaw(robot_pose.pose.orientation), costmap_ros_->getRobotFootprint().size());
     }
     return;
   }
@@ -271,7 +272,9 @@ void TebLocalPlannerROS::updateNarrowPassageLatch(
     if (prev_latched) {
       RCLCPP_INFO(
         logger_,
-        "狭窄通道: TEB footprint 完全离开窄通道，Latch 由 true 置 false");
+        "[窄通道事件] 车体完全离开窄通道，锁定=否，base_link=(%.2f,%.2f,%.3f)",
+        robot_pose.pose.position.x, robot_pose.pose.position.y,
+        tf2::getYaw(robot_pose.pose.orientation));
     }
   }
 }
@@ -557,7 +560,9 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
    try {
     if (enable_edge_mode) {
        // Switch to edge-following mode
-       RCLCPP_INFO(logger_, "切换到贴边模式参数");
+       RCLCPP_INFO(logger_, "[贴边事件] 切换到贴边参数：最小障碍距离=%.3f米，速度上限=%.3f米/秒，车体轮廓=%s",
+         cfg_->wall_line.edge_min_obstacle_dist, cfg_->wall_line.edge_max_vel_x,
+         cfg_->wall_line.edge_footprint_vertices.c_str());
        cfg_->optim.weight_optimaltime = cfg_->wall_line.edge_weight_optimaltime;
        cfg_->obstacles.min_obstacle_dist = cfg_->wall_line.edge_min_obstacle_dist;
        cfg_->optim.weight_inflation = cfg_->wall_line.edge_weight_inflation;
@@ -569,7 +574,8 @@ void TebLocalPlannerROS::restoreNarrowPassageTebSettings()
        is_edge_following_mode_ = true;
      } else {
        // Switch to normal mode
-       RCLCPP_INFO(logger_, "切换到正常模式参数");
+       RCLCPP_INFO(logger_, "[贴边事件] 恢复正常参数：最小障碍距离=%.3f米，车体轮廓=%s",
+         normal_min_obstacle_dist_, normal_footprint_vertices_.c_str());
        cfg_->optim.weight_optimaltime = normal_weight_optimaltime_;
        cfg_->obstacles.min_obstacle_dist = normal_min_obstacle_dist_;
        cfg_->optim.weight_inflation = normal_weight_inflation_;

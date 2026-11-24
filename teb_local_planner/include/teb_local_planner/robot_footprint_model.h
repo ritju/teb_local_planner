@@ -577,6 +577,7 @@ public:
    * @param vertices footprint vertices (only x and y) around the robot center (0,0) (do not repeat the first and last vertex at the end)
    */
   void setVertices(const Point2dContainer& vertices) {vertices_ = vertices;}
+  const Point2dContainer& vertices() const {return vertices_;}
   
   /**
     * @brief Calculate the distance between the robot and an obstacle

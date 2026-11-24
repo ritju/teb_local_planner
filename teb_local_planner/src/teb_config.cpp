@@ -85,6 +85,14 @@ void TebConfig::declareParameters(const nav2_util::LifecycleNode::SharedPtr nh, 
   declare_parameter_if_not_declared(nh, name + "." + "dynamic_obstacle_debug_pose_stride", rclcpp::ParameterValue(trajectory.dynamic_obstacle_debug_pose_stride));
   declare_parameter_if_not_declared(nh, name + "." + "dynamic_obstacle_debug_time_z_scale", rclcpp::ParameterValue(trajectory.dynamic_obstacle_debug_time_z_scale));
   declare_parameter_if_not_declared(nh, name + "." + "min_resolution_collision_check_angular", rclcpp::ParameterValue(trajectory.min_resolution_collision_check_angular));
+  declare_parameter_if_not_declared(nh, name + ".swept_obstacle_enable", rclcpp::ParameterValue(trajectory.swept_obstacle_enable));
+  declare_parameter_if_not_declared(nh, name + ".swept_obstacle_margin", rclcpp::ParameterValue(trajectory.swept_obstacle_margin));
+  declare_parameter_if_not_declared(nh, name + ".swept_obstacle_trigger_dist", rclcpp::ParameterValue(trajectory.swept_obstacle_trigger_dist));
+  declare_parameter_if_not_declared(nh, name + ".swept_obstacle_max_edges_per_segment", rclcpp::ParameterValue(trajectory.swept_obstacle_max_edges_per_segment));
+  declare_parameter_if_not_declared(nh, name + ".swept_check_max_evals", rclcpp::ParameterValue(trajectory.swept_check_max_evals));
+  declare_parameter_if_not_declared(nh, name + ".swept_repair_max_attempts", rclcpp::ParameterValue(trajectory.swept_repair_max_attempts));
+  declare_parameter_if_not_declared(nh, name + ".swept_repair_inner_iterations", rclcpp::ParameterValue(trajectory.swept_repair_inner_iterations));
+  declare_parameter_if_not_declared(nh, name + ".swept_repair_budget_ms", rclcpp::ParameterValue(trajectory.swept_repair_budget_ms));
   declare_parameter_if_not_declared(nh, name + "." + "control_look_ahead_poses", rclcpp::ParameterValue(trajectory.control_look_ahead_poses));
   declare_parameter_if_not_declared(nh, name + "." + "feasibility_check_lookahead_distance", rclcpp::ParameterValue(trajectory.feasibility_check_lookahead_distance));
   declare_parameter_if_not_declared(nh, name + "." + "theta_threshold", rclcpp::ParameterValue(trajectory.theta_threshold));
@@ -504,6 +512,14 @@ void TebConfig::loadRosParamFromNodeHandle(const nav2_util::LifecycleNode::Share
   if (trajectory.dynamic_obstacle_debug_pose_stride < 1)
     trajectory.dynamic_obstacle_debug_pose_stride = 1;
   nh->get_parameter_or(name + "." + "min_resolution_collision_check_angular", trajectory.min_resolution_collision_check_angular, trajectory.min_resolution_collision_check_angular);
+  nh->get_parameter_or(name + ".swept_obstacle_enable", trajectory.swept_obstacle_enable, trajectory.swept_obstacle_enable);
+  nh->get_parameter_or(name + ".swept_obstacle_margin", trajectory.swept_obstacle_margin, trajectory.swept_obstacle_margin);
+  nh->get_parameter_or(name + ".swept_obstacle_trigger_dist", trajectory.swept_obstacle_trigger_dist, trajectory.swept_obstacle_trigger_dist);
+  nh->get_parameter_or(name + ".swept_obstacle_max_edges_per_segment", trajectory.swept_obstacle_max_edges_per_segment, trajectory.swept_obstacle_max_edges_per_segment);
+  nh->get_parameter_or(name + ".swept_check_max_evals", trajectory.swept_check_max_evals, trajectory.swept_check_max_evals);
+  nh->get_parameter_or(name + ".swept_repair_max_attempts", trajectory.swept_repair_max_attempts, trajectory.swept_repair_max_attempts);
+  nh->get_parameter_or(name + ".swept_repair_inner_iterations", trajectory.swept_repair_inner_iterations, trajectory.swept_repair_inner_iterations);
+  nh->get_parameter_or(name + ".swept_repair_budget_ms", trajectory.swept_repair_budget_ms, trajectory.swept_repair_budget_ms);
   nh->get_parameter_or(name + "." + "control_look_ahead_poses", trajectory.control_look_ahead_poses, trajectory.control_look_ahead_poses);
   nh->get_parameter_or(name + "." + "feasibility_check_lookahead_distance", trajectory.feasibility_check_lookahead_distance, trajectory.feasibility_check_lookahead_distance);
   nh->get_parameter_or(name + "." + "theta_threshold", trajectory.theta_threshold, trajectory.theta_threshold);
@@ -1101,6 +1117,22 @@ rcl_interfaces::msg::SetParametersResult
         trajectory.force_reinit_new_goal_angular = parameter.as_double();
       } else if (name == node_name + ".min_resolution_collision_check_angular") {
         trajectory.min_resolution_collision_check_angular = parameter.as_double();
+      } else if (name == node_name + ".swept_obstacle_enable") {
+        trajectory.swept_obstacle_enable = parameter.as_bool();
+      } else if (name == node_name + ".swept_obstacle_margin") {
+        trajectory.swept_obstacle_margin = parameter.as_double();
+      } else if (name == node_name + ".swept_obstacle_trigger_dist") {
+        trajectory.swept_obstacle_trigger_dist = parameter.as_double();
+      } else if (name == node_name + ".swept_obstacle_max_edges_per_segment") {
+        trajectory.swept_obstacle_max_edges_per_segment = parameter.as_int();
+      } else if (name == node_name + ".swept_check_max_evals") {
+        trajectory.swept_check_max_evals = parameter.as_int();
+      } else if (name == node_name + ".swept_repair_max_attempts") {
+        trajectory.swept_repair_max_attempts = parameter.as_int();
+      } else if (name == node_name + ".swept_repair_inner_iterations") {
+        trajectory.swept_repair_inner_iterations = parameter.as_int();
+      } else if (name == node_name + ".swept_repair_budget_ms") {
+        trajectory.swept_repair_budget_ms = parameter.as_double();
       } else if (name == node_name + ".feasibility_check_lookahead_distance") {
         trajectory.feasibility_check_lookahead_distance = parameter.as_double();
       } else if (name == node_name + ".feas_contour_margin") {

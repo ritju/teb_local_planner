@@ -68,6 +68,7 @@
 #include "teb_local_planner/g2o_types/edge_time_optimal.h"
 #include "teb_local_planner/g2o_types/edge_shortest_path.h"
 #include "teb_local_planner/g2o_types/edge_obstacle.h"
+#include "teb_local_planner/g2o_types/edge_swept_obstacle.h"
 #include "teb_local_planner/g2o_types/edge_dynamic_obstacle.h"
 #include "teb_local_planner/g2o_types/edge_via_point.h"
 #include "teb_local_planner/g2o_types/edge_prefer_rotdir.h"
@@ -551,7 +552,8 @@ public:
    *         any obstacle in the costmap, \c false otherwise.
    */
   virtual bool isTrajectoryFeasible(dwb_critics::ObstacleFootprintCritic* costmap_model, const std::vector<geometry_msgs::msg::Point>& footprint_spec, double inscribed_radius = 0.0,
-          double circumscribed_radius=0.0, int look_ahead_idx=-1, double feasibility_check_lookahead_distance=-1);
+          double circumscribed_radius=0.0, int look_ahead_idx=-1, double feasibility_check_lookahead_distance=-1,
+          const nav2_costmap_2d::Costmap2D* repair_costmap=nullptr);
   
   /**
    * @brief Hard veto: collide TEB poses with obstacles_ contours (current + gated prediction).
@@ -669,6 +671,7 @@ protected:
    * @param weight_multiplier Specify an additional weight multipler (in addition to the the config weight)
    */
   void AddEdgesObstacles(double weight_multiplier=1.0);
+  void AddEdgesSweptObstacles(double weight_multiplier=1.0);
   
   /**
    * @brief Add all edges (local cost functions) related to keeping a distance from static obstacles (legacy association strategy)
@@ -761,6 +764,8 @@ protected:
   void logWallAndObstacleCostsIfDue();
   void logTrajectoryClearanceIfDue(bool feasible, const char * reason, int checked_until,
     const std::vector<geometry_msgs::msg::Point> & costmap_footprint);
+  void captureSamplingDebug(std::vector<geometry_msgs::msg::Pose2D> & out) const;
+  void publishSamplingDebug(const char * result) const;
 
   /**
    * @brief 数值断言失败时打印 ΔT / 位姿间距，便于复现 EdgeVelocity NaN 等问题。
@@ -783,6 +788,23 @@ protected:
   const ViaPointContainer* via_points_; //!< Store via points for planning
   const std::vector<Eigen::Vector2d>* wall_line_;
   std::vector<ObstContainer> obstacles_per_vertex_; //!< Store the obstacles associated with the n-1 initial vertices
+  struct SweptFailure {
+    int segment{-1};
+    double fraction{0.0};
+    PoseSE2 pose;
+    std::string reason;
+  };
+  SweptFailure swept_failure_;
+  int forced_swept_segment_{-1};
+  double forced_swept_fraction_{0.5};
+  ObstContainer swept_repair_obstacles_;  // 候选私有，保证修复图中的障碍指针有效
+  bool swept_repair_active_{false};
+  bool swept_recheck_{false};
+  std::vector<int> swept_danger_segments_;
+  std::vector<PoseSE2> swept_sample_poses_;
+  std::vector<geometry_msgs::msg::Point> swept_candidate_obstacles_;
+  bool repairSweptFailure(const nav2_costmap_2d::Costmap2D* costmap);
+  void recordSweptFailure(int segment, double fraction, const PoseSE2& pose, const char* reason);
   
   double cost_; //!< Store cost value of the current hyper-graph
   RotType prefer_rotdir_; //!< Store whether to prefer a specific initial rotation in optimization (might be activated in case the robot oscillates)
@@ -798,7 +820,11 @@ protected:
   std::shared_ptr<LineObstacle> wall_side_clearance_fallback_;
   rclcpp::Time last_wall_obstacle_cost_log_time_{0, 0, RCL_ROS_TIME}; //!< 贴边/障碍代价日志节流时间戳
   rclcpp::Time last_clearance_log_time_{0, 0, RCL_ROS_TIME};
-  int last_clearance_log_state_{-1};
+  std::string last_clearance_detail_reason_;
+  std::string last_feasibility_event_reason_;
+  int last_feasibility_event_index_{-1};
+  rclcpp::Time last_feasibility_event_time_{0, 0, RCL_ROS_TIME};
+  size_t suppressed_feasibility_events_{0};
   bool enable_wall_obstacle_cost_log_{true}; //!< false 时跳过 logWallAndObstacleCostsIfDue（HCP 非 best）
 
   bool initialized_; //!< Keeps track about the correct initialization of this class
@@ -806,6 +832,9 @@ protected:
 
   TebPoseTimeSnapshot dyn_obst_edge_build_snapshot_; //!< Pose/time at last dynamic-obstacle edge construction
   bool dyn_obst_edge_build_snapshot_valid_ = false;
+  std::vector<geometry_msgs::msg::Pose2D> sampling_initial_;
+  std::vector<geometry_msgs::msg::Pose2D> sampling_after_resize_;
+  int sampling_resize_outer_iteration_{0};
   
 public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW    

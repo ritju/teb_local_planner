@@ -64,6 +64,7 @@
 // messages
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
+#include <geometry_msgs/msg/pose2_d.hpp>
 #include <geometry_msgs/msg/point.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
@@ -161,6 +162,14 @@ public:
    * @param teb const reference to a Timed_Elastic_Band
    */
   void publishLocalPlanAndPoses(const TimedElasticBand& teb) const;
+
+  /// 同一候选轨迹在本轮规划中的三个采样阶段；检查拒绝时也发布。
+  void publishTrajectorySamplingStages(
+    const std::vector<geometry_msgs::msg::Pose2D> & initial,
+    const std::vector<geometry_msgs::msg::Pose2D> & after_resize,
+    const std::vector<geometry_msgs::msg::Pose2D> & optimized,
+    int resize_outer_iteration, bool autosize_enabled,
+    const void * candidate, const char * result) const;
   
   /**
    * @brief Publish the visualization of the robot model
@@ -180,6 +189,13 @@ public:
    * @param robot_model Subclass of BaseRobotFootprintModel
    */
   void publishInfeasibleRobotPose(const PoseSE2& current_pose, const BaseRobotFootprintModel& robot_model);
+  void publishSweptObstacleDebug(
+    const TimedElasticBand& teb, const std::vector<int>& dangerous_segments,
+    const std::vector<PoseSE2>& build_samples,
+    const std::vector<geometry_msgs::msg::Point>& candidate_obstacles,
+    const BaseRobotFootprintModel& robot_model,
+    int failure_segment, double failure_fraction, const PoseSE2* failure_pose,
+    const std::string& failure_reason) const;
   
   /**
    * @brief Publish obstacle positions to the ros topic \e ../../teb_markers
@@ -319,6 +335,8 @@ protected:
   rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::Marker>::SharedPtr teb_marker_pub_; //!< Publisher for visualization markers
   rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr teb_marker_array_pub_; //!< Publisher for visualization marker arrays
   rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr teb_dyn_obst_debug_pub_; //!< Publisher for dynamic-obstacle spatiotemporal debug markers
+  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr teb_sampling_debug_pub_; //!< 优化前、autoResize 后与最终优化位姿
+  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr teb_swept_debug_pub_; //!< 扫掠危险段、建边采样点与失败 footprint
   rclcpp_lifecycle::LifecyclePublisher<teb_msgs::msg::FeedbackMsg>::SharedPtr feedback_pub_; //!< Publisher for the feedback message for analysis and debug purposes
   
   const TebConfig* cfg_; //!< Config class that stores and manages all related parameters

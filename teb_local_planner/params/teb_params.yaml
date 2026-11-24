@@ -259,6 +259,14 @@
         include_dynamic_obstacles: false
 
         min_resolution_collision_check_angular: 0.017 # 0.087 radians = 5 degrees
+        swept_obstacle_enable: true
+        swept_obstacle_margin: 0.05
+        swept_obstacle_trigger_dist: 0.35
+        swept_obstacle_max_edges_per_segment: 3
+        swept_check_max_evals: 128
+        swept_repair_max_attempts: 1
+        swept_repair_inner_iterations: 3
+        swept_repair_budget_ms: 20.0
         # 劣弧 TEB 不可行时优弧展开 yaw 再优化；heading_threshold=0 表示一侧失败即试另一侧
         major_arc_retry_enable: True
         major_arc_retry_heading_threshold: 0.0

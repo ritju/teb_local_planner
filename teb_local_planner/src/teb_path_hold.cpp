@@ -154,6 +154,14 @@ bool TebLocalPlannerROS::tryPathWaitHold(
   std::vector<PathWaitObstacle> obsts;
   bool message_valid = false;
   collectPathWaitObstacles(obsts, message_valid);
+  if (!path_wait_validity_logged_ || message_valid != last_path_wait_message_valid_) {
+    RCLCPP_WARN(logger_,
+      "[路径等待输入事件] 动态障碍消息%s，解析障碍=%zu，超时阈值=%.3f秒",
+      message_valid ? "有效" : "缺失或超时", obsts.size(),
+      cfg_->obstacles.path_wait_msg_timeout);
+    path_wait_validity_logged_ = true;
+    last_path_wait_message_valid_ = message_valid;
+  }
   if (path_wait_obstacle_tf_failed_)
   {
     cmd_vel.header.stamp = clock_->now();
@@ -239,11 +247,20 @@ bool TebLocalPlannerROS::tryPathWaitHold(
     path_wait_debug_marker_pub_->publish(ma);
   }
 
+  for (const auto& event : result.clock_events) {
+    RCLCPP_INFO(logger_, "[路径等待事件] 时刻=%.3f %s",
+      clock_->now().seconds(), event.c_str());
+  }
+  if (result.mode != result.previous_mode) {
+    RCLCPP_WARN(logger_,
+      "[路径等待事件] 模式切换 %s -> %s，原因=%s，障碍编号=%d，投影段=%d，投影=(%.3f,%.3f)，"
+      "可用距离=%.3f米，制动距离=%.3f米，安全速度=%.3f米/秒，消息有效=%d",
+      pathWaitModeChinese(result.previous_mode), pathWaitModeChinese(result.mode),
+      pathWaitReasonChinese(result.reason), result.collision_id, result.projection_segment,
+      result.projection.x(), result.projection.y(), result.available_distance,
+      result.stopping_distance, result.safe_speed, message_valid ? 1 : 0);
+  }
   if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
-    for (const auto& event : result.clock_events) {
-      RCLCPP_INFO(logger_, "[路径等待计时] 仿真时刻=%.3f %s",
-        clock_->now().seconds(), event.c_str());
-    }
     RCLCPP_INFO_THROTTLE(
       logger_, *clock_, 1000,
       "[路径等待] 状态=%s 原因=%s 投影段=%d 投影=(%.3f,%.3f) 接触障碍=%d "

@@ -1371,6 +1371,29 @@ void TebLocalPlannerROS::configure(
      cfg_->near_horizon_runtime.omega_hold_enable = threat.enable_omega_hold;
      cfg_->near_horizon_runtime.omega_ref = robot_vel_.angular.z;
 
+     const int gate_state = threat.enable_omega_hold ? 2 : (threat.raw_threat ? 1 : 0);
+     if (gate_state != last_near_horizon_gate_state_ ||
+         (gate_state != 0 && threat.trigger_obstacle_id != last_near_horizon_trigger_id_)) {
+       const auto gate_name = [](int state) {
+         return state == 2 ? "启用角速度保持" : state == 1 ? "检测到威胁但未启用" :
+           state == 0 ? "无威胁" : "初始";
+       };
+       const char * gate_reason = threat.reason == "safety_mode_off" ? "可预测模式关闭" :
+         threat.reason == "overlap_excluded_static_only" ? "重叠障碍仅按静态处理" :
+         threat.reason == "roi_threat" ? "预测进入近场区域" :
+         threat.reason == "hold_time_latched" ? "保持时间尚未结束" :
+         threat.reason == "no_threat" ? "未发现威胁" : threat.reason.c_str();
+       RCLCPP_INFO(logger_,
+         "[近场动态避障事件] 门控状态 %s -> %s，障碍编号=%d，原因=%s，缓存障碍=%zu，"
+         "可预测模式=%d，参考角速度=%.3f",
+         gate_name(last_near_horizon_gate_state_), gate_name(gate_state),
+         threat.trigger_obstacle_id, gate_reason, dynamic_obstacle_cache_.get().size(),
+         cfg_->obstacles.dynamic_safety_predictable_mode ? 1 : 0,
+         cfg_->near_horizon_runtime.omega_ref);
+       last_near_horizon_gate_state_ = gate_state;
+       last_near_horizon_trigger_id_ = threat.trigger_obstacle_id;
+     }
+
      if (cfg_->debug_mode.load(std::memory_order_relaxed)) {
        RCLCPP_INFO_THROTTLE(
            logger_, *clock_, 2000,
@@ -1421,8 +1444,42 @@ void TebLocalPlannerROS::configure(
 
    cfg_->robot.allow_backward_velocity = true;
    geometry_msgs::msg::Twist start_vel = robot_vel_;
+   cfg_->swept_repair_tokens.store(1, std::memory_order_relaxed);
 
    auto planIsFeasible = [&](const std::vector<geometry_msgs::msg::PoseStamped> & plan_in) -> bool {
+     if (cfg_->trajectory.swept_obstacle_enable) {
+       if (!std::isfinite(cfg_->trajectory.swept_obstacle_margin) ||
+           cfg_->trajectory.swept_obstacle_margin < 0.0 ||
+           !std::isfinite(cfg_->trajectory.swept_obstacle_trigger_dist) ||
+           cfg_->trajectory.swept_obstacle_trigger_dist < 0.0 ||
+           cfg_->trajectory.swept_obstacle_max_edges_per_segment < 1 ||
+           cfg_->trajectory.swept_check_max_evals < 1 ||
+           !std::isfinite(cfg_->trajectory.swept_repair_budget_ms) ||
+           cfg_->trajectory.swept_repair_budget_ms <= 0.0) {
+         RCLCPP_ERROR_THROTTLE(logger_, *clock_, 5000,
+           "[TEB 扫掠约束] 参数无效，拒绝候选；检查裕度、阈值、边数与时间预算");
+         return false;
+       }
+       const auto * polygon = dynamic_cast<const PolygonRobotFootprint *>(cfg_->robot_model.get());
+       const double tolerance = std::max(0.03, cfg_->trajectory.swept_obstacle_margin);
+       bool matching = polygon && polygon->vertices().size() == footprint_spec_.size();
+       if (matching) {
+         for (const auto & vertex : polygon->vertices()) {
+           bool found = false;
+           for (const auto & costmap_vertex : footprint_spec_) {
+             if (std::hypot(vertex.x() - costmap_vertex.x,
+                   vertex.y() - costmap_vertex.y) <= tolerance) {found = true; break;}
+           }
+           if (!found) {matching = false; break;}
+         }
+       }
+       if (!matching) {
+         RCLCPP_ERROR_THROTTLE(logger_, *clock_, 5000,
+           "[TEB 扫掠约束] 优化多边形与代价图 footprint 不一致，拒绝候选；顶点数=%zu/%zu 容差=%.3f m",
+           polygon ? polygon->vertices().size() : 0, footprint_spec_.size(), tolerance);
+         return false;
+       }
+     }
      if (!planner_->plan(plan_in, &start_vel, cfg_->goal_tolerance.free_goal_vel)) {
        return false;
      }
@@ -1432,7 +1489,7 @@ void TebLocalPlannerROS::configure(
      return planner_->isTrajectoryFeasible(
        costmap_model_.get(), footprint_spec_, robot_inscribed_radius_,
        robot_circumscribed_radius, cfg_->trajectory.feasibility_check_no_poses,
-       cfg_->trajectory.feasibility_check_lookahead_distance);
+       cfg_->trajectory.feasibility_check_lookahead_distance, costmap_ros_->getCostmap());
    };
 
    const double yaw_start = tf2::getYaw(transformed_plan.front().pose.orientation);
@@ -1578,8 +1635,12 @@ void TebLocalPlannerROS::configure(
      dual_arc_reverse_forward_count_ = 0;
      RCLCPP_ERROR_THROTTLE(
        logger_, *clock_, 1000,
-       "局部轨迹不可行：连续失败次数=%zu，路径点=%zu，障碍物=%zu，已清空规划器",
-       no_infeasible_plans_, transformed_plan.size(), obstacles_.size());
+       "局部轨迹不可行：连续失败次数=%d，路径点=%zu，障碍物=%zu，窄通道=%d，贴边=%d，"
+       "动态优化=%d，轮廓硬检查=%d，已清空规划器",
+       no_infeasible_plans_, transformed_plan.size(), obstacles_.size(),
+       narrow_mode ? 1 : 0, is_edge_following_mode_ ? 1 : 0,
+       cfg_->obstacles.include_dynamic_obstacles ? 1 : 0,
+       cfg_->trajectory.feasibility_check_obstacle_contours ? 1 : 0);
      throw nav2_core::PlannerException(
        std::string("TebLocalPlannerROS: trajectory is not feasible. Resetting planner...")
      );
@@ -1596,7 +1657,7 @@ void TebLocalPlannerROS::configure(
      dual_arc_reverse_forward_count_ = 0;
      RCLCPP_ERROR_THROTTLE(
        logger_, *clock_, 1000,
-       "TEB 未生成有效速度指令：轨迹点数=%zu，连续失败次数=%zu",
+       "TEB 未生成有效速度指令：轨迹点数=%zu，连续失败次数=%d",
        transformed_plan.size(), no_infeasible_plans_);
      throw nav2_core::PlannerException(
        std::string("TebLocalPlannerROS: velocity command invalid. Resetting planner...")
